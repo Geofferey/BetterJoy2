@@ -45,6 +45,7 @@ Check out the [wiki](https://github.com/Geofferey/BetterJoy2/wiki)! There, you'l
  * Hold down the small button (sync) on the top of the controller for 5 seconds - this puts the controller into broadcasting mode.
  * Search for it in your bluetooth settings and pair normally.
  * To disconnect the controller - hold the home button (or capture button) down for 2 seconds (or press the sync button). To reconnect - press any button on your controller.
+ * **Joy-Con lag/stutter over Bluetooth:** this is a Windows Bluetooth stack quirk specific to Joy-Cons (Pro Controller is unaffected), not something BetterJoy's code can fix directly. The workaround: rename your PC's Bluetooth *adapter* (not the controller) to `Nintendo` in Windows' Bluetooth settings. This has been confirmed to eliminate the lag/stutter entirely.
 
 ## USB Mode
  * Plug the controller into your computer.
