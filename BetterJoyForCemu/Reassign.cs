@@ -204,13 +204,20 @@ namespace BetterJoyForCemu {
         private static readonly Color ProfileConnected = Color.FromArgb(62, 201, 116);
 
         private void CreateDynamicProfileControls() {
+            // Order must match BuildGyroPage's `labels` array exactly - each entry here becomes
+            // gyroMouseButtons[i]'s actual saved config key (via Tag), while `labels[i]` is only
+            // the on-screen text for that same button. A "Redesign controller profiles interface"
+            // pass reordered the on-screen labels (moving Clench gyro next to Middle click) but
+            // left this array in its old order, so index 3-5's buttons all displayed the wrong
+            // label for the key they were really wired to - e.g. the button visually labeled
+            // "Clench gyro" was actually saving/reading "scroll_up".
             var entries = new (string key, string label)[] {
                 ("left_click", "Left Click"),
                 ("right_click", "Right Click"),
                 ("center_click", "Center Click"),
+                ("clench_gyro", "Clench Gyro"),
                 ("scroll_up", "Scroll Up"),
                 ("scroll_down", "Scroll Down"),
-                ("clench_gyro", "Clench Gyro"),
             };
             foreach (var entry in entries) {
                 var button = new SplitButton {
