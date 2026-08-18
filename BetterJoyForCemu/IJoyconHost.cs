@@ -12,8 +12,18 @@ namespace BetterJoyForCemu {
         void AssignSlot(Joycon joycon);
         void CollapseJoinedPair(Joycon left, Joycon right);
         void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner);
-        void JoinOrSplitJoycon(Joycon joycon);
+        // forceSelfPair: skip searching for an opposite-handed partner and self-pair (vertical
+        // orientation) even when other Joycons are connected - the double right-click override,
+        // see MainForm.HandlePossibleOrientationDoubleClick. Ignored on the split side (a Joycon
+        // that already has a partner just splits either way, there's no ambiguity to override).
+        void JoinOrSplitJoycon(Joycon joycon, bool forceSelfPair = false);
         void NotifyLowBattery(Joycon joycon);
+
+        // Keeps a solo-vs-self-paired ("vertical") slot icon in sync with Joycon.other, for
+        // orientation changes that don't go through JoinOrSplitJoycon itself (e.g. Program.cs's
+        // DefaultOrientation auto-self-pair on connect). Safe no-op headless, same as the rest of
+        // this UI-only group.
+        void RefreshOrientationIcon(Joycon joycon);
         void UpdateBatteryColor(Joycon joycon);
         void RefreshControllerState();
 

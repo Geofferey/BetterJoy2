@@ -24,6 +24,7 @@ namespace BetterJoyForCemu {
         private Timer countDown;
         private int count;
         private Timer clickTimer;
+        private Timer rightClickTimer;
         private readonly DesktopInputBackend desktopInput;
         private readonly string[] displayedConfigKeys;
         private static readonly HashSet<string> ProfileOwnedConfigKeys =
@@ -52,6 +53,8 @@ namespace BetterJoyForCemu {
             desktopInput = new DesktopInputBackend();
             clickTimer = new Timer { Interval = 250 };
             clickTimer.Tick += ClickTimer_Tick;
+            rightClickTimer = new Timer { Interval = 250 };
+            rightClickTimer.Tick += RightClickTimer_Tick;
 
             InitializeComponent();
 
@@ -518,8 +521,10 @@ namespace BetterJoyForCemu {
                 case ControllerKind.Pro: return Properties.Resources.pro;
                 case ControllerKind.Snes: return Properties.Resources.snes;
                 case ControllerKind.N64: return Properties.Resources.ultra;
-                case ControllerKind.Left: return Properties.Resources.jc_left_s;
-                default: return Properties.Resources.jc_right_s;
+                case ControllerKind.Left:
+                    return record.IsVertical ? Properties.Resources.jc_left : Properties.Resources.jc_left_s;
+                default:
+                    return record.IsVertical ? Properties.Resources.jc_right : Properties.Resources.jc_right_s;
             }
         }
 
@@ -574,7 +579,7 @@ namespace BetterJoyForCemu {
                     return;
 
                 if (e.Button == MouseButtons.Right) {
-                    serviceClient.JoinOrSplit((int)button.Tag);
+                    HandlePossibleOrientationDoubleClick(button);
                 } else if (e.Button == MouseButtons.Left) {
                     if (allowCalibration) {
                         HandlePossibleDoubleClick(button);
@@ -589,7 +594,7 @@ namespace BetterJoyForCemu {
                 return;
 
             if (e.Button == MouseButtons.Right) {
-                JoinOrSplitJoycon((Joycon)button.Tag);
+                HandlePossibleOrientationDoubleClick(button);
             } else if (e.Button == MouseButtons.Left) {
                 if (allowCalibration) {
                     HandlePossibleDoubleClick(button);
@@ -645,6 +650,48 @@ namespace BetterJoyForCemu {
 
             calibrateIconButton = null;
             calibrateIconOriginalImage = null;
+        }
+
+        // Right-click disambiguation, mirroring HandlePossibleDoubleClick above: a single
+        // right-click still joins/splits normally, just deferred by rightClickTimer's interval
+        // (previously instant) so a following second click on the same slot can be detected. A
+        // genuine double right-click forces this Joycon to self-pair (vertical orientation) even
+        // when other Joycons are connected and a plain single click would otherwise have searched
+        // for one of them to join with instead - see JoinOrSplitJoycon's forceSelfPair parameter.
+        private Button orientationClickButton = null;
+
+        private void HandlePossibleOrientationDoubleClick(Button button) {
+            if (rightClickTimer.Enabled && orientationClickButton == button) {
+                rightClickTimer.Stop();
+                orientationClickButton = null;
+                ExecuteJoinOrSplit(button, forceSelfPair: true);
+            } else {
+                rightClickTimer.Stop();
+                orientationClickButton = button;
+                rightClickTimer.Start();
+            }
+        }
+
+        private void RightClickTimer_Tick(object sender, EventArgs e) {
+            rightClickTimer.Stop();
+            if (orientationClickButton != null) {
+                Button button = orientationClickButton;
+                orientationClickButton = null;
+                ExecuteJoinOrSplit(button, forceSelfPair: false);
+            }
+        }
+
+        private void ExecuteJoinOrSplit(Button button, bool forceSelfPair) {
+            if (isRemoteMode) {
+                if (button.Tag is int padId) {
+                    if (forceSelfPair)
+                        serviceClient.ForceSelfPair(padId);
+                    else
+                        serviceClient.JoinOrSplit(padId);
+                }
+            } else if (button.Tag is Joycon joycon) {
+                JoinOrSplitJoycon(joycon, forceSelfPair);
+            }
         }
 
         // Empty slots swap their red X for a plus icon on hover, as a visual hint that
@@ -873,11 +920,34 @@ namespace BetterJoyForCemu {
             }));
         }
 
-        public void JoinOrSplitJoycon(Joycon v) {
+        // Solo (other == null) vs self-paired/"vertical" (other == v) icon for a Joycon that
+        // currently occupies its own slot - not the composite two-half icon a real joined pair
+        // uses (see ComposeJoinedIcon/CollapseJoinedPair), which is a different slot layout
+        // entirely. Used by JoinOrSplitJoycon's self-pair path above and by Program.cs's
+        // DefaultOrientation auto-self-pair on connect, so both keep the slot icon in sync with
+        // whichever orientation the Joycon actually ends up in.
+        public void RefreshOrientationIcon(Joycon v) {
+            if (v.isPro || v.isSnes || v.is64)
+                return;
+
+            Button button = con.Find(b => b.Tag == v);
+            if (button == null)
+                return;
+
+            button.BackgroundImage = v.other == v
+                ? (v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right)
+                : (v.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s);
+        }
+
+        public void JoinOrSplitJoycon(Joycon v, bool forceSelfPair = false) {
             if (v.other == null && !v.isPro) { // needs connecting to other joycon (so messy omg)
                 bool succ = false;
 
-                if (Program.mgr.j.Count == 1) { // when want to have a single joycon in vertical mode
+                // forceSelfPair (double right-click) skips the partner search below entirely -
+                // an explicit override, so it applies even with other Joycons connected, not just
+                // when this is the only one (Program.mgr.j.Count == 1 is still the ordinary,
+                // unambiguous case where a single right-click self-pairs on its own).
+                if (forceSelfPair || Program.mgr.j.Count == 1) { // when want to have a single joycon in vertical mode
                     v.other = v; // hacky; implement check in Joycon.cs to account for this
                     succ = true;
                 } else {
@@ -911,9 +981,7 @@ namespace BetterJoyForCemu {
                 }
 
                 if (succ && v.other == v) // self-pair (single joycon vertical mode) only -
-                    foreach (Button b in con) // a real pair is already handled above
-                        if (b.Tag == v)
-                            b.BackgroundImage = v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right;
+                    RefreshOrientationIcon(v); // a real pair is already handled above
                 if (succ)
                     Program.mgr.ApplyControllerProfileOptions();
             } else if (v.other != null && !v.isPro) { // needs disconnecting from other joycon

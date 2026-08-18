@@ -47,8 +47,14 @@ namespace BetterJoyForCemu {
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "GyroHoldToggle", "DragToggle", "SwapAB", "SwapXY", "HomeLEDOn",
-            "GyroAnalogSliders",
+            "GyroAnalogSliders", "DefaultOrientation",
         };
+
+        // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected
+        // lone Joycon with no available join partner should self-pair into vertical orientation
+        // automatically (see Program.cs's auto-join pass) instead of staying solo/horizontal.
+        public const string OrientationHorizontal = "horizontal";
+        public const string OrientationVertical = "vertical";
 
         public const string UseAsXbox360 = "xbox360";
         public const string UseAsDualShock4 = "dualshock4";

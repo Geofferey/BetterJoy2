@@ -46,7 +46,9 @@ namespace BetterJoyForCemu {
                 // already-running Poll() thread for the HID handle. See RequestLEDUpdate's
                 // comment.
                 if (_other == null || _other == this) {
-                    // If the other Joycon is itself, the Joycon is sideways - LED to current PadId
+                    // Solo (_other == null, held sideways) and self-paired ("vertical",
+                    // _other == this, held upright) both use this Joycon's own PadId for its LED -
+                    // neither has a partner controller to share a pair's LED value with.
                     RequestLEDUpdate(PadId);
                 } else {
                     // Set LED to current Joycon Pair
@@ -2847,10 +2849,6 @@ namespace BetterJoyForCemu {
                     }
                 }
 
-                // Capture a canonical, physically consistent IMU frame before BetterJoy's
-                // legacy solo-controller transform mutates acc_g and gyr_g differently.
-                UpdateCanonicalGyroMouseImu();
-
                 if (other == null && !isPro) { // single joycon mode; Z do not swap, rest do
                     if (isLeft) {
                         acc_g.X = -acc_g.X;
@@ -2868,6 +2866,25 @@ namespace BetterJoyForCemu {
                     gyr_g.X = gyr_g.Y;
                     gyr_g.Y = temp;
                 }
+
+                // Capture the canonical, Y-up JoyShockLibrary-style IMU frame from acc_g/gyr_g
+                // AFTER the solo-controller swap above (not before, as this used to do) - a solo
+                // Joy-Con is physically held sideways, a self-paired ("vertical") or joined one
+                // is held upright, and those are genuinely different grips that need different
+                // axis mappings, the same way the legacy raw pipeline right above already treats
+                // them differently. Building the canonical frame from the pre-swap values made
+                // solo, self-paired, and joined share one frame, which was wrong for solo.
+                //
+                // NOTE: an earlier version of this code applied the equivalent swap directly to
+                // the canonical Y-up vector instead of reordering like this, and that reportedly
+                // suppressed vertical/diagonal pointer motion for solo Joy-Cons - likely because
+                // the raw swap's axis correspondence doesn't carry over 1:1 onto the already-
+                // remapped canonical axes below, so applying it post-hoc there is a different,
+                // NOT equivalent operation to applying it here, pre-remap, in the native frame it
+                // was actually written for. This reordering has not been hardware-verified against
+                // that history - test solo Joy-Con gyro-mouse/gyro-stick specifically (both
+                // orientations) before trusting this.
+                UpdateCanonicalGyroMouseImu();
 
                 // Update rotation Quaternion
                 float deg_to_rad = 0.0174533f;

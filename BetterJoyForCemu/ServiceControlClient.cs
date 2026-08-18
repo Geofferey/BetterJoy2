@@ -81,6 +81,7 @@ namespace BetterJoyForCemu {
         public void RequestSnapshot() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.RequestSnapshot));
         public void TestRumble(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.TestRumble, padId));
         public void JoinOrSplit(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.JoinOrSplit, padId));
+        public void ForceSelfPair(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.ForceSelfPair, padId));
         public void StartCalibration(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.StartCalibration, padId));
         public void CalibrationReady(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationReady, padId));
         public void StartButtonCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.StartButtonCapture));

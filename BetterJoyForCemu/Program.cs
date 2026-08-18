@@ -666,6 +666,23 @@ namespace BetterJoyForCemu {
                         temp = null;    // repeat
                     }
                 }
+
+                // Anything still solo after the join pass above (no available opposite-handed
+                // partner) self-pairs into vertical orientation if that profile's saved default
+                // says to - matching what a manual double right-click/ForceSelfPair would do,
+                // just automatically on connect. Profile lookup uses this Joycon's still-solo
+                // identity (ProfileIdFor), since that's the identity it had before this decision.
+                foreach (Joycon v in j) {
+                    if (v.isPro || v.other != null)
+                        continue;
+                    string profileId = ControllerMappings.ProfileIdFor(v);
+                    if (ControllerMappings.OptionValue(profileId, "DefaultOrientation") ==
+                        ControllerMappings.OrientationVertical) {
+                        v.other = v;
+                        form.RefreshOrientationIcon(v);
+                    }
+                }
+
                 ApplyControllerProfileOptions();
             }
         }

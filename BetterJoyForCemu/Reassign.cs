@@ -18,6 +18,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_joy_buttons = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_activation = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_analog_sliders = new ContextMenuStrip();
+        ContextMenuStrip menu_default_orientation = new ContextMenuStrip();
 
         private Control curAssignment;
 
@@ -46,6 +47,7 @@ namespace BetterJoyForCemu {
         private ComboBox inactivitySelector;
         private ComboBox gyroActivationModeSelector;
         private SplitButton btn_gyro_analog_sliders;
+        private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
         private CheckBox dragToggleCheckBox;
@@ -149,6 +151,12 @@ namespace BetterJoyForCemu {
             menu_gyro_analog_sliders.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
             menu_gyro_analog_sliders.ItemClicked += GyroAnalogSlidersMenu_ItemClicked;
 
+            menu_default_orientation.Items.Add(
+                new ToolStripMenuItem("Horizontal") { Tag = ControllerMappings.OrientationHorizontal });
+            menu_default_orientation.Items.Add(
+                new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
+            menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
+
             specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
@@ -226,6 +234,11 @@ namespace BetterJoyForCemu {
             btn_gyro_analog_sliders.Menu = menu_gyro_analog_sliders;
             btn_gyro_analog_sliders.Click += (sender, e) =>
                 menu_gyro_analog_sliders.Show(btn_gyro_analog_sliders, 0, btn_gyro_analog_sliders.Height);
+
+            btn_default_orientation = new SplitButton { Name = "btn_default_orientation" };
+            btn_default_orientation.Menu = menu_default_orientation;
+            btn_default_orientation.Click += (sender, e) =>
+                menu_default_orientation.Show(btn_default_orientation, 0, btn_default_orientation.Height);
 
             gameControllersButton = new Button {
                 Text = "Game Controllers...",
@@ -527,6 +540,15 @@ namespace BetterJoyForCemu {
             homeLedCheckBox = CreateProfileCheckBox(
                 "Keep the Home LED on", 24, 514, "HomeLEDOn");
             page.Controls.Add(homeLedCheckBox);
+
+            page.Controls.Add(CreateDivider(24, 560));
+            AddSectionHeading(page, "Orientation", 577,
+                "Only applies when this Joy-Con is used solo with no partner - whether it " +
+                "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
+            AddMappingRow(page, null, btn_default_orientation, "Default orientation",
+                652, 24, 232, 362);
+
+            page.AutoScrollMinSize = new Size(0, 710);
             return page;
         }
 
@@ -682,7 +704,7 @@ namespace BetterJoyForCemu {
         private void LoadProfileOptions(bool hasProfile) {
             Control[] controls = {
                 useAsSelector, inactivitySelector, gyroActivationModeSelector,
-                btn_gyro_analog_sliders,
+                btn_gyro_analog_sliders, btn_default_orientation,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
             };
@@ -712,6 +734,9 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_analog_sliders.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroAnalogSliders") ? "Enabled" : "Disabled";
+                btn_default_orientation.Text = ControllerMappings.OptionValue(
+                    SelectedProfileId, "DefaultOrientation") == ControllerMappings.OrientationVertical
+                    ? "Vertical" : "Horizontal";
 
                 int inactivityMinutes = ControllerMappings.IntOption(
                     SelectedProfileId, "PowerOffInactivity", -1);
@@ -766,8 +791,9 @@ namespace BetterJoyForCemu {
         }
 
         private void StyleAssignmentMenus() {
-            foreach (ContextMenuStrip menu in
-                     new[] { menu_joy_buttons, menu_gyro_activation, menu_gyro_analog_sliders }) {
+            foreach (ContextMenuStrip menu in new[] {
+                     menu_joy_buttons, menu_gyro_activation, menu_gyro_analog_sliders,
+                     menu_default_orientation }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 menu.ShowImageMargin = false;
@@ -1057,6 +1083,16 @@ namespace BetterJoyForCemu {
             string value = (string)e.ClickedItem.Tag;
             ControllerMappings.SetOptionValue(SelectedProfileId, "GyroAnalogSliders", value);
             btn_gyro_analog_sliders.Text = value == "true" ? "Enabled" : "Disabled";
+        }
+
+        private void DefaultOrientationMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(SelectedProfileId, "DefaultOrientation", value);
+            btn_default_orientation.Text = value == ControllerMappings.OrientationVertical
+                ? "Vertical" : "Horizontal";
         }
 
         private void Remap(object sender, MouseEventArgs e) {

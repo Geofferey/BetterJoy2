@@ -44,6 +44,7 @@ namespace BetterJoyForCemu {
         }
 
         public void AssignSlot(Joycon joycon) { BroadcastSnapshot(); }
+        public void RefreshOrientationIcon(Joycon joycon) { BroadcastSnapshot(); }
         public void CollapseJoinedPair(Joycon left, Joycon right) { BroadcastSnapshot(); }
         public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) { BroadcastSnapshot(); }
         public void UpdateBatteryColor(Joycon joycon) { BroadcastSnapshot(); }
@@ -57,9 +58,9 @@ namespace BetterJoyForCemu {
         // don't exist headless - used both for the hardware stick-double-click path (Joycon.cs
         // calls this via IJoyconHost the same as GUI mode) and the remote JoinOrSplit command
         // from a connected GUI (see JoinOrSplitByPadId below).
-        public void JoinOrSplitJoycon(Joycon v) {
+        public void JoinOrSplitJoycon(Joycon v, bool forceSelfPair = false) {
             if (v.other == null && !v.isPro) {
-                if (Program.mgr.j.Count == 1) {
+                if (forceSelfPair || Program.mgr.j.Count == 1) {
                     v.other = v; // self-pair - single joycon in vertical mode
                 } else {
                     foreach (Joycon jc in Program.mgr.j) {
@@ -502,7 +503,10 @@ namespace BetterJoyForCemu {
                             TestRumble(reader.ReadByte());
                             break;
                         case ControlMessageType.JoinOrSplit:
-                            JoinOrSplitByPadId(reader.ReadByte());
+                            JoinOrSplitByPadId(reader.ReadByte(), forceSelfPair: false);
+                            break;
+                        case ControlMessageType.ForceSelfPair:
+                            JoinOrSplitByPadId(reader.ReadByte(), forceSelfPair: true);
                             break;
                         case ControlMessageType.StartCalibration:
                             StartCalibration(reader.ReadByte());
@@ -535,10 +539,10 @@ namespace BetterJoyForCemu {
             Task.Delay(300).ContinueWith(_ => jc.SetRumble(160.0f, 320.0f, 0));
         }
 
-        private void JoinOrSplitByPadId(int padId) {
+        private void JoinOrSplitByPadId(int padId, bool forceSelfPair) {
             Joycon jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
             if (jc != null)
-                JoinOrSplitJoycon(jc);
+                JoinOrSplitJoycon(jc, forceSelfPair);
         }
 
         // Mirrors MainForm's calibration step sequence exactly - a connected GUI renders the
@@ -801,6 +805,7 @@ namespace BetterJoyForCemu {
                     ProfileId = profile.ProfileId,
                     ProfileName = profile.DisplayName,
                     ConnectionSequence = profile.ConnectionSequence,
+                    IsVertical = jc.other == jc,
                 });
             }
             return records;

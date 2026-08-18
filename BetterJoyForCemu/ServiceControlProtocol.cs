@@ -25,6 +25,11 @@ namespace BetterJoyForCemu {
         CalibrationReady = 14, // user clicked "OK" on the current step - see CalibrationStep
         StartButtonCapture = 15, // Controller Profiles dialog opened - start pushing ButtonTransition
         StopButtonCapture = 16, // dialog closed - stop
+        // Double right-click override: force this solo Joycon to self-pair (vertical
+        // orientation) even when other Joycons are connected and a plain JoinOrSplit would
+        // otherwise search for one of them to join with instead. See MainForm's
+        // HandlePossibleOrientationDoubleClick.
+        ForceSelfPair = 17,
     }
 
     public enum ControllerKind : byte {
@@ -46,6 +51,11 @@ namespace BetterJoyForCemu {
         public string ProfileId;
         public string ProfileName;
         public long ConnectionSequence;
+        // True for a solo Joycon self-paired into vertical orientation (Joycon.other == itself -
+        // OtherPadId stays -1 for this case, same as plain solo, since there's no separate
+        // partner record to pair against). Lets the GUI pick the correct slot icon (see
+        // MainForm.IconFor) without a live Joycon reference to check .other on directly.
+        public bool IsVertical;
 
         public void WriteTo(BinaryWriter writer) {
             writer.Write(PadId);
@@ -55,6 +65,7 @@ namespace BetterJoyForCemu {
             writer.Write(ProfileId ?? String.Empty);
             writer.Write(ProfileName ?? String.Empty);
             writer.Write(ConnectionSequence);
+            writer.Write(IsVertical);
         }
 
         public static ControllerRecord ReadFrom(BinaryReader reader) {
@@ -66,6 +77,7 @@ namespace BetterJoyForCemu {
                 ProfileId = reader.ReadString(),
                 ProfileName = reader.ReadString(),
                 ConnectionSequence = reader.ReadInt64(),
+                IsVertical = reader.ReadBoolean(),
             };
         }
     }
