@@ -2630,7 +2630,21 @@ namespace BetterJoyForCemu {
                 if (rumble_obj.queue.Count > 0) {
                     SendRumble(rumble_obj.GetData());
                 }
-                int a = ReceiveRaw();
+
+                int a;
+                try {
+                    a = ReceiveRaw();
+                } catch (Exception ex) {
+                    // ReceiveRaw covers report parsing, gyro/stick processing, and ViGEm report
+                    // building for every packet - an unhandled exception anywhere in that chain
+                    // reaches here uncaught, and this runs on a bare Thread (not a UI/task
+                    // context with its own handler), so .NET terminates the whole process by
+                    // default. One malformed packet or transient edge case shouldn't take down
+                    // every connected controller - treat it the same as a read error below
+                    // (brief pause, count toward the drop threshold) instead.
+                    DebugPrint("Unhandled exception in ReceiveRaw: " + ex, DebugType.ALL);
+                    a = -1;
+                }
 
                 if (a > 0 && state > state_.DROPPED) {
                     state = state_.IMU_DATA_OK;
@@ -2672,7 +2686,16 @@ namespace BetterJoyForCemu {
         float stickScalingFactor2 = float.Parse(ConfigurationManager.AppSettings["StickScalingFactor2"]);
 
         private int ProcessButtonsAndStick(byte[] report_buf) {
-            if (report_buf[0] == 0x00) throw new ArgumentException("received undefined report. This is probably a bug");
+            // A report ID of 0 is never valid for a real Joy-Con/Pro Controller report - this
+            // used to throw here, which had nothing catching it anywhere in the call chain
+            // (ReceiveRaw/Poll), so a single malformed report crashed the entire process, not
+            // just this controller's connection. Skip this report instead: buttons/stick just
+            // hold their previous values for one tick, matching how Poll() already tolerates a
+            // read error or timeout (a < 0 / a == 0) without tearing anything down.
+            if (report_buf[0] == 0x00) {
+                DebugPrint("Received a report with report ID 0 - skipping.", DebugType.ALL);
+                return -1;
+            }
             if (!isSnes) {
                 stick_raw[0] = report_buf[6 + (isLeft ? 0 : 3)];
                 stick_raw[1] = report_buf[7 + (isLeft ? 0 : 3)];
