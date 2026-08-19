@@ -52,6 +52,10 @@ namespace BetterJoyForCemu {
             "GyroStickAxisXLeft", "GyroStickAxisXRight",
             "GyroStickInvertXLeft", "GyroStickInvertYLeft",
             "GyroStickInvertXRight", "GyroStickInvertYRight",
+            "GyroStickMaxDeflectionXLeft", "GyroStickMaxDeflectionYLeft",
+            "GyroStickMaxDeflectionXRight", "GyroStickMaxDeflectionYRight",
+            "GyroStickMinDeflectionXLeft", "GyroStickMinDeflectionYLeft",
+            "GyroStickMinDeflectionXRight", "GyroStickMinDeflectionYRight",
         };
 
         // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected

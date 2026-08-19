@@ -1129,9 +1129,45 @@ namespace BetterJoyForCemu {
         bool GyroStickInvertYLeft => ProfileBoolOption("GyroStickInvertYLeft");
         bool GyroStickInvertXRight => ProfileBoolOption("GyroStickInvertXRight");
         bool GyroStickInvertYRight => ProfileBoolOption("GyroStickInvertYRight");
+        // 0-100%. Caps how far gyro alone may deflect a stick - the physical stick can still
+        // reach full deflection independently on top of a capped gyro contribution. Works in
+        // both raw and filtered IMU mode, unlike Mode/AxisX/Invert above.
+        int GyroStickMaxDeflectionXLeft => ProfileIntOption("GyroStickMaxDeflectionXLeft", 100);
+        int GyroStickMaxDeflectionYLeft => ProfileIntOption("GyroStickMaxDeflectionYLeft", 100);
+        int GyroStickMaxDeflectionXRight => ProfileIntOption("GyroStickMaxDeflectionXRight", 100);
+        int GyroStickMaxDeflectionYRight => ProfileIntOption("GyroStickMaxDeflectionYRight", 100);
+        // 0-100%. The instant real gyro rotation is detected, output jumps to at least this much
+        // deflection instead of ramping from near-zero (see ApplyDeflectionLimits).
+        int GyroStickMinDeflectionXLeft => ProfileIntOption("GyroStickMinDeflectionXLeft", 0);
+        int GyroStickMinDeflectionYLeft => ProfileIntOption("GyroStickMinDeflectionYLeft", 0);
+        int GyroStickMinDeflectionXRight => ProfileIntOption("GyroStickMinDeflectionXRight", 0);
+        int GyroStickMinDeflectionYRight => ProfileIntOption("GyroStickMinDeflectionYRight", 0);
 
         private static bool IsAbsoluteOrHybridGyroStickMode(string mode) {
             return mode == "absolute" || mode == "hybrid";
+        }
+
+        // Not user-facing - small fixed gate distinguishing genuine rotation from residual gyro
+        // noise at rest, so Min doesn't pin the stick near its floor 24/7 from calibrated sensor
+        // jitter alone.
+        private const float DeflectionNoiseEpsilon = 0.001f;
+
+        // A plain two-sided clamp, not a rescale: anything already inside [min, max] passes
+        // through untouched: only overshoot gets capped and only already-moving undershoot gets
+        // floored. At defaults (min=0, max=100) this is the identity function past the noise gate.
+        private static float ApplyDeflectionLimits(float rawValue, int minPercent, int maxPercent) {
+            float magnitude = Math.Abs(rawValue);
+            if (magnitude < DeflectionNoiseEpsilon)
+                return 0.0f;
+
+            float minFraction = Math.Max(0, Math.Min(100, minPercent)) / 100.0f;
+            float maxFraction = Math.Max(0, Math.Min(100, maxPercent)) / 100.0f;
+            if (maxFraction < minFraction)
+                maxFraction = minFraction; // guard against inverted config
+
+            magnitude = Math.Min(magnitude, maxFraction);
+            magnitude = Math.Max(magnitude, minFraction);
+            return Math.Sign(rawValue) * magnitude;
         }
         int GyroAnalogSensitivity = Int32.Parse(ConfigurationManager.AppSettings["GyroAnalogSensitivity"]);
         byte[] sliderVal = new byte[] { 0, 0 };
@@ -1366,13 +1402,21 @@ namespace BetterJoyForCemu {
                 float diagnosticPhysicalX = diagnosticStick[0];
                 float diagnosticPhysicalY = diagnosticStick[1];
 
-                if (gyroLeftStickActiveThisReport)
-                    ApplyGyroToStick(stick, dx, dy);
-                if (gyroRightStickActiveThisReport)
-                    ApplyGyroToStick(stick2, dx, dy);
+                float diagnosticDx = dx;
+                float diagnosticDy = dy;
+                if (gyroLeftStickActiveThisReport) {
+                    diagnosticDx = ApplyDeflectionLimits(dx, GyroStickMinDeflectionXLeft, GyroStickMaxDeflectionXLeft);
+                    diagnosticDy = ApplyDeflectionLimits(dy, GyroStickMinDeflectionYLeft, GyroStickMaxDeflectionYLeft);
+                    ApplyGyroToStick(stick, diagnosticDx, diagnosticDy);
+                }
+                if (gyroRightStickActiveThisReport) {
+                    diagnosticDx = ApplyDeflectionLimits(dx, GyroStickMinDeflectionXRight, GyroStickMaxDeflectionXRight);
+                    diagnosticDy = ApplyDeflectionLimits(dy, GyroStickMinDeflectionYRight, GyroStickMaxDeflectionYRight);
+                    ApplyGyroToStick(stick2, diagnosticDx, diagnosticDy);
+                }
 
                 CaptureGyroStickDiagnosticOutput(true, dt,
-                    diagnosticPhysicalX, diagnosticPhysicalY, dx, dy,
+                    diagnosticPhysicalX, diagnosticPhysicalY, diagnosticDx, diagnosticDy,
                     diagnosticStick[0], diagnosticStick[1]);
             }
 
@@ -2523,12 +2567,18 @@ namespace BetterJoyForCemu {
             float physicalX = diagnosticStick[0];
             float physicalY = diagnosticStick[1];
             float leftDx = 0.0f, leftDy = 0.0f, rightDx = 0.0f, rightDy = 0.0f;
-            if (gyroLeftStickActiveThisReport && !gyroStickRatcheted)
+            if (gyroLeftStickActiveThisReport && !gyroStickRatcheted) {
                 ComputeFilteredGyroStickOutput(true, pendingGyroStickDxLeft, pendingGyroStickDyLeft,
                                                out leftDx, out leftDy);
-            if (gyroRightStickActiveThisReport && !gyroStickRatcheted)
+                leftDx = ApplyDeflectionLimits(leftDx, GyroStickMinDeflectionXLeft, GyroStickMaxDeflectionXLeft);
+                leftDy = ApplyDeflectionLimits(leftDy, GyroStickMinDeflectionYLeft, GyroStickMaxDeflectionYLeft);
+            }
+            if (gyroRightStickActiveThisReport && !gyroStickRatcheted) {
                 ComputeFilteredGyroStickOutput(false, pendingGyroStickDxRight, pendingGyroStickDyRight,
                                                out rightDx, out rightDy);
+                rightDx = ApplyDeflectionLimits(rightDx, GyroStickMinDeflectionXRight, GyroStickMaxDeflectionXRight);
+                rightDy = ApplyDeflectionLimits(rightDy, GyroStickMinDeflectionYRight, GyroStickMaxDeflectionYRight);
+            }
 
             if (gyroLeftStickActiveThisReport)
                 ApplyGyroToStick(stick, leftDx, leftDy);

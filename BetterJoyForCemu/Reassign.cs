@@ -62,6 +62,14 @@ namespace BetterJoyForCemu {
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
         private CheckBox invertStickYRightCheckBox;
+        private TextBox maxDeflectionXLeftInput;
+        private TextBox maxDeflectionYLeftInput;
+        private TextBox maxDeflectionXRightInput;
+        private TextBox maxDeflectionYRightInput;
+        private TextBox minDeflectionXLeftInput;
+        private TextBox minDeflectionYLeftInput;
+        private TextBox minDeflectionXRightInput;
+        private TextBox minDeflectionYRightInput;
         private bool updatingProfileOptions;
         private readonly Dictionary<string, Panel> profilePages = new Dictionary<string, Panel>();
         private readonly Dictionary<string, Button> profileNavigationButtons = new Dictionary<string, Button>();
@@ -583,13 +591,35 @@ namespace BetterJoyForCemu {
             page.Controls.Add(invertStickYRightCheckBox);
 
             page.Controls.Add(CreateDivider(24, 636));
-            AddSectionHeading(page, "Orientation", 651,
+            AddSectionHeading(page, "Deflection limits", 651,
+                "How far gyro alone may push each stick, and the minimum once it starts moving.");
+
+            int[] deflectionColumnX = { 140, 240, 340, 440 };
+            string[] deflectionColumnLabels = { "Max X", "Max Y", "Min X", "Min Y" };
+            for (int column = 0; column < deflectionColumnX.Length; column++)
+                page.Controls.Add(CreateLabel(deflectionColumnLabels[column], deflectionColumnX[column], 707,
+                    ProfileMuted, false, 8.25F));
+
+            page.Controls.Add(CreateLabel("Left stick", 24, 734, ProfileText, false));
+            maxDeflectionXLeftInput = CreateDeflectionInput(page, deflectionColumnX[0], 728, "GyroStickMaxDeflectionXLeft");
+            maxDeflectionYLeftInput = CreateDeflectionInput(page, deflectionColumnX[1], 728, "GyroStickMaxDeflectionYLeft");
+            minDeflectionXLeftInput = CreateDeflectionInput(page, deflectionColumnX[2], 728, "GyroStickMinDeflectionXLeft");
+            minDeflectionYLeftInput = CreateDeflectionInput(page, deflectionColumnX[3], 728, "GyroStickMinDeflectionYLeft");
+
+            page.Controls.Add(CreateLabel("Right stick", 24, 768, ProfileText, false));
+            maxDeflectionXRightInput = CreateDeflectionInput(page, deflectionColumnX[0], 762, "GyroStickMaxDeflectionXRight");
+            maxDeflectionYRightInput = CreateDeflectionInput(page, deflectionColumnX[1], 762, "GyroStickMaxDeflectionYRight");
+            minDeflectionXRightInput = CreateDeflectionInput(page, deflectionColumnX[2], 762, "GyroStickMinDeflectionXRight");
+            minDeflectionYRightInput = CreateDeflectionInput(page, deflectionColumnX[3], 762, "GyroStickMinDeflectionYRight");
+
+            page.Controls.Add(CreateDivider(24, 805));
+            AddSectionHeading(page, "Orientation", 820,
                 "Reset the current controller angle while gyro mouse or an Absolute/Hybrid " +
                 "stick output is active.");
-            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 707, 24, 138, 456);
+            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 876, 24, 138, 456);
 
-            page.Controls.Add(CreateDivider(24, 751));
-            AddSectionHeading(page, "Mouse actions", 766,
+            page.Controls.Add(CreateDivider(24, 920));
+            AddSectionHeading(page, "Mouse actions", 935,
                 "Optional controller inputs available while gyro mouse is active.");
             string[] labels = { "Left click", "Right click", "Middle click", "Clench gyro", "Scroll up", "Scroll down" };
             for (int index = 0; index < gyroMouseButtons.Count; index++) {
@@ -598,9 +628,9 @@ namespace BetterJoyForCemu {
                 int labelX = column == 0 ? 24 : 323;
                 int buttonX = column == 0 ? 114 : 423;
                 AddMappingRow(page, null, gyroMouseButtons[index], labels[index],
-                    818 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
+                    987 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
             }
-            page.AutoScrollMinSize = new Size(0, 917);
+            page.AutoScrollMinSize = new Size(0, 1086);
             return page;
         }
 
@@ -801,6 +831,54 @@ namespace BetterJoyForCemu {
             return checkBox;
         }
 
+        // Not NumericUpDown - nothing else in this dialog uses one, and its spin-button portion
+        // can't be recolored to match the dark flat theme every other control here already gets
+        // via FlatStyle.Flat. A themed TextBox with digit-only input matches far better.
+        private TextBox CreateDeflectionInput(Panel page, int left, int top, string optionKey) {
+            TextBox input = new TextBox {
+                Location = new Point(left, top),
+                Size = new Size(50, 25),
+                TextAlign = HorizontalAlignment.Center,
+                BackColor = ProfileSurface,
+                ForeColor = ProfileText,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 9F),
+                Tag = optionKey,
+            };
+            input.KeyPress += (sender, e) => {
+                if (!Char.IsDigit(e.KeyChar) && !Char.IsControl(e.KeyChar))
+                    e.Handled = true;
+            };
+            input.Leave += DeflectionInput_Leave;
+            page.Controls.Add(input);
+            return input;
+        }
+
+        // Commits on focus-loss rather than through the immediate-commit
+        // ProfileOptionControlChanged dispatcher every other control here uses (ComboBox.
+        // SelectedIndexChanged/CheckBox.CheckedChanged) - a deferred-commit TextBox doesn't fit
+        // that shape cleanly, so it gets its own handler instead.
+        private void DeflectionInput_Leave(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            TextBox input = (TextBox)sender;
+            int value;
+            if (!Int32.TryParse(input.Text, out value))
+                value = 0;
+            value = Math.Max(0, Math.Min(100, value));
+            input.Text = value.ToString();
+            ControllerMappings.SetOptionValue(SelectedProfileId, (string)input.Tag, value.ToString());
+        }
+
+        private bool IsDeflectionInput(Control control) {
+            return control != null && (
+                control == maxDeflectionXLeftInput || control == maxDeflectionYLeftInput ||
+                control == maxDeflectionXRightInput || control == maxDeflectionYRightInput ||
+                control == minDeflectionXLeftInput || control == minDeflectionYLeftInput ||
+                control == minDeflectionXRightInput || control == minDeflectionYRightInput);
+        }
+
         private void ProfileOptionControlChanged(object sender, EventArgs e) {
             if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
                 return;
@@ -840,6 +918,17 @@ namespace BetterJoyForCemu {
         }
 
         private void LoadProfileOptions(bool hasProfile) {
+            // LoadProfileOptions can be triggered by the hardware-refresh timer (twice a second)
+            // whenever the controller list changes, not only by the user picking a different
+            // profile - so this runs far more often than a plain profile switch. Unconditionally
+            // nulling ActiveControl here (an earlier version of this fix) stole keyboard focus
+            // from WHATEVER control had it on every single tick, not just these 8 boxes -
+            // including mid-calibration or any other dialog/input in progress, which is exactly
+            // the kind of thing that looks like the app "quit" partway through. Only force a
+            // commit when one of the deflection TextBoxes specifically is the thing focused.
+            if (IsDeflectionInput(ActiveControl))
+                this.ActiveControl = null;
+
             Control[] controls = {
                 useAsSelector, inactivitySelector, gyroActivationModeSelector,
                 btn_gyro_analog_sliders, btn_default_orientation,
@@ -849,6 +938,10 @@ namespace BetterJoyForCemu {
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
                 invertStickXRightCheckBox, invertStickYRightCheckBox,
+                maxDeflectionXLeftInput, maxDeflectionYLeftInput,
+                maxDeflectionXRightInput, maxDeflectionYRightInput,
+                minDeflectionXLeftInput, minDeflectionYLeftInput,
+                minDeflectionXRightInput, minDeflectionYRightInput,
             };
             updatingProfileOptions = true;
             try {
@@ -906,6 +999,23 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "GyroStickInvertXRight");
                 invertStickYRightCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroStickInvertYRight");
+
+                maxDeflectionXLeftInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMaxDeflectionXLeft", 100).ToString();
+                maxDeflectionYLeftInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMaxDeflectionYLeft", 100).ToString();
+                maxDeflectionXRightInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMaxDeflectionXRight", 100).ToString();
+                maxDeflectionYRightInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMaxDeflectionYRight", 100).ToString();
+                minDeflectionXLeftInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMinDeflectionXLeft", 0).ToString();
+                minDeflectionYLeftInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMinDeflectionYLeft", 0).ToString();
+                minDeflectionXRightInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMinDeflectionXRight", 0).ToString();
+                minDeflectionYRightInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "GyroStickMinDeflectionYRight", 0).ToString();
 
                 int inactivityMinutes = ControllerMappings.IntOption(
                     SelectedProfileId, "PowerOffInactivity", -1);
@@ -1538,6 +1648,11 @@ namespace BetterJoyForCemu {
         }
 
         private void Reassign_FormClosing(object sender, FormClosingEventArgs e) {
+            // Commit any uncommitted deflection-input edit (its Leave handler is the only thing
+            // that saves it) rather than relying on implicit WinForms focus teardown order.
+            if (IsDeflectionInput(ActiveControl))
+                this.ActiveControl = null;
+
             keyboard?.Dispose();
             mouse?.Dispose();
             joyPoll?.Stop();
