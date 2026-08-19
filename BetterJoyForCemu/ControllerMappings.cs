@@ -38,7 +38,7 @@ namespace BetterJoyForCemu {
             "reset_mouse", "active_gyro", "active_gyro_mouse",
             "active_gyro_left_stick", "active_gyro_right_stick",
             "left_click", "right_click",
-            "center_click", "scroll_up", "scroll_down", "clench_gyro",
+            "center_click", "scroll_up", "scroll_down", "clench_gyro", "ratchet_gyro",
         };
 
         // Profile-owned behavior which historically lived in App.config. App.config remains the
@@ -62,7 +62,7 @@ namespace BetterJoyForCemu {
 
         private static readonly HashSet<string> AppConfigBackedKeys = new HashSet<string>(StringComparer.Ordinal) {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
-            "clench_gyro",
+            "clench_gyro", "ratchet_gyro",
         };
 
         private static readonly HashSet<string> KnownKeys = new HashSet<string>(Keys, StringComparer.Ordinal);

@@ -152,6 +152,8 @@ namespace BetterJoyForCemu {
             gyroRightStickActiveThisReport = false;
             prevResetMouseComboHeld = false;
             gyroMouseClenched = false;
+            gyroStickRatcheted = false;
+            frozenGyroStickDx = frozenGyroStickDy = 0.0f;
         }
 
         private void ReleaseMappedHold(string mapping) {
@@ -1242,6 +1244,10 @@ namespace BetterJoyForCemu {
             gyroMouseClenched = gyroMouseActionsEnabled && clenchGyroVal != "0" &&
                 IsComboHeld(clenchGyroVal);
 
+            string ratchetGyroVal = MappingValue("ratchet_gyro");
+            gyroStickRatcheted = (gyroLeftStickActiveThisReport || gyroRightStickActiveThisReport) &&
+                ratchetGyroVal != "0" && IsComboHeld(ratchetGyroVal);
+
             // "Re-Centre Gyro" is a one-shot orientation operation, not merely a request to move
             // the Windows pointer. Apply it before sliders/stick/mouse consume this packet so the
             // pose held at the rising edge is neutral immediately. The legacy config key remains
@@ -1301,8 +1307,18 @@ namespace BetterJoyForCemu {
 
             if (!UseFilteredIMU &&
                 (gyroLeftStickActiveThisReport || gyroRightStickActiveThisReport)) {
-                float dx = GyroStickSensitivityX * (gyr_g.Z * dt); // yaw
-                float dy = -GyroStickSensitivityY * (gyr_g.Y * dt); // pitch
+                float dx, dy;
+                if (gyroStickRatcheted) {
+                    // Hold the last pre-ratchet output instead of tracking live rotation, so
+                    // repositioning the wrist while ratcheted cannot itself turn the stick.
+                    dx = frozenGyroStickDx;
+                    dy = frozenGyroStickDy;
+                } else {
+                    dx = GyroStickSensitivityX * (gyr_g.Z * dt); // yaw
+                    dy = -GyroStickSensitivityY * (gyr_g.Y * dt); // pitch
+                    frozenGyroStickDx = dx;
+                    frozenGyroStickDy = dy;
+                }
                 float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
                 float diagnosticPhysicalX = diagnosticStick[0];
                 float diagnosticPhysicalY = diagnosticStick[1];
@@ -1391,6 +1407,14 @@ namespace BetterJoyForCemu {
         private float pendingGyroStickDx, pendingGyroStickDy;
         private bool gyroLeftStickActiveThisReport;
         private bool gyroRightStickActiveThisReport;
+
+        // Ratchet gyro (see ratchet_gyro in App.config): updated once per report in
+        // DoThingsWithButtons, then consumed by both the raw and filtered gyro-stick paths. While
+        // held, gyro-to-stick output stays at whatever it was the instant ratcheting began
+        // (frozenGyroStickDx/Dy) instead of tracking live rotation, so untwisting the wrist back
+        // to a comfortable angle does not register as a reverse turn.
+        private bool gyroStickRatcheted = false;
+        private float frozenGyroStickDx, frozenGyroStickDy;
         private float gyroStickReportDt;
 
         // Smooth mapped 2D motion, not the raw 3D sensor. The filtered state is blended back
@@ -2300,6 +2324,7 @@ namespace BetterJoyForCemu {
 
         private void ResetGyroStickMotionState(bool resetPlayerSpace = false) {
             pendingGyroStickDx = pendingGyroStickDy = 0.0f;
+            frozenGyroStickDx = frozenGyroStickDy = 0.0f;
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
             if (resetPlayerSpace)
@@ -2348,7 +2373,11 @@ namespace BetterJoyForCemu {
 
             bool anyStickActive = gyroLeftStickActiveThisReport ||
                                   gyroRightStickActiveThisReport;
-            if (anyStickActive) {
+            // While ratcheted, stop integrating live rotation into the pending delta - the flush
+            // below substitutes the frozen pre-ratchet value instead - so releasing the ratchet
+            // bind resumes from the live angle rather than replaying whatever the wrist did while
+            // ratcheted.
+            if (anyStickActive && !gyroStickRatcheted) {
                 float yawRate;
                 float pitchRate;
                 float ignoredRoll;
@@ -2369,8 +2398,18 @@ namespace BetterJoyForCemu {
             float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
             float physicalX = diagnosticStick[0];
             float physicalY = diagnosticStick[1];
-            float dx = anyStickActive ? pendingGyroStickDx : 0.0f;
-            float dy = anyStickActive ? pendingGyroStickDy : 0.0f;
+            float dx, dy;
+            if (gyroStickRatcheted) {
+                dx = anyStickActive ? frozenGyroStickDx : 0.0f;
+                dy = anyStickActive ? frozenGyroStickDy : 0.0f;
+            } else {
+                dx = anyStickActive ? pendingGyroStickDx : 0.0f;
+                dy = anyStickActive ? pendingGyroStickDy : 0.0f;
+                if (anyStickActive) {
+                    frozenGyroStickDx = dx;
+                    frozenGyroStickDy = dy;
+                }
+            }
 
             if (gyroLeftStickActiveThisReport)
                 ApplyGyroToStick(stick, dx, dy);

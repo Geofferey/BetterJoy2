@@ -75,7 +75,7 @@ namespace BetterJoyForCemu {
         // intentionally rejected for them below, just as before profiles were introduced.
         private static readonly HashSet<string> ControllerOnlyKeys = new HashSet<string> {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
-            "clench_gyro"
+            "clench_gyro", "ratchet_gyro"
         };
 
         private ControllerProfileInfo SelectedProfile {
@@ -157,7 +157,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
 
@@ -185,6 +185,7 @@ namespace BetterJoyForCemu {
         // Designer-owned buttons below, so page navigation never creates a second behavior path.
         private readonly List<SplitButton> gyroMouseButtons = new List<SplitButton>();
         private readonly List<SplitButton> gyroStickActivationButtons = new List<SplitButton>();
+        private SplitButton btn_ratchet_gyro;
         private List<SplitButton> specialButtons;
 
         private static bool IsGyroActivationKey(string key) {
@@ -236,6 +237,8 @@ namespace BetterJoyForCemu {
                 };
                 gyroStickActivationButtons.Add(button);
             }
+
+            btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
 
             btn_gyro_analog_sliders = new SplitButton { Name = "btn_gyro_analog_sliders" };
             btn_gyro_analog_sliders.Menu = menu_gyro_analog_sliders;
@@ -530,13 +533,18 @@ namespace BetterJoyForCemu {
             // CreateDynamicProfileControls) instead of the Remap combo-capture the other rows use.
             AddMappingRow(page, null, btn_gyro_analog_sliders, "Analog triggers", 269, 24, 232, 362);
 
-            page.Controls.Add(CreateDivider(24, 311));
-            AddSectionHeading(page, "Orientation", 326,
-                "Reset the current controller angle while gyro mouse is active.");
-            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 382, 24, 138, 456);
+            // While held, freezes gyro-to-stick output at its current value instead of tracking
+            // live rotation - lets the wrist reposition back to a comfortable angle without that
+            // motion registering as a reverse turn (see Joycon.gyroStickRatcheted).
+            AddMappingRow(page, null, btn_ratchet_gyro, "Ratchet gyro", 306, 24, 232, 362);
 
-            page.Controls.Add(CreateDivider(24, 426));
-            AddSectionHeading(page, "Mouse actions", 441,
+            page.Controls.Add(CreateDivider(24, 348));
+            AddSectionHeading(page, "Orientation", 363,
+                "Reset the current controller angle while gyro mouse is active.");
+            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 419, 24, 138, 456);
+
+            page.Controls.Add(CreateDivider(24, 463));
+            AddSectionHeading(page, "Mouse actions", 478,
                 "Optional controller inputs available while gyro mouse is active.");
             string[] labels = { "Left click", "Right click", "Middle click", "Clench gyro", "Scroll up", "Scroll down" };
             for (int index = 0; index < gyroMouseButtons.Count; index++) {
@@ -545,9 +553,9 @@ namespace BetterJoyForCemu {
                 int labelX = column == 0 ? 24 : 323;
                 int buttonX = column == 0 ? 114 : 423;
                 AddMappingRow(page, null, gyroMouseButtons[index], labels[index],
-                    493 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
+                    530 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
             }
-            page.AutoScrollMinSize = new Size(0, 592);
+            page.AutoScrollMinSize = new Size(0, 629);
             return page;
         }
 
