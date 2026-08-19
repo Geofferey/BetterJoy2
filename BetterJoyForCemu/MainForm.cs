@@ -910,12 +910,15 @@ namespace BetterJoyForCemu {
         // Called from the calibrating controller's own Poll thread (see Joycon.
         // DoThingsWithButtons) - PendingConfirmController already guarantees this only fires
         // while joycon is actually the one a prompt is showing for, but isRemoteMode/
-        // calibratingJoycon are double-checked since this is a live Joycon reference that only
+        // CurrentPromptTarget are double-checked since this is a live Joycon reference that only
         // exists at all in local mode (remote mode has none - see HandleCalibrationConfirm on
-        // HeadlessJoyconHost instead, which is what actually receives this call there).
+        // HeadlessJoyconHost instead, which is what actually receives this call there). Compares
+        // against CurrentPromptTarget, not calibratingJoycon directly - a joined pair's second
+        // Gyro step (and both stick steps) target the PARTNER Joycon, so a confirm press on that
+        // physical half must still count, not just one on whichever half started calibration.
         public void HandleCalibrationConfirm(Joycon joycon) {
             this.Invoke(new MethodInvoker(delegate {
-                if (!isRemoteMode && calibrationInProgress && joycon == calibratingJoycon)
+                if (!isRemoteMode && calibrationInProgress && joycon == CurrentPromptTarget())
                     OnCalibButtonClicked();
             }));
         }
@@ -1107,12 +1110,11 @@ namespace BetterJoyForCemu {
         // since a plain Joycon only ever has one physical stick to offer a step for, while a
         // Pro controller offers both.
         private enum CalibStepKind { Gyro, LeftStick, RightStick }
-        // Target/Secondary are only meaningful for a stick step (unused/null-Target for Gyro,
-        // which always targets calibratingJoycon's own IMU regardless of pairing). Target exists
-        // because a Pro controller's two sticks live on ONE Joycon object (distinguished by
-        // Secondary), but a joined pair's two sticks live on TWO SEPARATE Joycon objects - each
-        // needs its own calibration pass against that specific instance, or only whichever half
-        // happened to be clicked would ever actually get recalibrated.
+        // Target/Secondary: a Pro controller's two sticks live on ONE Joycon object
+        // (distinguished by Secondary), but a joined pair's two sticks - and, just as much, its
+        // two IMUs - live on TWO SEPARATE Joycon objects. Target is set for every step kind,
+        // including Gyro, so each needs its own calibration pass against that specific instance,
+        // or only whichever half happened to be clicked would ever actually get recalibrated.
         private struct CalibStep {
             public CalibStepKind Kind;
             public Joycon Target;
@@ -1150,23 +1152,32 @@ namespace BetterJoyForCemu {
 
             calibrationInProgress = true;
 
-            calibSteps = new List<CalibStep> { new CalibStep { Kind = CalibStepKind.Gyro } };
+            calibSteps = new List<CalibStep>();
 
             bool isPair = calibratingJoycon.other != null && calibratingJoycon.other != calibratingJoycon;
             if (calibratingJoycon.isPro) {
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });
             } else if (isPair) {
                 // A joined pair is two independent physical devices, not one device with two
-                // sticks the way a Pro controller is - each side's stick lives on its own Joycon
-                // object, so each gets its own step targeting that specific instance.
+                // sticks the way a Pro controller is - each side's stick AND gyro lives on its
+                // own Joycon object, so each gets its own gyro step targeting that specific
+                // instance too, not just its own stick step. Without this, only whichever half
+                // happened to be clicked would ever get its IMU calibrated - the partner's gyro/
+                // accelerometer calibration would silently stay whatever it was before (or the
+                // uncalibrated default), every single time this pair is calibrated.
                 Joycon leftJc = calibratingJoycon.isLeft ? calibratingJoycon : calibratingJoycon.other;
                 Joycon rightJc = calibratingJoycon.isLeft ? calibratingJoycon.other : calibratingJoycon;
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = leftJc });
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = rightJc });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = leftJc, Secondary = false });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = rightJc, Secondary = false });
             } else if (calibratingJoycon.isLeft) {
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
             } else {
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = false });
             }
             calibStepIndex = 0;
@@ -1179,21 +1190,28 @@ namespace BetterJoyForCemu {
             BeginCurrentStep();
         }
 
-        private static string StepDisplayName(CalibStepKind step) {
-            switch (step) {
-                case CalibStepKind.Gyro: return "Gyroscope";
+        // A pair's two Gyro steps need disambiguating (there are two of them now); a solo/Pro
+        // run's single Gyro step doesn't need or want a side prefix, so this only adds one when
+        // the step's own target is genuinely one half of a joined pair.
+        private static string StepDisplayName(CalibStep step) {
+            switch (step.Kind) {
+                case CalibStepKind.Gyro:
+                    bool isPairTarget = step.Target != null &&
+                        step.Target.other != null && step.Target.other != step.Target;
+                    if (!isPairTarget)
+                        return "Gyroscope";
+                    return (step.Target.isLeft ? "Left" : "Right") + " Gyroscope";
                 case CalibStepKind.LeftStick: return "Left Stick";
                 case CalibStepKind.RightStick: return "Right Stick";
             }
             return "";
         }
 
-        // The controller a prompt is currently showing for - calibratingJoycon for Gyro (always
-        // its own IMU), but the current step's own Target for a stick phase, since a joined
-        // pair's two steps target two different physical Joycon objects (see CalibStep).
+        // The controller a prompt is currently showing for - every step kind's own Target,
+        // including Gyro (a joined pair's two gyro steps target two different physical Joycon
+        // objects, same as its two stick steps - see CalibStep).
         private Joycon CurrentPromptTarget() {
-            CalibStep step = calibSteps[calibStepIndex];
-            return step.Kind == CalibStepKind.Gyro ? calibratingJoycon : step.Target;
+            return calibSteps[calibStepIndex].Target;
         }
 
         // Shows the step's first phase instruction with a Start prompt - nothing begins until
@@ -1201,7 +1219,7 @@ namespace BetterJoyForCemu {
         // actually read the instruction and get into position.
         private void BeginCurrentStep() {
             CalibStep step = calibSteps[calibStepIndex];
-            calibDialog.SetStep(calibStepIndex + 1, calibSteps.Count, StepDisplayName(step.Kind));
+            calibDialog.SetStep(calibStepIndex + 1, calibSteps.Count, StepDisplayName(step));
 
             if (step.Kind == CalibStepKind.Gyro) {
                 BeginPhase(CalibPhase.GyroCollect, "Place the controller on a flat, still surface.");
@@ -1214,7 +1232,7 @@ namespace BetterJoyForCemu {
                     : CalibrationState.StickTarget.Primary;
                 CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
 
-                BeginPhase(CalibPhase.StickCenter, String.Format("Leave the {0} centered - don't touch it.", StepDisplayName(step.Kind).ToLower()));
+                BeginPhase(CalibPhase.StickCenter, String.Format("Leave the {0} centered - don't touch it.", StepDisplayName(step).ToLower()));
             }
         }
 
@@ -1291,7 +1309,7 @@ namespace BetterJoyForCemu {
             switch (calibPhase) {
                 case CalibPhase.GyroCollect:
                     CalibrationState.ClearSamples();
-                    CalibrationState.CalibratingController = calibratingJoycon;
+                    CalibrationState.CalibratingController = calibSteps[calibStepIndex].Target;
                     CalibrationState.Calibrating = true;
                     calibDialog.SetInstruction("Hold still...");
                     this.count = 3;
@@ -1329,13 +1347,15 @@ namespace BetterJoyForCemu {
 
             countDown.Stop();
 
-            // calibratingJoycon captured once in StartCalibrate - a disconnect during the
-            // collection window (the controller could legitimately be dropped mid-calibration)
-            // must not leave calibrationInProgress/the icon/the dialog stuck, so this is a hard
-            // requirement, not just tidiness.
+            // The current step's own Target, not calibratingJoycon directly - a joined pair has
+            // two separate Gyro steps, one per physical half (see CalibStep). A disconnect during
+            // the collection window (the controller could legitimately be dropped mid-
+            // calibration) must not leave calibrationInProgress/the icon/the dialog stuck, so the
+            // try/catch below is a hard requirement, not just tidiness.
+            Joycon gyroTarget = calibSteps[calibStepIndex].Target;
             try {
-                CalibrationState.FinishCalibration(calibratingJoycon.serial_number, calibratingJoycon.isLeft);
-                calibratingJoycon.getActiveData();
+                CalibrationState.FinishCalibration(gyroTarget.serial_number, gyroTarget.isLeft);
+                gyroTarget.getActiveData();
                 this.console.Text += "Gyro calibration completed!!!" + "\r\n";
                 AdvanceStep();
             } catch {
@@ -1353,7 +1373,7 @@ namespace BetterJoyForCemu {
             CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
 
             calibPhase = CalibPhase.StickRange;
-            calibDialog.SetInstruction(String.Format("Now rotate the {0} in full circles out to its edges.", StepDisplayName(calibSteps[calibStepIndex].Kind).ToLower()));
+            calibDialog.SetInstruction(String.Format("Now rotate the {0} in full circles out to its edges.", StepDisplayName(calibSteps[calibStepIndex]).ToLower()));
             CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
             ShowCalibDonePrompt();
         }
@@ -1368,7 +1388,7 @@ namespace BetterJoyForCemu {
             try {
                 CalibrationState.FinishStickCalibration(step.Target.serial_number, step.Secondary);
                 step.Target.getActiveStickData();
-                this.console.Text += StepDisplayName(step.Kind) + " calibration completed!!!" + "\r\n";
+                this.console.Text += StepDisplayName(step) + " calibration completed!!!" + "\r\n";
                 AdvanceStep();
             } catch {
                 this.console.Text += "Stick calibration failed - was the controller disconnected?" + "\r\n";

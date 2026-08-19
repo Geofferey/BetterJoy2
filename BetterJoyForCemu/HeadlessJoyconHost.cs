@@ -587,12 +587,24 @@ namespace BetterJoyForCemu {
             SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationStarted, padId));
 
             // Target/Secondary mirror MainForm's CalibStep - a Pro controller's two sticks live
-            // on ONE Joycon object (distinguished by Secondary), but a joined pair's two sticks
-            // live on TWO SEPARATE Joycon objects, each needing its own calibration pass against
-            // that specific instance. Without this, only whichever half jc happens to be would
-            // ever actually get recalibrated - the partner's stick would silently stay untouched.
-            var stickSteps = new List<(Joycon Target, bool Secondary, string Label)>();
+            // on ONE Joycon object (distinguished by Secondary), but a joined pair's two sticks -
+            // and, just as much, its two IMUs - live on TWO SEPARATE Joycon objects, each needing
+            // its own calibration pass against that specific instance. Without this, only
+            // whichever half jc happens to be would ever actually get recalibrated - the
+            // partner's stick (and, before gyroSteps existed, its gyro/accelerometer too) would
+            // silently stay untouched every single time this pair is calibrated.
             bool isPair = jc.other != null && jc.other != jc;
+            var gyroSteps = new List<(Joycon Target, string Label)>();
+            if (isPair && !jc.isPro) {
+                Joycon leftGyroJc = jc.isLeft ? jc : jc.other;
+                Joycon rightGyroJc = jc.isLeft ? jc.other : jc;
+                gyroSteps.Add((leftGyroJc, "Left Gyroscope"));
+                gyroSteps.Add((rightGyroJc, "Right Gyroscope"));
+            } else {
+                gyroSteps.Add((jc, "Gyroscope"));
+            }
+
+            var stickSteps = new List<(Joycon Target, bool Secondary, string Label)>();
             if (jc.isPro) {
                 stickSteps.Add((jc, false, "Left Stick"));
                 stickSteps.Add((jc, true, "Right Stick"));
@@ -604,30 +616,36 @@ namespace BetterJoyForCemu {
             } else {
                 stickSteps.Add((jc, false, jc.isLeft ? "Left Stick" : "Right Stick"));
             }
-            int totalSteps = 1 + stickSteps.Count;
+            int totalSteps = gyroSteps.Count + stickSteps.Count;
 
             try {
-                SendCalibrationStep(padId, 1, totalSteps, "Gyroscope", "Place the controller on a flat, still surface.", CalibStepUiMode.Start, 0);
-                CalibrationState.PendingConfirmController = jc;
-                await WaitForCalibReady();
+                for (int g = 0; g < gyroSteps.Count; g++) {
+                    Joycon gyroTarget = gyroSteps[g].Target;
+                    string gyroLabel = gyroSteps[g].Label;
+                    int gyroStepNumber = g + 1;
 
-                CalibrationState.ClearSamples();
-                CalibrationState.CalibratingController = jc;
-                CalibrationState.Calibrating = true;
-                for (int t = 3; t >= 0; t--) {
-                    SendCalibrationStep(padId, 1, totalSteps, "Gyroscope", "Hold still...", CalibStepUiMode.Countdown, t);
-                    if (t > 0)
-                        await Task.Delay(1000);
+                    SendCalibrationStep(padId, gyroStepNumber, totalSteps, gyroLabel, "Place the controller on a flat, still surface.", CalibStepUiMode.Start, 0);
+                    CalibrationState.PendingConfirmController = gyroTarget;
+                    await WaitForCalibReady();
+
+                    CalibrationState.ClearSamples();
+                    CalibrationState.CalibratingController = gyroTarget;
+                    CalibrationState.Calibrating = true;
+                    for (int t = 3; t >= 0; t--) {
+                        SendCalibrationStep(padId, gyroStepNumber, totalSteps, gyroLabel, "Hold still...", CalibStepUiMode.Countdown, t);
+                        if (t > 0)
+                            await Task.Delay(1000);
+                    }
+
+                    CalibrationState.FinishCalibration(gyroTarget.serial_number, gyroTarget.isLeft);
+                    gyroTarget.getActiveData();
                 }
-
-                CalibrationState.FinishCalibration(jc.serial_number, jc.isLeft);
-                jc.getActiveData();
 
                 for (int i = 0; i < stickSteps.Count; i++) {
                     Joycon target = stickSteps[i].Target;
                     bool secondary = stickSteps[i].Secondary;
                     string stepName = stickSteps[i].Label;
-                    int stepNumber = i + 2; // step 1 is always Gyro
+                    int stepNumber = gyroSteps.Count + i + 1;
 
                     CalibrationState.ClearStickSamples();
                     CalibrationState.StickCalibratingController = target;
