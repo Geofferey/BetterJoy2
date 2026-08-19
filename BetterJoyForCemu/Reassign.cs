@@ -533,9 +533,10 @@ namespace BetterJoyForCemu {
             // CreateDynamicProfileControls) instead of the Remap combo-capture the other rows use.
             AddMappingRow(page, null, btn_gyro_analog_sliders, "Analog triggers", 269, 24, 232, 362);
 
-            // While held, freezes gyro-to-stick output at its current value instead of tracking
-            // live rotation - lets the wrist reposition back to a comfortable angle without that
-            // motion registering as a reverse turn (see Joycon.gyroStickRatcheted).
+            // While held, zeroes gyro-to-stick output instead of tracking live rotation - lets
+            // the wrist reposition back to a comfortable angle without that motion registering as
+            // a reverse turn, or a mid-turn hold continuing to turn on its own (see
+            // Joycon.gyroStickRatcheted).
             AddMappingRow(page, null, btn_ratchet_gyro, "Ratchet gyro", 306, 24, 232, 362);
 
             page.Controls.Add(CreateDivider(24, 348));

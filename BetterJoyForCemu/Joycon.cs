@@ -153,7 +153,6 @@ namespace BetterJoyForCemu {
             prevResetMouseComboHeld = false;
             gyroMouseClenched = false;
             gyroStickRatcheted = false;
-            frozenGyroStickDx = frozenGyroStickDy = 0.0f;
         }
 
         private void ReleaseMappedHold(string mapping) {
@@ -1307,17 +1306,11 @@ namespace BetterJoyForCemu {
 
             if (!UseFilteredIMU &&
                 (gyroLeftStickActiveThisReport || gyroRightStickActiveThisReport)) {
-                float dx, dy;
-                if (gyroStickRatcheted) {
-                    // Hold the last pre-ratchet output instead of tracking live rotation, so
-                    // repositioning the wrist while ratcheted cannot itself turn the stick.
-                    dx = frozenGyroStickDx;
-                    dy = frozenGyroStickDy;
-                } else {
+                float dx = 0.0f;
+                float dy = 0.0f;
+                if (!gyroStickRatcheted) {
                     dx = GyroStickSensitivityX * (gyr_g.Z * dt); // yaw
                     dy = -GyroStickSensitivityY * (gyr_g.Y * dt); // pitch
-                    frozenGyroStickDx = dx;
-                    frozenGyroStickDy = dy;
                 }
                 float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
                 float diagnosticPhysicalX = diagnosticStick[0];
@@ -1409,12 +1402,14 @@ namespace BetterJoyForCemu {
         private bool gyroRightStickActiveThisReport;
 
         // Ratchet gyro (see ratchet_gyro in App.config): updated once per report in
-        // DoThingsWithButtons, then consumed by both the raw and filtered gyro-stick paths. While
-        // held, gyro-to-stick output stays at whatever it was the instant ratcheting began
-        // (frozenGyroStickDx/Dy) instead of tracking live rotation, so untwisting the wrist back
-        // to a comfortable angle does not register as a reverse turn.
+        // DoThingsWithButtons, then consumed by both the raw and filtered gyro-stick paths. Gyro
+        // output is a per-report rate, not an accumulated position - a stick held at a constant
+        // nonzero deflection reads to the game as "keep turning at this rate," so freezing output
+        // at its last live (likely nonzero, mid-turn) value would keep turning through the whole
+        // hold instead of stopping. Ratcheting therefore zeroes output instead, matching a real
+        // ratchet wrench: disengaging it stops applying new rotation while you reposition your
+        // grip, it doesn't keep spinning the bolt on its own.
         private bool gyroStickRatcheted = false;
-        private float frozenGyroStickDx, frozenGyroStickDy;
         private float gyroStickReportDt;
 
         // Smooth mapped 2D motion, not the raw 3D sensor. The filtered state is blended back
@@ -2324,7 +2319,6 @@ namespace BetterJoyForCemu {
 
         private void ResetGyroStickMotionState(bool resetPlayerSpace = false) {
             pendingGyroStickDx = pendingGyroStickDy = 0.0f;
-            frozenGyroStickDx = frozenGyroStickDy = 0.0f;
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
             if (resetPlayerSpace)
@@ -2373,10 +2367,9 @@ namespace BetterJoyForCemu {
 
             bool anyStickActive = gyroLeftStickActiveThisReport ||
                                   gyroRightStickActiveThisReport;
-            // While ratcheted, stop integrating live rotation into the pending delta - the flush
-            // below substitutes the frozen pre-ratchet value instead - so releasing the ratchet
-            // bind resumes from the live angle rather than replaying whatever the wrist did while
-            // ratcheted.
+            // While ratcheted, stop integrating live rotation into the pending delta - output is
+            // zeroed below regardless - so releasing the ratchet bind resumes from the live angle
+            // rather than replaying whatever the wrist did while ratcheted.
             if (anyStickActive && !gyroStickRatcheted) {
                 float yawRate;
                 float pitchRate;
@@ -2398,18 +2391,8 @@ namespace BetterJoyForCemu {
             float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
             float physicalX = diagnosticStick[0];
             float physicalY = diagnosticStick[1];
-            float dx, dy;
-            if (gyroStickRatcheted) {
-                dx = anyStickActive ? frozenGyroStickDx : 0.0f;
-                dy = anyStickActive ? frozenGyroStickDy : 0.0f;
-            } else {
-                dx = anyStickActive ? pendingGyroStickDx : 0.0f;
-                dy = anyStickActive ? pendingGyroStickDy : 0.0f;
-                if (anyStickActive) {
-                    frozenGyroStickDx = dx;
-                    frozenGyroStickDy = dy;
-                }
-            }
+            float dx = (anyStickActive && !gyroStickRatcheted) ? pendingGyroStickDx : 0.0f;
+            float dy = (anyStickActive && !gyroStickRatcheted) ? pendingGyroStickDy : 0.0f;
 
             if (gyroLeftStickActiveThisReport)
                 ApplyGyroToStick(stick, dx, dy);
