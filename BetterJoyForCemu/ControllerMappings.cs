@@ -48,6 +48,7 @@ namespace BetterJoyForCemu {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "GyroHoldToggle", "DragToggle", "SwapAB", "SwapXY", "HomeLEDOn",
             "GyroAnalogSliders", "DefaultOrientation",
+            "GyroStickMode", "GyroStickAxisX", "GyroStickInvertX", "GyroStickInvertY",
         };
 
         // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected

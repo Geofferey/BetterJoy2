@@ -125,6 +125,13 @@ namespace BetterJoyForCemu {
             return ControllerMappings.IntOption(mappingProfileId, key, fallback);
         }
 
+        private string ProfileStringOption(string key, string fallback) {
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+            string value = ControllerMappings.OptionValue(mappingProfileId, key);
+            return String.IsNullOrEmpty(value) ? fallback : value;
+        }
+
         // Join/split changes which mapping profile this physical half belongs to. Release any
         // synthetic holds under the old profile before changing topology; otherwise pressing an
         // SL/SR mouse/key bind while joined and releasing it after a split would look up the new
@@ -1104,7 +1111,24 @@ namespace BetterJoyForCemu {
         float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
         float GyroStickSensitivityY = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityY"]);
         float GyroStickReduction = float.Parse(ConfigurationManager.AppSettings["GyroStickReduction"]);
+        float GyroStickTiltRangeX = float.Parse(ConfigurationManager.AppSettings["GyroStickTiltRangeX"]);
+        float GyroStickTiltRangeY = float.Parse(ConfigurationManager.AppSettings["GyroStickTiltRangeY"]);
+        float GyroStickHybridRateWeight = float.Parse(ConfigurationManager.AppSettings["GyroStickHybridRateWeight"]);
         bool GyroAnalogSliders => ProfileBoolOption("GyroAnalogSliders");
+        // "rate" (default, matches long-standing behavior) | "absolute" | "hybrid" - see
+        // GyroStickTiltRangeX/Y and GyroStickHybridRateWeight in App.config. Only takes effect
+        // when UseFilteredIMU is true; raw mode has no absolute-angle source for the stick.
+        string GyroStickMode => ProfileStringOption("GyroStickMode", "rate");
+        // "yaw" (default, twisting the controller) or "roll" (banking it side-to-side, for
+        // flight-sim-style aileron input). Y always follows pitch.
+        string GyroStickAxisX => ProfileStringOption("GyroStickAxisX", "yaw");
+        bool GyroStickInvertX => ProfileBoolOption("GyroStickInvertX");
+        bool GyroStickInvertY => ProfileBoolOption("GyroStickInvertY");
+        // Absolute/Hybrid gyro-stick output tracks cur_rotation, which is only meaningful
+        // relative to whichever pose RecenterGyro() last captured - gate the extra recenter
+        // triggers added below on this instead of duplicating the mode check at each call site.
+        bool GyroStickModeNeedsRecenter =>
+            UseFilteredIMU && (GyroStickMode == "absolute" || GyroStickMode == "hybrid");
         int GyroAnalogSensitivity = Int32.Parse(ConfigurationManager.AppSettings["GyroAnalogSensitivity"]);
         byte[] sliderVal = new byte[] { 0, 0 };
 
@@ -1224,13 +1248,14 @@ namespace BetterJoyForCemu {
             gyroMouseEnabledThisReport = UpdateGyroActivation(
                 "active_gyro_mouse", ref active_gyro,
                 ref prevActiveGyroMouseComboHeld, out gyroMouseJustEnabled);
-            bool ignoredActivationEdge;
+            bool gyroLeftStickJustEnabled;
             gyroLeftStickActiveThisReport = UpdateGyroActivation(
                 "active_gyro_left_stick", ref activeGyroLeftStick,
-                ref prevActiveGyroLeftStickComboHeld, out ignoredActivationEdge);
+                ref prevActiveGyroLeftStickComboHeld, out gyroLeftStickJustEnabled);
+            bool gyroRightStickJustEnabled;
             gyroRightStickActiveThisReport = UpdateGyroActivation(
                 "active_gyro_right_stick", ref activeGyroRightStick,
-                ref prevActiveGyroRightStickComboHeld, out ignoredActivationEdge);
+                ref prevActiveGyroRightStickComboHeld, out gyroRightStickJustEnabled);
             gyroStickReportDt = dt;
 
             RefreshGyroOnlyButtonReservations();
@@ -1255,26 +1280,44 @@ namespace BetterJoyForCemu {
             // controller currently owns active gyro-mouse output.
             string resetMouseVal = MappingValue("reset_mouse");
             bool manualRecenterRequested = false;
+            bool gyroStickManualRecenterRequested = false;
+            bool anyGyroStickActiveThisReport = gyroLeftStickActiveThisReport || gyroRightStickActiveThisReport;
             if (resetMouseVal != "0") {
                 bool resetMouseHeld = IsComboHeld(resetMouseVal);
-                manualRecenterRequested = gyroMouseActionsEnabled &&
-                    resetMouseHeld && !prevResetMouseComboHeld;
+                bool resetMouseRisingEdge = resetMouseHeld && !prevResetMouseComboHeld;
+                manualRecenterRequested = gyroMouseActionsEnabled && resetMouseRisingEdge;
+                // Same bind, independently gated: lets a controller using gyro-stick only (no
+                // gyro-mouse output at all) still have a way to declare its current pose neutral,
+                // without requiring a second bind just for Absolute/Hybrid stick modes.
+                gyroStickManualRecenterRequested = GyroStickModeNeedsRecenter &&
+                    anyGyroStickActiveThisReport && resetMouseRisingEdge;
                 prevResetMouseComboHeld = resetMouseHeld;
             } else {
                 prevResetMouseComboHeld = false;
             }
 
+            // Gyro-stick's own activation edge also recenters when Absolute/Hybrid mode is
+            // configured, mirroring gyro-mouse's auto-recenter-on-activation below - Absolute
+            // tilt output is only meaningful relative to a neutral pose, so establishing one
+            // automatically on activation (rather than requiring "Re-center gyro" to be bound)
+            // matches how gyro-mouse already behaves.
+            bool gyroStickActivationRecenter = GyroStickModeNeedsRecenter &&
+                (gyroLeftStickJustEnabled || gyroRightStickJustEnabled);
+
             // Enabling gyro-mouse establishes both a fresh desktop origin and a fresh orientation
             // frame. If the manual recenter bind rises on that same report, perform the operation
-            // only once.
-            if (gyroMouseJustEnabled || manualRecenterRequested) {
-                // Both flags already imply ownsGyroMouse (gyroMouseJustEnabled directly,
-                // manualRecenterRequested via gyroMouseActionsEnabled), so no separate guard here.
-                form.SimulateMoveToScreenCenter();
+            // only once. Gyro-stick-only recenters (Absolute/Hybrid) share the same orientation
+            // reset but must never move the mouse pointer, so SimulateMoveToScreenCenter stays
+            // gated on only the original two conditions.
+            if (gyroMouseJustEnabled || manualRecenterRequested ||
+                gyroStickActivationRecenter || gyroStickManualRecenterRequested) {
+                if (gyroMouseJustEnabled || manualRecenterRequested)
+                    form.SimulateMoveToScreenCenter();
 
                 RecenterGyro();
                 dt = 0.0f;
-                LogGyroMouseDiagnosticMarker(gyroMouseJustEnabled ? "GYRO ENABLED" : "RESET");
+                LogGyroMouseDiagnosticMarker(gyroMouseJustEnabled ? "GYRO ENABLED"
+                    : (manualRecenterRequested ? "RESET" : "STICK RECENTER"));
             }
 
             if (GyroAnalogSliders && (other != null || isPro)) {
@@ -1398,6 +1441,11 @@ namespace BetterJoyForCemu {
         // other. Fusion determines the gravity-relative axes; only gyro rate creates output.
         private readonly GyroMousePlayerSpace gyroStickPlayerSpace = new GyroMousePlayerSpace();
         private float pendingGyroStickDx, pendingGyroStickDy;
+        // Gravity-referenced roll (always zero at physical level, independent of RecenterGyro) -
+        // captured from gyroStickPlayerSpace.Map()'s previously-discarded rollRadians output, for
+        // use as the stick-X source when GyroStickAxisX == "roll" in Absolute/Hybrid mode. Rate
+        // mode's roll source is a separate raw rate (stickGyroRate.Z), not this angle.
+        private float gyroStickLatestWorldRoll;
         private bool gyroLeftStickActiveThisReport;
         private bool gyroRightStickActiveThisReport;
 
@@ -2336,12 +2384,61 @@ namespace BetterJoyForCemu {
                 : 1.0f;
         }
 
+        private const float DegreesToRadiansGyroStick = 0.0174532925f;
+
+        // Tilt range is a divisor (degrees of tilt -> full deflection). Same zero/invalid guard
+        // as EffectiveGyroStickReduction, with a safe fallback matching this axis's App.config
+        // default rather than an arbitrary constant.
+        private float EffectiveGyroStickTiltRangeX() {
+            return GyroStickTiltRangeX > 0.0f &&
+                   !float.IsNaN(GyroStickTiltRangeX) &&
+                   !float.IsInfinity(GyroStickTiltRangeX)
+                ? GyroStickTiltRangeX * DegreesToRadiansGyroStick
+                : 45.0f * DegreesToRadiansGyroStick;
+        }
+
+        private float EffectiveGyroStickTiltRangeY() {
+            return GyroStickTiltRangeY > 0.0f &&
+                   !float.IsNaN(GyroStickTiltRangeY) &&
+                   !float.IsInfinity(GyroStickTiltRangeY)
+                ? GyroStickTiltRangeY * DegreesToRadiansGyroStick
+                : 35.0f * DegreesToRadiansGyroStick;
+        }
+
         private void ApplyGyroToStick(float[] controlStick, float dx, float dy) {
             float stickReduction = EffectiveGyroStickReduction();
             controlStick[0] = Math.Max(-1.0f, Math.Min(1.0f,
                 controlStick[0] / stickReduction + dx));
             controlStick[1] = Math.Max(-1.0f, Math.Min(1.0f,
                 controlStick[1] / stickReduction + dy));
+        }
+
+        // Combines pendingGyroStickDx/Dy (the rate-mode accumulation done by the caller) with
+        // cur_rotation (absolute pitch/yaw relative to the pose RecenterGyro() last captured -
+        // see MadgwickAHRS.GetEulerAngles()'s own comment; NOT cur_rotation[3..5], which is only
+        // last report's [0..2], a frame-to-frame rate approximation, not a baseline) per the
+        // profile's GyroStickMode, then applies axis invert. Only called while gyro-stick output
+        // is actually active and unratcheted - callers zero dx/dy themselves otherwise.
+        private void ComputeFilteredGyroStickOutput(out float dx, out float dy) {
+            string mode = GyroStickMode;
+            if (mode == "absolute" || mode == "hybrid") {
+                float absoluteX = GyroStickAxisX == "roll" ? gyroStickLatestWorldRoll : cur_rotation[1];
+                float absoluteY = cur_rotation[0];
+                dx = Math.Max(-1.0f, Math.Min(1.0f, absoluteX / EffectiveGyroStickTiltRangeX()));
+                dy = Math.Max(-1.0f, Math.Min(1.0f, absoluteY / EffectiveGyroStickTiltRangeY()));
+                if (mode == "hybrid") {
+                    dx += pendingGyroStickDx * GyroStickHybridRateWeight;
+                    dy += pendingGyroStickDy * GyroStickHybridRateWeight;
+                }
+            } else {
+                dx = pendingGyroStickDx;
+                dy = pendingGyroStickDy;
+            }
+
+            if (GyroStickInvertX)
+                dx = -dx;
+            if (GyroStickInvertY)
+                dy = -dy;
         }
 
         // Filtered gyro-stick consumes the same canonical IMU frame and gravity-relative rate
@@ -2373,10 +2470,18 @@ namespace BetterJoyForCemu {
             if (anyStickActive && !gyroStickRatcheted) {
                 float yawRate;
                 float pitchRate;
-                float ignoredRoll;
+                float rollRadians;
                 gyroStickPlayerSpace.Map(stickGyroRate, subSamplePeriod, out yawRate,
-                                         out pitchRate, out ignoredRoll);
-                pendingGyroStickDx += GyroStickSensitivityX * yawRate *
+                                         out pitchRate, out rollRadians);
+                gyroStickLatestWorldRoll = rollRadians;
+
+                // Rate mode with roll selected as the X source uses the raw local roll rate
+                // directly - unlike yaw/pitch, roll needs no gravity reference to be a
+                // well-defined rotation rate, and Map() only ever reports rollRadians as an
+                // absolute angle (see ComputeFilteredGyroStickOutput), not a rate. Default axis
+                // is "yaw", so this is unchanged (xRate == yawRate) unless a profile opts in.
+                float xRate = GyroStickAxisX == "roll" ? stickGyroRate.Z : yawRate;
+                pendingGyroStickDx += GyroStickSensitivityX * xRate *
                                       subSamplePeriod * degreesToRadians;
                 // The canonical Player Space pitch axis is opposite BetterJoy's virtual-stick
                 // Y convention. Positive mapped pitch therefore adds to stick Y here; the
@@ -2391,8 +2496,11 @@ namespace BetterJoyForCemu {
             float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
             float physicalX = diagnosticStick[0];
             float physicalY = diagnosticStick[1];
-            float dx = (anyStickActive && !gyroStickRatcheted) ? pendingGyroStickDx : 0.0f;
-            float dy = (anyStickActive && !gyroStickRatcheted) ? pendingGyroStickDy : 0.0f;
+            float dx, dy;
+            if (anyStickActive && !gyroStickRatcheted)
+                ComputeFilteredGyroStickOutput(out dx, out dy);
+            else
+                dx = dy = 0.0f;
 
             if (gyroLeftStickActiveThisReport)
                 ApplyGyroToStick(stick, dx, dy);
