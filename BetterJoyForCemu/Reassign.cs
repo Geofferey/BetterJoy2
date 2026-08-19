@@ -562,8 +562,7 @@ namespace BetterJoyForCemu {
 
             page.Controls.Add(CreateDivider(24, 348));
             AddSectionHeading(page, "Stick mapping", 363,
-                "Shape how gyro tilt drives the stick outputs above, independently per stick. " +
-                "Only applies to filtered IMU mode (UseFilteredIMU=true in App.config).");
+                "Shape how gyro tilt drives the stick outputs above per stick. Requires IMU filtering.");
 
             gyroStickModeSelector = CreateStickModeRow(page, "Left stick response", 419,
                 new object[] { "Rate (current)", "Absolute tilt", "Hybrid" });
