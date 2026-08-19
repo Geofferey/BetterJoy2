@@ -47,7 +47,9 @@ namespace BetterJoyForCemu {
         private ComboBox inactivitySelector;
         private ComboBox gyroActivationModeSelector;
         private ComboBox gyroStickModeSelector;
+        private ComboBox gyroStickModeRightSelector;
         private ComboBox gyroStickAxisXSelector;
+        private ComboBox gyroStickAxisXRightSelector;
         private SplitButton btn_gyro_analog_sliders;
         private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
@@ -58,6 +60,8 @@ namespace BetterJoyForCemu {
         private CheckBox homeLedCheckBox;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
+        private CheckBox invertStickXRightCheckBox;
+        private CheckBox invertStickYRightCheckBox;
         private bool updatingProfileOptions;
         private readonly Dictionary<string, Panel> profilePages = new Dictionary<string, Panel>();
         private readonly Dictionary<string, Button> profileNavigationButtons = new Dictionary<string, Button>();
@@ -558,38 +562,35 @@ namespace BetterJoyForCemu {
 
             page.Controls.Add(CreateDivider(24, 348));
             AddSectionHeading(page, "Stick mapping", 363,
-                "Shape how gyro tilt drives the stick outputs above. Only applies to filtered IMU");
-            page.Controls.Add(CreateLabel("Response", 24, 425, ProfileText, false));
-            gyroStickModeSelector = CreateProfileComboBox(180, 419, 220);
-            gyroStickModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
-            gyroStickModeSelector.Items.AddRange(new object[] {
-                "Rate (current)", "Absolute tilt", "Hybrid",
-            });
-            gyroStickModeSelector.SelectedIndexChanged += ProfileOptionControlChanged;
-            page.Controls.Add(gyroStickModeSelector);
+                "Shape how gyro tilt drives the stick outputs above, independently per stick. " +
+                "Only applies to filtered IMU mode (UseFilteredIMU=true in App.config).");
 
-            page.Controls.Add(CreateLabel("Turn axis (stick X)", 24, 463, ProfileText, false));
-            gyroStickAxisXSelector = CreateProfileComboBox(180, 457, 220);
-            gyroStickAxisXSelector.DropDownStyle = ComboBoxStyle.DropDownList;
-            gyroStickAxisXSelector.Items.AddRange(new object[] {
-                "Yaw (twist)", "Roll (bank)",
-            });
-            gyroStickAxisXSelector.SelectedIndexChanged += ProfileOptionControlChanged;
-            page.Controls.Add(gyroStickAxisXSelector);
+            gyroStickModeSelector = CreateStickModeRow(page, "Left stick response", 419,
+                new object[] { "Rate (current)", "Absolute tilt", "Hybrid" });
+            gyroStickModeRightSelector = CreateStickModeRow(page, "Right stick response", 457,
+                new object[] { "Rate (current)", "Absolute tilt", "Hybrid" });
+            gyroStickAxisXSelector = CreateStickModeRow(page, "Left turn axis", 495,
+                new object[] { "Yaw (twist)", "Roll (bank)" });
+            gyroStickAxisXRightSelector = CreateStickModeRow(page, "Right turn axis", 533,
+                new object[] { "Yaw (twist)", "Roll (bank)" });
 
-            invertStickXCheckBox = CreateProfileCheckBox("Invert stick X", 24, 495, "GyroStickInvertX");
-            invertStickYCheckBox = CreateProfileCheckBox("Invert stick Y", 190, 495, "GyroStickInvertY");
+            invertStickXCheckBox = CreateProfileCheckBox("Invert left X", 24, 571, "GyroStickInvertXLeft");
+            invertStickYCheckBox = CreateProfileCheckBox("Invert left Y", 190, 571, "GyroStickInvertYLeft");
+            invertStickXRightCheckBox = CreateProfileCheckBox("Invert right X", 24, 595, "GyroStickInvertXRight");
+            invertStickYRightCheckBox = CreateProfileCheckBox("Invert right Y", 190, 595, "GyroStickInvertYRight");
             page.Controls.Add(invertStickXCheckBox);
             page.Controls.Add(invertStickYCheckBox);
+            page.Controls.Add(invertStickXRightCheckBox);
+            page.Controls.Add(invertStickYRightCheckBox);
 
-            page.Controls.Add(CreateDivider(24, 528));
-            AddSectionHeading(page, "Orientation", 543,
+            page.Controls.Add(CreateDivider(24, 636));
+            AddSectionHeading(page, "Orientation", 651,
                 "Reset the current controller angle while gyro mouse or an Absolute/Hybrid " +
                 "stick output is active.");
-            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 599, 24, 138, 456);
+            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 707, 24, 138, 456);
 
-            page.Controls.Add(CreateDivider(24, 643));
-            AddSectionHeading(page, "Mouse actions", 658,
+            page.Controls.Add(CreateDivider(24, 751));
+            AddSectionHeading(page, "Mouse actions", 766,
                 "Optional controller inputs available while gyro mouse is active.");
             string[] labels = { "Left click", "Right click", "Middle click", "Clench gyro", "Scroll up", "Scroll down" };
             for (int index = 0; index < gyroMouseButtons.Count; index++) {
@@ -598,10 +599,23 @@ namespace BetterJoyForCemu {
                 int labelX = column == 0 ? 24 : 323;
                 int buttonX = column == 0 ? 114 : 423;
                 AddMappingRow(page, null, gyroMouseButtons[index], labels[index],
-                    710 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
+                    818 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
             }
-            page.AutoScrollMinSize = new Size(0, 809);
+            page.AutoScrollMinSize = new Size(0, 917);
             return page;
+        }
+
+        // Matches gyroActivationModeSelector's established label+combo styling exactly (same
+        // column positions, width, and label-to-combo vertical offset) rather than inventing a
+        // new size/position for these - see BuildDeviceBehaviorPage's "Gyro binding behavior" row.
+        private ComboBox CreateStickModeRow(Panel page, string label, int top, object[] items) {
+            page.Controls.Add(CreateLabel(label, 24, top + 6, ProfileText, false));
+            ComboBox selector = CreateProfileComboBox(180, top, 180);
+            selector.DropDownStyle = ComboBoxStyle.DropDownList;
+            selector.Items.AddRange(items);
+            selector.SelectedIndexChanged += ProfileOptionControlChanged;
+            page.Controls.Add(selector);
+            return selector;
         }
 
         private Panel BuildDeviceBehaviorPage() {
@@ -811,14 +825,18 @@ namespace BetterJoyForCemu {
                 int minutes = InactivityMinutesFromText(inactivitySelector.Text);
                 ControllerMappings.SetOptionValue(
                     SelectedProfileId, "PowerOffInactivity", minutes.ToString());
-            } else if (sender == gyroStickModeSelector) {
-                string value = gyroStickModeSelector.SelectedIndex == 1
+            } else if (sender == gyroStickModeSelector || sender == gyroStickModeRightSelector) {
+                ComboBox selector = (ComboBox)sender;
+                string value = selector.SelectedIndex == 1
                     ? "absolute"
-                    : (gyroStickModeSelector.SelectedIndex == 2 ? "hybrid" : "rate");
-                ControllerMappings.SetOptionValue(SelectedProfileId, "GyroStickMode", value);
-            } else if (sender == gyroStickAxisXSelector) {
-                string value = gyroStickAxisXSelector.SelectedIndex == 1 ? "roll" : "yaw";
-                ControllerMappings.SetOptionValue(SelectedProfileId, "GyroStickAxisX", value);
+                    : (selector.SelectedIndex == 2 ? "hybrid" : "rate");
+                string key = sender == gyroStickModeSelector ? "GyroStickModeLeft" : "GyroStickModeRight";
+                ControllerMappings.SetOptionValue(SelectedProfileId, key, value);
+            } else if (sender == gyroStickAxisXSelector || sender == gyroStickAxisXRightSelector) {
+                ComboBox selector = (ComboBox)sender;
+                string value = selector.SelectedIndex == 1 ? "roll" : "yaw";
+                string key = sender == gyroStickAxisXSelector ? "GyroStickAxisXLeft" : "GyroStickAxisXRight";
+                ControllerMappings.SetOptionValue(SelectedProfileId, key, value);
             }
         }
 
@@ -828,8 +846,10 @@ namespace BetterJoyForCemu {
                 btn_gyro_analog_sliders, btn_default_orientation,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
-                gyroStickModeSelector, gyroStickAxisXSelector,
+                gyroStickModeSelector, gyroStickModeRightSelector,
+                gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
+                invertStickXRightCheckBox, invertStickYRightCheckBox,
             };
             updatingProfileOptions = true;
             try {
@@ -840,9 +860,13 @@ namespace BetterJoyForCemu {
 
                 if (!GyroStickModeControlsSupported) {
                     gyroStickModeSelector.Enabled = false;
+                    gyroStickModeRightSelector.Enabled = false;
                     gyroStickAxisXSelector.Enabled = false;
+                    gyroStickAxisXRightSelector.Enabled = false;
                     invertStickXCheckBox.Enabled = false;
                     invertStickYCheckBox.Enabled = false;
+                    invertStickXRightCheckBox.Enabled = false;
+                    invertStickYRightCheckBox.Enabled = false;
                 }
 
                 if (!hasProfile)
@@ -869,16 +893,20 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "DefaultOrientation") == ControllerMappings.OrientationVertical
                     ? "Vertical" : "Horizontal";
 
-                string gyroStickMode = ControllerMappings.OptionValue(SelectedProfileId, "GyroStickMode");
-                gyroStickModeSelector.SelectedIndex = gyroStickMode == "hybrid"
-                    ? 2
-                    : (gyroStickMode == "absolute" ? 1 : 0);
+                LoadGyroStickModeSelector(gyroStickModeSelector, "GyroStickModeLeft");
+                LoadGyroStickModeSelector(gyroStickModeRightSelector, "GyroStickModeRight");
                 gyroStickAxisXSelector.SelectedIndex =
-                    ControllerMappings.OptionValue(SelectedProfileId, "GyroStickAxisX") == "roll" ? 1 : 0;
+                    ControllerMappings.OptionValue(SelectedProfileId, "GyroStickAxisXLeft") == "roll" ? 1 : 0;
+                gyroStickAxisXRightSelector.SelectedIndex =
+                    ControllerMappings.OptionValue(SelectedProfileId, "GyroStickAxisXRight") == "roll" ? 1 : 0;
                 invertStickXCheckBox.Checked = ControllerMappings.BoolOption(
-                    SelectedProfileId, "GyroStickInvertX");
+                    SelectedProfileId, "GyroStickInvertXLeft");
                 invertStickYCheckBox.Checked = ControllerMappings.BoolOption(
-                    SelectedProfileId, "GyroStickInvertY");
+                    SelectedProfileId, "GyroStickInvertYLeft");
+                invertStickXRightCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "GyroStickInvertXRight");
+                invertStickYRightCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "GyroStickInvertYRight");
 
                 int inactivityMinutes = ControllerMappings.IntOption(
                     SelectedProfileId, "PowerOffInactivity", -1);
@@ -894,6 +922,11 @@ namespace BetterJoyForCemu {
             } finally {
                 updatingProfileOptions = false;
             }
+        }
+
+        private void LoadGyroStickModeSelector(ComboBox selector, string optionKey) {
+            string mode = ControllerMappings.OptionValue(SelectedProfileId, optionKey);
+            selector.SelectedIndex = mode == "hybrid" ? 2 : (mode == "absolute" ? 1 : 0);
         }
 
         private static int InactivityMinutesFromText(string text) {
