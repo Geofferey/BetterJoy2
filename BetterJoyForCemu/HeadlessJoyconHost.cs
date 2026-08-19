@@ -620,7 +620,7 @@ namespace BetterJoyForCemu {
                         await Task.Delay(1000);
                 }
 
-                CalibrationState.FinishCalibration(jc.serial_number);
+                CalibrationState.FinishCalibration(jc.serial_number, jc.isLeft);
                 jc.getActiveData();
 
                 for (int i = 0; i < stickSteps.Count; i++) {

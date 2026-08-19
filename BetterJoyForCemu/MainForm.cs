@@ -1334,7 +1334,7 @@ namespace BetterJoyForCemu {
             // must not leave calibrationInProgress/the icon/the dialog stuck, so this is a hard
             // requirement, not just tidiness.
             try {
-                CalibrationState.FinishCalibration(calibratingJoycon.serial_number);
+                CalibrationState.FinishCalibration(calibratingJoycon.serial_number, calibratingJoycon.isLeft);
                 calibratingJoycon.getActiveData();
                 this.console.Text += "Gyro calibration completed!!!" + "\r\n";
                 AdvanceStep();

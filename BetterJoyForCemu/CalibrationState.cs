@@ -258,7 +258,18 @@ namespace BetterJoyForCemu {
         // medians succeed - a failure partway through (e.g. an empty list) previously could
         // leave a half-computed entry in CaliData, since the target array was mutated in place
         // as each axis finished rather than published all at once at the end.
-        public static void FinishCalibration(string serialNumber) {
+        // isLeft matches Joycon.isLeft exactly (true for left Joy-Cons AND Pro controllers -
+        // Program.cs constructs Pro with isLeft=true - false only for real right Joy-Cons), not
+        // literal handedness. Real right Joy-Cons read gravity along raw Z inverted relative to
+        // left/Pro (confirmed empirically: a right unit's raw Z median calibrates flat to
+        // roughly -4010, ~-1g, where left/Pro read ~+4010, ~+1g) - the same physical mirroring
+        // (!isLeft ? -1 : 1) already corrects for on the Y/Z axes in Joycon.ExtractIMUValues, just
+        // missed here. Was previously a fixed -4010 regardless of side, which left every real
+        // right Joy-Con with a hugely wrong accZ neutral offset (around -8000 instead of near
+        // zero) after every calibration, feeding a bad "which way is down" reference into
+        // UpdateCanonicalGyroMouseImu/Player Space and showing up as reversed yaw, right-side
+        // only, in both gyro-mouse and gyro-stick.
+        public static void FinishCalibration(string serialNumber, bool isLeft) {
             List<int> xg, yg, zg, xa, ya, za;
             lock (samplesLock) {
                 Calibrating = false;
@@ -278,7 +289,7 @@ namespace BetterJoyForCemu {
             arr[2] = (float)QuickselectMedian(zg, rnd.Next);
             arr[3] = (float)QuickselectMedian(xa, rnd.Next);
             arr[4] = (float)QuickselectMedian(ya, rnd.Next);
-            arr[5] = (float)QuickselectMedian(za, rnd.Next) - 4010; // Joycon.cs acc_sen 16384
+            arr[5] = (float)QuickselectMedian(za, rnd.Next) - (isLeft ? 4010f : -4010f); // Joycon.cs acc_sen 16384
 
             int serIndex = FindSerialIndex(serialNumber);
             if (serIndex == -1)
