@@ -256,16 +256,31 @@ namespace BetterJoyForCemu {
                 "Disconnected profiles open the standard Game Controllers list.");
         }
 
+        // Every control below is laid out at these "design" coordinates/font sizes, then the
+        // whole tree is uniformly scaled down by ProfileUiScale in one pass at the end of
+        // BuildProfileInterface (see ScaleProfileUi). That's deliberate: hand-tightening
+        // individual gaps (tried once, reverted) shrinks the space between controls without
+        // shrinking the controls or text themselves, which just looks stubby/squat instead of
+        // actually smaller. A uniform scale keeps every proportion - text, controls, spacing -
+        // identical to the design layout, just smaller, matching what this dialog would look
+        // like rendered at a lower DPI.
+        private const float ProfileUiScale = 0.8f;
+
         private void BuildProfileInterface() {
             SuspendLayout();
             Controls.Clear();
 
+            // Reassign.Designer.cs leaves AutoScaleDimensions at its Font-mode design baseline
+            // (6F, 13F) - overriding just AutoScaleMode to Dpi here without correcting this too
+            // makes WinForms compute the auto-scale ratio against the wrong baseline (comparing
+            // the current screen DPI to a font-metrics number, not a DPI number), producing a
+            // badly wrong scale factor. 96F,96F is the un-scaled ("100%") DPI baseline.
+            AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = ProfileBackground;
             ForeColor = ProfileText;
             Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
             ClientSize = new Size(840, 680);
-            MinimumSize = new Size(856, 719);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
@@ -302,7 +317,44 @@ namespace BetterJoyForCemu {
             profilePageHost.Controls.Add(virtualControllerPage);
             ShowProfilePage("gyro");
 
+            ScaleProfileUi(this, ProfileUiScale);
+            ClientSize = new Size(
+                (int)Math.Round(ClientSize.Width * ProfileUiScale),
+                (int)Math.Round(ClientSize.Height * ProfileUiScale));
+            // Room for the title bar/borders Windows adds outside ClientSize - not part of the
+            // scaled content, so a fixed pad rather than another multiply by ProfileUiScale.
+            MinimumSize = new Size(ClientSize.Width + 16, ClientSize.Height + 39);
+
             ResumeLayout(true);
+        }
+
+        // Uniformly shrinks every descendant's position, size, and font by factor, in one pass,
+        // so the whole dialog scales together instead of just the gaps between controls (see
+        // ProfileUiScale). Docked/filled panels ignore Location and most of Size, but Height on
+        // a Dock.Top/Bottom panel and Width on a Dock.Left one set the docked thickness, so those
+        // still need scaling here rather than being left at design size.
+        private static void ScaleProfileUi(Control control, float factor) {
+            foreach (Control child in control.Controls) {
+                child.Location = new Point(
+                    (int)Math.Round(child.Location.X * factor), (int)Math.Round(child.Location.Y * factor));
+                child.Size = new Size(
+                    (int)Math.Round(child.Width * factor), (int)Math.Round(child.Height * factor));
+                // Only controls that render their own text get rescaled here. Reassigning Font
+                // on a plain Panel would flip it from "inherited from parent" to "explicitly set
+                // on this control," which then compounds the scale factor again for any
+                // descendant still relying on that inheritance - e.g. AddMappingRow's row labels
+                // never set their own Font, so walking through header/body/page panels first
+                // multiplied the factor into them three or four times over, landing them at a
+                // fraction of their intended size instead of ProfileUiScale.
+                if (child is Label || child is ButtonBase || child is ComboBox)
+                    child.Font = new Font(child.Font.FontFamily, child.Font.Size * factor, child.Font.Style);
+                if (child is Panel panel && panel.AutoScroll && panel.AutoScrollMinSize != Size.Empty) {
+                    panel.AutoScrollMinSize = new Size(
+                        (int)Math.Round(panel.AutoScrollMinSize.Width * factor),
+                        (int)Math.Round(panel.AutoScrollMinSize.Height * factor));
+                }
+                ScaleProfileUi(child, factor);
+            }
         }
 
         private Panel BuildProfileHeader() {
@@ -626,6 +678,7 @@ namespace BetterJoyForCemu {
             label.Size = new Size(Math.Max(80, buttonX - labelX - 12), 22);
             label.ForeColor = ProfileText;
             label.BackColor = Color.Transparent;
+            label.Font = new Font("Segoe UI", 9F);
             label.TextAlign = ContentAlignment.MiddleLeft;
             page.Controls.Add(label);
 
