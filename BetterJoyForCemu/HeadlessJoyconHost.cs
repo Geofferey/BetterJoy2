@@ -600,7 +600,13 @@ namespace BetterJoyForCemu {
             // silently stay untouched every single time this pair is calibrated.
             bool isPair = jc.other != null && jc.other != jc;
             var gyroSteps = new List<(Joycon Target, string Label)>();
-            if (isPair && !jc.isPro) {
+            // No gyro support yet (ExtractIMUValues/CalibrationState.AddSample are never reached
+            // for a DualSense - see TryAutoCalibrate's own isDualSense guard, and MainForm's local
+            // StartCalibrate has the same skip) - leaving gyroSteps empty here just runs the stick
+            // steps below with no gyro phase, same as the local path.
+            if (jc.isDualSense) {
+                // no gyro steps
+            } else if (isPair && !jc.isPro) {
                 Joycon leftGyroJc = jc.isLeft ? jc : jc.other;
                 Joycon rightGyroJc = jc.isLeft ? jc.other : jc;
                 gyroSteps.Add((leftGyroJc, "Left Gyroscope"));

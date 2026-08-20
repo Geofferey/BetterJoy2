@@ -1157,7 +1157,13 @@ namespace BetterJoyForCemu {
             calibSteps = new List<CalibStep>();
 
             bool isPair = calibratingJoycon.other != null && calibratingJoycon.other != calibratingJoycon;
-            if (calibratingJoycon.isPro) {
+            if (calibratingJoycon.isDualSense) {
+                // No gyro support yet (ExtractIMUValues/CalibrationState.AddSample are never
+                // reached for a DualSense - see TryAutoCalibrate's own isDualSense guard) - stick
+                // centering only for now.
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
+                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });
+            } else if (calibratingJoycon.isPro) {
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });

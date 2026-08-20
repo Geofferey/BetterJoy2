@@ -109,10 +109,29 @@ namespace BetterJoyForCemu {
         // (poll thread) - see PrepareForMappingProfileChange's comment on that race.
         private volatile string mappingProfileId;
 
+        private readonly Dictionary<string, long> lastMappingValueDumpTimestamp = new Dictionary<string, long>();
+
         private string MappingValue(string key) {
             if (mappingProfileId == null)
                 mappingProfileId = ControllerMappings.ProfileIdFor(this);
-            return ControllerMappings.Value(mappingProfileId, key);
+            string value = ControllerMappings.Value(mappingProfileId, key);
+
+            // TEMPORARY diagnostic: user reports a DualSense still acting on click/gyro-mouse
+            // binds after disabling them in the profile UI - log the actual resolved profile ID
+            // and value (per key, own throttle each) so this can be confirmed against
+            // controller_mappings.xml directly instead of guessed at.
+            if (isDualSense && (key == "left_click" || key == "right_click" || key == "active_gyro_mouse")) {
+                long nowTicks = Stopwatch.GetTimestamp();
+                long last;
+                if (!lastMappingValueDumpTimestamp.TryGetValue(key, out last) ||
+                    (nowTicks - last) / (double)Stopwatch.Frequency >= 1.0) {
+                    lastMappingValueDumpTimestamp[key] = nowTicks;
+                    LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                        "MappingValue: profileId={0} key={1} value={2}", mappingProfileId, key, value));
+                }
+            }
+
+            return value;
         }
 
         private bool ProfileBoolOption(string key) {
@@ -731,6 +750,28 @@ namespace BetterJoyForCemu {
                 // required for baseline button/stick/trigger reads; if the first real test shows
                 // all-zero/empty reports over Bluetooth, that's the first thing to investigate.
                 HIDapi.hid_set_nonblocking(handle, 1);
+
+                // DualSense has no SPI factory calibration to read (unlike Joy-Con's
+                // dump_calibration_data, entirely skipped here), so stick_cal/stick2_cal/deadzone
+                // would otherwise be left at their class defaults ({0,0,0,0,0,0}/0) - CenterSticks
+                // would divide by that zero the moment it's used. Seed an identity calibration
+                // matching the DualSense's real raw domain (bytes 0-255, center 128) so stick
+                // output is correct out of the box, then let any stored user recalibration
+                // (CalibrationState, via the same wizard Joy-Con uses) overlay on top exactly the
+                // way it already does for Joy-Con.
+                stick_cal[0] = 127; stick_cal[1] = 127;   // max above center (X, Y)
+                stick_cal[2] = 128; stick_cal[3] = 128;   // center (X, Y)
+                stick_cal[4] = 128; stick_cal[5] = 128;   // min below center (X, Y)
+                stick2_cal[0] = 127; stick2_cal[1] = 127;
+                stick2_cal[2] = 128; stick2_cal[3] = 128;
+                stick2_cal[4] = 128; stick2_cal[5] = 128;
+                // A few raw units of headroom over the idle jitter observed on real hardware
+                // (~127-133 out of 0-255 at rest) so an uncalibrated DualSense doesn't bleed tiny
+                // phantom stick movement before the user ever runs the wizard.
+                deadzone = 8;
+                deadzone2 = 8;
+                getActiveStickData();
+
                 form.AppendTextBox("DualSense attached (baseline mode).\r\n");
                 return 0;
             }
@@ -899,13 +940,13 @@ namespace BetterJoyForCemu {
                     // DS4Windows's DisconnectBT does (IOCTL_BTH_DISCONNECT_DEVICE), once USB has
                     // taken over for the same physical controller.
                     if (isDualSense && other.isDualSense && isUSB && !other.isUSB) {
+                        // Blue lightbar confirmation is handled unconditionally on the first
+                        // confirmed-USB read in ReceiveRaw (sentUsbActiveLightbar) - covers this
+                        // case too, not just fresh/no-prior-BT USB connects.
                         bool disconnected = BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
-                        if (disconnected) {
-                            form.AppendTextBox("Disconnected DualSense's Bluetooth link now that USB has taken over.\r\n");
-                            SendDualSenseLightbar(0, 0, 255); // blue - visible confirmation USB is now active
-                        } else {
-                            form.AppendTextBox("Could not disconnect DualSense's Bluetooth link - it may keep reappearing.\r\n");
-                        }
+                        form.AppendTextBox(disconnected
+                            ? "Disconnected DualSense's Bluetooth link now that USB has taken over.\r\n"
+                            : "Could not disconnect DualSense's Bluetooth link - it may keep reappearing.\r\n");
                     }
                 }
             }
@@ -969,6 +1010,7 @@ namespace BetterJoyForCemu {
 
         private const int DualSenseMaxReportLen = 78; // Bluetooth report length; USB (64) fits the same buffer
         private long lastDualSenseRawDumpTimestamp = 0;
+        private bool sentUsbActiveLightbar = false;
 
         private static readonly ConcurrentQueue<string> dualSenseRawDumpQueue = new ConcurrentQueue<string>();
         private static int dualSenseRawDumpWriterStarted;
@@ -1019,6 +1061,14 @@ namespace BetterJoyForCemu {
                 // only placeholder-serial heuristic isUSB otherwise depends on.
                 if (dsRet == 64 || dsRet == 78) {
                     isUSB = dsRet == 64;
+                    if (isUSB && !sentUsbActiveLightbar) {
+                        // Fires once per connection, on the first confirmed-USB read - covers
+                        // every USB-connect scenario (fresh plug-in, reconnect, with or without a
+                        // prior Bluetooth link), not just the "just force-disconnected a stale BT
+                        // link" case RetireDuplicateConnections handles separately.
+                        sentUsbActiveLightbar = true;
+                        SendDualSenseLightbar(0, 0, 255);
+                    }
                     // hid_read_timeout does NOT strip the leading report-ID byte for either
                     // transport - byte 0 is a constant 0x01 (USB) or 0x31 (BT) report ID. USB has
                     // no further padding, so real data starts at byte 1. BT has one more padding/
@@ -3594,14 +3644,28 @@ namespace BetterJoyForCemu {
             // (the counter); bytes 7/8 ramp with L2/R2 squeeze depth precisely when byte 5's
             // matching click bit is set. o is the genuine Bluetooth-vs-USB protocol byte (1/0).
             //
-            // Raw 0-255, center ~128 - a plain linear map is enough for baseline; DualSense has
-            // no SPI-style factory calibration data to read the way Joy-Con's CenterSticks does,
-            // and this milestone doesn't attempt to auto-detect true center/range. Y sign is
-            // unverified against real hardware - flip if it reads inverted during testing.
-            stick[0] = Math.Max(-1f, Math.Min(1f, (r[0 + o] - 128) / 127f));
-            stick[1] = Math.Max(-1f, Math.Min(1f, -(r[1 + o] - 128) / 127f));
-            stick2[0] = Math.Max(-1f, Math.Min(1f, (r[2 + o] - 128) / 127f));
-            stick2[1] = Math.Max(-1f, Math.Min(1f, -(r[3 + o] - 128) / 127f));
+            // Raw 0-255, center ~128, run through the same CenterSticks/CalibrationState pipeline
+            // Joy-Con uses (stick_cal/stick2_cal seeded with an identity default in Attach() since
+            // there's no SPI factory data to read) - a DualSense can now be recalibrated with the
+            // existing double-click wizard exactly like a Pro controller's sticks, just skipping
+            // the gyro step (see MainForm.StartCalibrate's isDualSense branch). AddStickSample is
+            // a no-op unless this controller is the one currently claimed by that wizard. Y is
+            // inverted after CenterSticks (not before, unlike the old fixed linear map) since
+            // CenterSticks' raw subtraction/division doesn't know about BetterJoy's own "up is
+            // positive" stick convention - only the sign needs flipping, not the calibration math.
+            UInt16[] stickRaw = { r[0 + o], r[1 + o] };
+            CalibrationState.AddStickSample(this, false, stickRaw[0], stickRaw[1]);
+            float[] stickResult = CenterSticks(stickRaw, stick_cal, deadzone,
+                float.Parse(ConfigurationManager.AppSettings["StickScalingFactor"]));
+            stick[0] = stickResult[0];
+            stick[1] = -stickResult[1];
+
+            UInt16[] stick2Raw = { r[2 + o], r[3 + o] };
+            CalibrationState.AddStickSample(this, true, stick2Raw[0], stick2Raw[1]);
+            float[] stick2Result = CenterSticks(stick2Raw, stick2_cal, deadzone2,
+                float.Parse(ConfigurationManager.AppSettings["StickScalingFactor2"]));
+            stick2[0] = stick2Result[0];
+            stick2[1] = -stick2Result[1];
 
             // USB and BT reports use the identical field order once o has skipped each
             // transport's own report-ID(+padding) prefix (see the o assignment in ReceiveRaw) -
