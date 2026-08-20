@@ -3512,11 +3512,13 @@ namespace BetterJoyForCemu {
             stick2[0] = Math.Max(-1f, Math.Min(1f, (r[2 + o] - 128) / 127f));
             stick2[1] = Math.Max(-1f, Math.Min(1f, -(r[3 + o] - 128) / 127f));
 
-            // Confirmed reversed on real hardware from the byte-7/byte-8 pairing originally
-            // inferred from the capture - triggerVal[0] is the LEFT (L2) output slot, so it needs
-            // the byte that's actually R2's, and vice versa.
-            triggerVal[0] = r[8 + o];
-            triggerVal[1] = r[7 + o];
+            // The byte7/byte8-to-L2/R2 attribution below was inferred (not empirically isolated
+            // to a specific physical trigger) from the raw capture, and a subsequent swap based
+            // on a joy.cpl reading turned out to be based on a misread - real in-game testing
+            // (fire/ADS bindings, unambiguous) confirmed the original assignment was the correct
+            // one, so this reverts that swap rather than adding a third guess.
+            triggerVal[0] = r[7 + o];
+            triggerVal[1] = r[8 + o];
 
             lock (buttons) {
                 lock (down_) {
@@ -3542,10 +3544,8 @@ namespace BetterJoyForCemu {
                 b[(int)Button.STICK] = (btn2 & 0x40) != 0;       // L3
                 b[(int)Button.PLUS] = (btn2 & 0x20) != 0;        // Options
                 b[(int)Button.MINUS] = (btn2 & 0x10) != 0;       // Share
-                // Swapped the same way as triggerVal above - the bit paired with byte 8 (now
-                // triggerVal[0]/left) is the left trigger's click, and vice versa.
-                b[(int)Button.SHOULDER2_2] = (btn2 & 0x04) != 0; // R2 (digital click)
-                b[(int)Button.SHOULDER_2] = (btn2 & 0x08) != 0;  // L2 (digital click)
+                b[(int)Button.SHOULDER2_2] = (btn2 & 0x08) != 0; // R2 (digital click)
+                b[(int)Button.SHOULDER_2] = (btn2 & 0x04) != 0;  // L2 (digital click)
                 b[(int)Button.SHOULDER2_1] = (btn2 & 0x02) != 0; // R1
                 b[(int)Button.SHOULDER_1] = (btn2 & 0x01) != 0;  // L1
 
