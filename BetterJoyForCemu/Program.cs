@@ -404,7 +404,12 @@ namespace BetterJoyForCemu {
             if (ret < 7)
                 return false;
 
-            Array.Copy(buf, 1, mac, 0, 6);
+            // Confirmed on real hardware: the feature report's 6 MAC bytes (buf[1..6]) are the
+            // exact byte-reversal of what the same physical controller reports as its
+            // serial_number when paired over Bluetooth - reverse here so both transports resolve
+            // to the same PadMacAddress/profile identity.
+            for (int i = 0; i < 6; i++)
+                mac[i] = buf[6 - i];
             return true;
         }
 
@@ -678,10 +683,13 @@ namespace BetterJoyForCemu {
                     if (isDualSense) {
                         // TEMPORARY diagnostic: comparing the resolved MAC across USB vs
                         // Bluetooth connections of the same physical DualSense, since real
-                        // hardware testing found they don't currently match.
-                        form.AppendTextBox(string.Format(CultureInfo.InvariantCulture,
-                            "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")\r\n",
-                            BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
+                        // hardware testing found they don't currently match. Logged to file
+                        // (not just the GUI panel) so it's directly readable afterward.
+                        string macMsg = string.Format(CultureInfo.InvariantCulture,
+                            "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")",
+                            BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number);
+                        form.AppendTextBox(macMsg + "\r\n");
+                        j.Last().LogDualSenseRawDump(macMsg);
                     }
                     j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
                 }

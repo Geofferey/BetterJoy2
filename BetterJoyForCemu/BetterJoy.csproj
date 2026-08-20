@@ -159,6 +159,7 @@
     <Compile Include="InputState.cs" />
     <Compile Include="GyroMouseOrientation.cs" />
     <Compile Include="GyroMousePlayerSpace.cs" />
+    <Compile Include="BluetoothRadio.cs" />
     <Compile Include="GameControllerControlPanel.cs" />
     <Compile Include="Joycon.cs" />
     <Compile Include="MadgwickAHRS.cs" />

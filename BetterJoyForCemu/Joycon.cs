@@ -890,6 +890,23 @@ namespace BetterJoyForCemu {
                     other.state = state_.DROPPED;
                     form.AppendTextBox("Retiring duplicate connection for the same controller.\r\n");
                     LogDualSenseRawDump("  ^ RETIRED as duplicate");
+
+                    // Marking the stale entry DROPPED only stops BetterJoy from using it - the
+                    // underlying OS-level Bluetooth HID connection is still alive and gets
+                    // rediscovered (and re-retired) on every subsequent scan, churning a new
+                    // virtual controller each time. For a DualSense specifically there's a real
+                    // fix: tell the Bluetooth radio itself to drop that connection, the same way
+                    // DS4Windows's DisconnectBT does (IOCTL_BTH_DISCONNECT_DEVICE), once USB has
+                    // taken over for the same physical controller.
+                    if (isDualSense && other.isDualSense && isUSB && !other.isUSB) {
+                        bool disconnected = BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+                        if (disconnected) {
+                            form.AppendTextBox("Disconnected DualSense's Bluetooth link now that USB has taken over.\r\n");
+                            SendDualSenseLightbar(0, 0, 255); // blue - visible confirmation USB is now active
+                        } else {
+                            form.AppendTextBox("Could not disconnect DualSense's Bluetooth link - it may keep reappearing.\r\n");
+                        }
+                    }
                 }
             }
         }
@@ -960,7 +977,7 @@ namespace BetterJoyForCemu {
         // background-writer pattern as autocal_debug.log, so this can't block a controller's own
         // Poll thread on file I/O. Unconditional (no config gate) since this is throwaway code
         // meant to be removed once the real report layout is confirmed, not a shipped feature.
-        private void LogDualSenseRawDump(string message) {
+        internal void LogDualSenseRawDump(string message) {
             if (Interlocked.CompareExchange(ref dualSenseRawDumpWriterStarted, 1, 0) == 0) {
                 new Thread(DualSenseRawDumpWriterLoop) {
                     IsBackground = true,
@@ -3875,6 +3892,41 @@ namespace BetterJoyForCemu {
                 buf[2] = 0x55; // required feature-flags byte - see the BT branch's comment
                 buf[3] = rightMotor;
                 buf[4] = leftMotor;
+            }
+            HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
+        }
+
+        // Sets the DualSense's lightbar to a solid color via an output report - used to give a
+        // visible confirmation that the controller is now active on USB right after its stale
+        // Bluetooth link gets disconnected (see RetireDuplicateConnections). Layout matches
+        // SendDualSenseRumble; rumble flags are left at "not in use" since this report isn't
+        // rumble-related. RGB offsets (45/46/47 USB, 46/47/48 BT) and the fact that no separate
+        // "enable lightbar" bit is needed beyond the same 0x55 feature-flags byte the rumble
+        // report already sets - both confirmed via DS4Windows's DualSenseDevice.cs.
+        private void SendDualSenseLightbar(byte red, byte green, byte blue) {
+            bool bt = !isUSB;
+            int len = bt ? DualSenseMaxReportLen : 64;
+            byte[] buf = new byte[len];
+            if (bt) {
+                buf[0] = 0x31;
+                buf[1] = 0x02;
+                buf[2] = 0x0C; // rumble motors not in use for this report
+                buf[3] = 0x55;
+                buf[46] = red;
+                buf[47] = green;
+                buf[48] = blue;
+                uint crc = Crc32(0xA2, buf, len - 4);
+                buf[len - 4] = (byte)crc;
+                buf[len - 3] = (byte)(crc >> 8);
+                buf[len - 2] = (byte)(crc >> 16);
+                buf[len - 1] = (byte)(crc >> 24);
+            } else {
+                buf[0] = 0x02;
+                buf[1] = 0x0C; // rumble motors not in use for this report
+                buf[2] = 0x55;
+                buf[45] = red;
+                buf[46] = green;
+                buf[47] = blue;
             }
             HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
         }
