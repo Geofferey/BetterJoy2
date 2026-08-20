@@ -564,24 +564,24 @@ namespace BetterJoyForCemu {
         public int constate = 2;
         public int connection = 3;
 
-        private PhysicalAddress _padMacAddress = new PhysicalAddress(new byte[] { 01, 02, 03, 04, 05, 06 });
-        // A real MAC/identity is often resolved slightly AFTER this object starts existing (e.g.
-        // Program.cs's DualSense feature-report/serial resolution runs after construction, and
-        // Attach()'s own BT-address parse below runs after that) - if anything reads a mapping
-        // profile bind before that lands, mappingProfileId's lazy cache would otherwise lock onto
-        // the placeholder MAC's fallback identity (a "path-" encoded one) for the rest of this
-        // connection, silently diverging from the profile the user actually edits in the UI.
-        // Invalidating the cache here, the same way the "other" (join/split) setter already does,
-        // makes it self-correcting regardless of exactly when the real MAC lands.
-        public PhysicalAddress PadMacAddress {
-            get { return _padMacAddress; }
-            set {
-                if (!value.Equals(_padMacAddress))
-                    mappingProfileId = null;
-                _padMacAddress = value;
-            }
-        }
+        public PhysicalAddress PadMacAddress = new PhysicalAddress(new byte[] { 01, 02, 03, 04, 05, 06 });
         public ulong Timestamp = 0;
+
+        // Program.cs's DualSense feature-report/serial MAC resolution runs slightly after this
+        // object starts existing - if anything reads a mapping profile bind before that lands,
+        // mappingProfileId's lazy cache would otherwise lock onto the placeholder MAC's fallback
+        // identity (a "path-" encoded one) for the rest of the connection. Call this right after
+        // PadMacAddress is actually assigned the real value, exactly like the "other" (join/split)
+        // setter already does for that case. Deliberately NOT hooked into PadMacAddress's own
+        // assignment generically (e.g. via a property) - Joy-Con's own Attach() also reassigns
+        // PadMacAddress internally (its BT-address parse), and invalidating on every such write
+        // broke Joy-Con auto-join (two Joycons showing joined in the UI but each keeping its own
+        // virtual controller instead of the loser's being torn down) in a way never fully root-
+        // caused; narrowing this to an explicit call at the one call site that actually needs it
+        // avoids touching that path at all.
+        public void InvalidateMappingProfileCache() {
+            mappingProfileId = null;
+        }
         public int packetCounter = 0;
 
         public OutputControllerXbox360 out_xbox;

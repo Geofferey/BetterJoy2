@@ -692,6 +692,7 @@ namespace BetterJoyForCemu {
                         j.Last().LogDualSenseRawDump(macMsg);
                     }
                     j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
+                    j[j.Count - 1].InvalidateMappingProfileCache();
                 }
 
                 ptr = enumerate.next;
