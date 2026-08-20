@@ -33,6 +33,10 @@ namespace BetterJoyForCemu {
         private const ushort product_snes = 0x2017;
         private const ushort product_n64 = 0x2019;
 
+        private const ushort vendor_sony = 0x054C;
+        private const ushort product_dualsense = 0x0CE6;
+        private const ushort product_dualsense_edge = 0x0DF2;
+
         // ViGEmBus's default emulated identities (CreateXbox360Controller()/CreateDS4Controller()
         // are called with no VID/PID override anywhere in this codebase - see
         // Controller.OutputControllerXbox360/OutputControllerDualShock4 - so BetterJoy's own
@@ -468,10 +472,22 @@ namespace BetterJoyForCemu {
                     continue;
                 }
 
-                bool validController = (enumerate.product_id == product_l || enumerate.product_id == product_r ||
-                                        enumerate.product_id == product_pro || enumerate.product_id == product_snes || enumerate.product_id == product_n64) && enumerate.vendor_id == vendor_id;
+                // Checked as a known, exactly-identified device ahead of the generic 3rd-party
+                // allowlist/auto-add below, not folded into it - that path can only guess a
+                // Nintendo shape (SController.type: Pro/Left Joy-Con/Right Joy-Con), which a
+                // DualSense isn't. A DualSense connected before this VID/PID check existed may
+                // already have a stale guessed entry in Program.thirdPartyCons (type=1/"Pro") -
+                // the loop below must not be allowed to overwrite thirdParty with that guess for
+                // a device we now identify definitively, or prod_id resolves to product_pro
+                // instead of the real DualSense PID and every isDualSense branch silently never
+                // engages.
+                bool isDualSenseDevice = enumerate.vendor_id == vendor_sony &&
+                    (enumerate.product_id == product_dualsense || enumerate.product_id == product_dualsense_edge);
+                bool validController = isDualSenseDevice ||
+                    ((enumerate.product_id == product_l || enumerate.product_id == product_r ||
+                      enumerate.product_id == product_pro || enumerate.product_id == product_snes || enumerate.product_id == product_n64) && enumerate.vendor_id == vendor_id);
                 // check list of custom controllers specified
-                foreach (SController v in Program.thirdPartyCons) {
+                foreach (SController v in isDualSenseDevice ? Enumerable.Empty<SController>() : Program.thirdPartyCons) {
                     if (enumerate.vendor_id == v.vendor_id && enumerate.product_id == v.product_id && enumerate.serial_number == v.serial_number) {
                         validController = true;
                         thirdParty = v;
@@ -531,6 +547,10 @@ namespace BetterJoyForCemu {
                         case product_n64:
                             isLeft = true;
                             form.AppendTextBox("N64 controller connected.\r\n"); break;
+                        case product_dualsense:
+                        case product_dualsense_edge:
+                            isLeft = true;
+                            form.AppendTextBox("DualSense controller connected.\r\n"); break;
                         default:
                             form.AppendTextBox("Non Joy-Con Nintendo input device skipped.\r\n"); break;
                     }
@@ -567,6 +587,7 @@ namespace BetterJoyForCemu {
                     bool isPro = prod_id == product_pro;
                     bool isSnes = prod_id == product_snes;
                     bool is64 = prod_id == product_n64;
+                    bool isDualSense = prod_id == product_dualsense || prod_id == product_dualsense_edge;
                     // j.Count (list size, not a stable slot) duplicates an existing PadId the
                     // moment a middle controller disconnects and a new one connects afterward -
                     // e.g. with PadIds 0/1/2 connected, 1 drops, the next new controller would
@@ -574,7 +595,7 @@ namespace BetterJoyForCemu {
                     // Remote-mode commands (TestRumble/JoinOrSplit/StartCalibration) resolve a
                     // controller by PadId alone, so a collision could route a command to the
                     // wrong physical controller, not just misrender a GUI slot.
-                    j.Add(new Joycon(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), isPro, isSnes, is64,thirdParty != null));
+                    j.Add(new Joycon(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), isPro, isSnes, is64, thirdParty != null, isDualSense));
 
                     foundNew = true;
                     j.Last().form = form;

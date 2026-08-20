@@ -349,6 +349,11 @@ namespace BetterJoyForCemu {
                 return "snes:" + ownId;
             if (joycon.is64)
                 return "n64:" + ownId;
+            // Checked ahead of isPro - isDualSense implies isPro (see the Joycon constructor's
+            // "single-unit controller" convention), so without this it would silently land in
+            // the "pro:" branch and display as a Pro Controller in the UI.
+            if (joycon.isDualSense)
+                return "dualsense:" + ownId;
             if (joycon.isPro)
                 return "pro:" + ownId;
             if (joycon.other == joycon)
@@ -381,6 +386,8 @@ namespace BetterJoyForCemu {
                 type = "SNES Controller";
             else if (joycon.is64)
                 type = "N64 Controller";
+            else if (joycon.isDualSense)
+                type = "DualSense Controller";
             else if (joycon.isPro)
                 type = "Pro Controller";
             else if (joycon.other == joycon)

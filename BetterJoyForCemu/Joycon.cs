@@ -21,6 +21,8 @@ namespace BetterJoyForCemu {
         public bool isPro = false;
         public bool isSnes = false;
         public bool is64 = false;
+        public bool isDualSense = false;
+        public byte[] triggerVal = { 0, 0 }; // raw 0-255 analog L2/R2, DualSense only
         bool isUSB = false;
         private Joycon _other = null;
 
@@ -569,6 +571,8 @@ namespace BetterJoyForCemu {
 
         public byte LED { get; private set; } = 0x0;
         public void SetLEDByPlayerNum(int id) {
+            if (isDualSense)
+                return;
             if (id > 3) {
                 // No support for any higher than 3 (4 Joycons/Controllers supported in the application normally)
                 id = 3;
@@ -606,7 +610,7 @@ namespace BetterJoyForCemu {
         static float AHRS_beta = float.Parse(ConfigurationManager.AppSettings["AHRS_beta"]);
         private MadgwickAHRS AHRS = new MadgwickAHRS(0.005f, AHRS_beta); // for getting filtered Euler angles of rotation; 5ms sampling rate
 
-        public Joycon(IntPtr handle_, bool imu, bool localize, float alpha, bool left, string path, string serialNum, int id = 0, bool isPro = false, bool isSnes = false, bool is64 = false, bool thirdParty = false) {
+        public Joycon(IntPtr handle_, bool imu, bool localize, float alpha, bool left, string path, string serialNum, int id = 0, bool isPro = false, bool isSnes = false, bool is64 = false, bool thirdParty = false, bool isDualSense = false) {
             serial_number = serialNum;
             activeData = new float[6];
             handle = handle_;
@@ -620,10 +624,16 @@ namespace BetterJoyForCemu {
 
             PadId = id;
             LED = (byte)(0x1 << PadId);
-            this.isPro = isPro || isSnes || is64;
+            this.isPro = isPro || isSnes || is64 || isDualSense;
             this.isSnes = isSnes;
             this.is64 = is64;
-            isUSB = serialNum == "000000000001";
+            this.isDualSense = isDualSense;
+            // The placeholder-serial heuristic below is Joy-Con-only (USB Joy-Cons report this
+            // fixed dummy serial until Attach's handshake learns the real MAC) - a DualSense's
+            // real serial never matches it, but leaving isUSB unconditional here would still
+            // read false correctly by coincidence. Made explicit anyway since real transport is
+            // decided per-read from actual report length in ReceiveRaw, not this field.
+            isUSB = !isDualSense && serialNum == "000000000001";
             this.thirdParty = thirdParty;
 
             this.path = path;
@@ -712,6 +722,19 @@ namespace BetterJoyForCemu {
         public int Attach() {
             state = state_.ATTACHED;
 
+            if (isDualSense) {
+                // None of what follows applies - the USB handshake bytes, SPI calibration dump,
+                // home-light/player-LED writes, and IMU/rumble/input-mode subcommands are all
+                // either meaningless to a DualSense or (the Subcommand-based ones) block for up
+                // to ~1s each waiting for a reply that will never come, since a DualSense doesn't
+                // speak this protocol at all. No enable-full-report-mode handshake is known to be
+                // required for baseline button/stick/trigger reads; if the first real test shows
+                // all-zero/empty reports over Bluetooth, that's the first thing to investigate.
+                HIDapi.hid_set_nonblocking(handle, 1);
+                form.AppendTextBox("DualSense attached (baseline mode).\r\n");
+                return 0;
+            }
+
             // Make sure command is received
             HIDapi.hid_set_nonblocking(handle, 0);
 
@@ -786,7 +809,7 @@ namespace BetterJoyForCemu {
         }
 
         public void BlinkHomeLight() { // do not call after initial setup
-            if (thirdParty)
+            if (thirdParty || isDualSense)
                 return;
             byte[] a = Enumerable.Repeat((byte)0xFF, 25).ToArray();
             a[0] = 0x18;
@@ -795,7 +818,7 @@ namespace BetterJoyForCemu {
         }
 
         public void SetHomeLight(bool on) {
-            if (thirdParty)
+            if (thirdParty || isDualSense)
                 return;
             byte[] a = Enumerable.Repeat((byte)0xFF, 25).ToArray();
             if (on) {
@@ -914,8 +937,92 @@ namespace BetterJoyForCemu {
         private int duplicateTimestampCount = 0;
         private const int MaxConsecutiveDuplicateTimestamps = 3;
 
+        private const int DualSenseMaxReportLen = 78; // Bluetooth report length; USB (64) fits the same buffer
+        private long lastDualSenseRawDumpTimestamp = 0;
+
+        private static readonly ConcurrentQueue<string> dualSenseRawDumpQueue = new ConcurrentQueue<string>();
+        private static int dualSenseRawDumpWriterStarted;
+
+        // TEMPORARY diagnostic writer (see the call site's comment) - same async queue +
+        // background-writer pattern as autocal_debug.log, so this can't block a controller's own
+        // Poll thread on file I/O. Unconditional (no config gate) since this is throwaway code
+        // meant to be removed once the real report layout is confirmed, not a shipped feature.
+        private void LogDualSenseRawDump(string message) {
+            if (Interlocked.CompareExchange(ref dualSenseRawDumpWriterStarted, 1, 0) == 0) {
+                new Thread(DualSenseRawDumpWriterLoop) {
+                    IsBackground = true,
+                    Name = "DualSenseRawDumpWriter"
+                }.Start();
+            }
+            dualSenseRawDumpQueue.Enqueue(string.Format(CultureInfo.InvariantCulture,
+                "{0:HH:mm:ss.fff} [{1}] {2}\r\n", DateTime.Now, serial_number, message));
+        }
+
+        private static void DualSenseRawDumpWriterLoop() {
+            string logPath = Path.Combine(AppPaths.DataDir, "dualsense_raw_debug.log");
+            while (true) {
+                Thread.Sleep(250);
+                if (dualSenseRawDumpQueue.IsEmpty)
+                    continue;
+
+                var batch = new StringBuilder();
+                while (dualSenseRawDumpQueue.TryDequeue(out string line))
+                    batch.Append(line);
+
+                try {
+                    File.AppendAllText(logPath, batch.ToString());
+                } catch {
+                    // Diagnostic only: never let an unavailable log path affect controller I/O.
+                }
+            }
+        }
+
         private int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
+
+            if (isDualSense) {
+                byte[] dsBuf = new byte[DualSenseMaxReportLen];
+                int dsRet = HIDapi.hid_read_timeout(handle, dsBuf, new UIntPtr((uint)DualSenseMaxReportLen), 5);
+
+                // Actual report length distinguishes USB (64 bytes) from Bluetooth (78 bytes) per
+                // read - no separate transport query needed, and more reliable than the Joy-Con-
+                // only placeholder-serial heuristic isUSB otherwise depends on.
+                if (dsRet == 64 || dsRet == 78) {
+                    isUSB = dsRet == 64;
+                    int reportOffset = dsRet == 78 ? 1 : 0;
+
+                    // TEMPORARY diagnostic: the offsets guessed from a secondhand reference are
+                    // demonstrably wrong (confirmed on real hardware - trigger/button bytes don't
+                    // line up), so dump real bytes to a file instead of guessing a third time -
+                    // the on-screen console has not been a reliable way to actually see this.
+                    // Throttled to ~4/sec so it's readable while still catching real changes as
+                    // controls are pressed one at a time. Remove once ParseDualSenseReport's
+                    // offsets are confirmed correct against real data.
+                    long nowTicks = Stopwatch.GetTimestamp();
+                    if ((nowTicks - lastDualSenseRawDumpTimestamp) / (double)Stopwatch.Frequency >= 0.25) {
+                        lastDualSenseRawDumpTimestamp = nowTicks;
+                        var hex = new StringBuilder();
+                        for (int i = 0; i < dsRet; i++)
+                            hex.Append(dsBuf[i].ToString("X2")).Append(' ');
+                        LogDualSenseRawDump("DS raw[" + dsRet + "]: " + hex.ToString());
+                    }
+
+                    ParseDualSenseReport(dsBuf, reportOffset);
+                    DoThingsWithButtons();
+                    if (out_xbox != null) {
+                        try { out_xbox.UpdateInput(MapToXbox360Input(this)); } catch (Exception) { }
+                    }
+                    return dsRet;
+                }
+
+                // An unexpected length isn't a real read error (don't count it toward the
+                // DROPPED threshold below), but it's also not a report we know how to parse -
+                // treat it the same as a timeout rather than risk parsing garbage.
+                if (dsRet > 0)
+                    return 0;
+                return dsRet; // 0 = timeout, <0 = read error - Poll()'s state machine already handles both
+            }
+
             byte[] raw_buf = new byte[report_len];
             bool captureImuDiagnostics = GyroMouseDebugLogging || GyroStickDebugLogging;
             long hidCallStart = captureImuDiagnostics ? Stopwatch.GetTimestamp() : 0;
@@ -3345,26 +3452,115 @@ namespace BetterJoyForCemu {
                     buttons[(int)Button.MINUS] = other.buttons[(int)Button.MINUS];
                 }
 
-                long timestamp = Stopwatch.GetTimestamp();
-
-                lock (buttons_up) {
-                    lock (buttons_down) {
-                        bool changed = false;
-                        for (int i = 0; i < buttons.Length; ++i) {
-                            buttons_up[i] = (down_[i] & !buttons[i]);
-                            buttons_down[i] = (!down_[i] & buttons[i]);
-                            if (down_[i] != buttons[i])
-                                buttons_down_timestamp[i] = (buttons[i] ? timestamp : -1);
-                            if (buttons_up[i] || buttons_down[i])
-                                changed = true;
-                        }
-
-                        inactivity = (changed) ? timestamp : inactivity;
-                    }
-                }
+                CommitButtonState();
             }
 
             return 0;
+        }
+
+        // Shared by ProcessButtonsAndStick (Joy-Con/Pro) and ParseDualSenseReport - diffs the
+        // freshly-populated buttons[] against down_[] (the pre-update snapshot the caller must
+        // already have taken under lock(down_), matching ProcessButtonsAndStick's own pattern)
+        // into buttons_up/buttons_down/buttons_down_timestamp, and updates inactivity. Report
+        // parsing itself is not shareable (the two devices' byte layouts are unrelated), just
+        // this bookkeeping tail.
+        private void CommitButtonState() {
+            long timestamp = Stopwatch.GetTimestamp();
+
+            lock (buttons_up) {
+                lock (buttons_down) {
+                    bool changed = false;
+                    for (int i = 0; i < buttons.Length; ++i) {
+                        buttons_up[i] = (down_[i] & !buttons[i]);
+                        buttons_down[i] = (!down_[i] & buttons[i]);
+                        if (down_[i] != buttons[i])
+                            buttons_down_timestamp[i] = (buttons[i] ? timestamp : -1);
+                        if (buttons_up[i] || buttons_down[i])
+                            changed = true;
+                    }
+
+                    inactivity = (changed) ? timestamp : inactivity;
+                }
+            }
+        }
+
+        // DualSense baseline report parsing - buttons/sticks/triggers only (no gyro/touchpad/
+        // adaptive-trigger reads yet). Offsets and layout from the standard DualSense USB/BT HID
+        // report; o is 1 on Bluetooth (a leading byte USB doesn't have), 0 on USB. Populates the
+        // exact same buttons[]/stick[]/stick2[]/triggerVal[] fields Joy-Con parsing does, so every
+        // downstream consumer (MapToXbox360Input, profiles, UI) needs no DualSense-specific code
+        // beyond the analog-trigger branch in MapToXbox360Input.
+        private void ParseDualSenseReport(byte[] r, int o) {
+            // Offsets below are from a direct hardware capture (raw hex dump, dualsense_raw_debug.log),
+            // not a secondhand reference - both references checked (DS4Windows, a community wire-
+            // format doc) agreed with each other on field order but disagreed with real hardware,
+            // not just by a constant byte shift: the actual order is sticks, buttons1, buttons2,
+            // a free-running sequence counter, THEN L2/R2 analog - references had triggers before
+            // the counter and buttons after. Confirmed from real data: byte 4 reads a constant
+            // 0x08 at rest (dpad nibble 8 = neutral, matching the real PS dpad convention, face-
+            // button nibble 0 = nothing pressed); byte 5 toggles exactly 0x04/0x08 in sync with
+            // L2/R2's digital end-of-travel click; byte 6 free-runs 0x00-0x3C regardless of input
+            // (the counter); bytes 7/8 ramp with L2/R2 squeeze depth precisely when byte 5's
+            // matching click bit is set. o is the genuine Bluetooth-vs-USB protocol byte (1/0).
+            //
+            // Raw 0-255, center ~128 - a plain linear map is enough for baseline; DualSense has
+            // no SPI-style factory calibration data to read the way Joy-Con's CenterSticks does,
+            // and this milestone doesn't attempt to auto-detect true center/range. Y sign is
+            // unverified against real hardware - flip if it reads inverted during testing.
+            stick[0] = Math.Max(-1f, Math.Min(1f, (r[0 + o] - 128) / 127f));
+            stick[1] = Math.Max(-1f, Math.Min(1f, -(r[1 + o] - 128) / 127f));
+            stick2[0] = Math.Max(-1f, Math.Min(1f, (r[2 + o] - 128) / 127f));
+            stick2[1] = Math.Max(-1f, Math.Min(1f, -(r[3 + o] - 128) / 127f));
+
+            // Confirmed reversed on real hardware from the byte-7/byte-8 pairing originally
+            // inferred from the capture - triggerVal[0] is the LEFT (L2) output slot, so it needs
+            // the byte that's actually R2's, and vice versa.
+            triggerVal[0] = r[8 + o];
+            triggerVal[1] = r[7 + o];
+
+            lock (buttons) {
+                lock (down_) {
+                    for (int i = 0; i < buttons.Length; ++i)
+                        down_[i] = buttons[i];
+                }
+                bool[] b = new bool[20];
+
+                byte btn1 = r[4 + o];
+                b[(int)Button.X] = (btn1 & 0x80) != 0; // Triangle
+                b[(int)Button.A] = (btn1 & 0x40) != 0; // Circle
+                b[(int)Button.B] = (btn1 & 0x20) != 0; // Cross
+                b[(int)Button.Y] = (btn1 & 0x10) != 0; // Square
+
+                int dpad = btn1 & 0x0F;
+                b[(int)Button.DPAD_UP] = dpad == 0 || dpad == 1 || dpad == 7;
+                b[(int)Button.DPAD_RIGHT] = dpad == 1 || dpad == 2 || dpad == 3;
+                b[(int)Button.DPAD_DOWN] = dpad == 3 || dpad == 4 || dpad == 5;
+                b[(int)Button.DPAD_LEFT] = dpad == 5 || dpad == 6 || dpad == 7;
+
+                byte btn2 = r[5 + o];
+                b[(int)Button.STICK2] = (btn2 & 0x80) != 0;      // R3
+                b[(int)Button.STICK] = (btn2 & 0x40) != 0;       // L3
+                b[(int)Button.PLUS] = (btn2 & 0x20) != 0;        // Options
+                b[(int)Button.MINUS] = (btn2 & 0x10) != 0;       // Share
+                // Swapped the same way as triggerVal above - the bit paired with byte 8 (now
+                // triggerVal[0]/left) is the left trigger's click, and vice versa.
+                b[(int)Button.SHOULDER2_2] = (btn2 & 0x04) != 0; // R2 (digital click)
+                b[(int)Button.SHOULDER_2] = (btn2 & 0x08) != 0;  // L2 (digital click)
+                b[(int)Button.SHOULDER2_1] = (btn2 & 0x02) != 0; // R1
+                b[(int)Button.SHOULDER_1] = (btn2 & 0x01) != 0;  // L1
+
+                // byte 6 is the sequence counter (skipped). PS/touchpad/mute byte position is
+                // NOT yet confirmed from real data (never went non-zero in the capture used to
+                // derive the above) - left at the next byte as the best available inference;
+                // flag/re-verify if the PS button doesn't register.
+                byte btn3 = r[9 + o];
+                b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
+                // Touchpad click/mute/paddles intentionally unmapped this milestone (out of
+                // scope); SL/SR have no DualSense equivalent, left false.
+
+                buttons = b;
+                CommitButtonState();
+            }
         }
 
         // Get Gyro/Accel data
@@ -3800,6 +3996,7 @@ namespace BetterJoyForCemu {
             var isLeft = input.isLeft;
             var isSnes = input.isSnes;
             var is64 = input.is64;
+            var isDualSense = input.isDualSense;
             var other = input.other;
             var GyroAnalogSliders = input.GyroAnalogSliders;
 
@@ -3911,7 +4108,13 @@ namespace BetterJoyForCemu {
 
             if (!is64)
             {
-                if (other != null || isPro) {
+                if (isDualSense) {
+                    // A DualSense's L2/R2 are genuinely analog, unlike Joy-Con/Pro (which have no
+                    // trigger sensor at all and only ever derive a digital 0-or-max value from a
+                    // button bit below) - pass the real raw value straight through.
+                    output.trigger_left = input.triggerVal[0];
+                    output.trigger_right = input.triggerVal[1];
+                } else if (other != null || isPro) {
                     byte lval = GyroAnalogSliders ? sliderVal[0] : Byte.MaxValue;
                     byte rval = GyroAnalogSliders ? sliderVal[1] : Byte.MaxValue;
                     output.trigger_left = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2)] ? lval : 0);
