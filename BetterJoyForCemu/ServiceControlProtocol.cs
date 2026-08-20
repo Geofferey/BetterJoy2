@@ -38,6 +38,7 @@ namespace BetterJoyForCemu {
         Pro = 2,
         Snes = 3,
         N64 = 4,
+        DualSense = 5, // appended, not inserted - existing numeric values are part of the wire protocol
     }
 
     // One connected controller's display-relevant state - deliberately not a live Joycon

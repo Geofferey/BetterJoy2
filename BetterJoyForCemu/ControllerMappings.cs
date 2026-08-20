@@ -577,6 +577,9 @@ namespace BetterJoyForCemu {
                 case "pro":
                     name = "Pro Controller (" + IdentitySuffix(identity) + ")";
                     break;
+                case "dualsense":
+                    name = "DualSense Controller (" + IdentitySuffix(identity) + ")";
+                    break;
                 case "snes":
                     name = "SNES Controller (" + IdentitySuffix(identity) + ")";
                     break;

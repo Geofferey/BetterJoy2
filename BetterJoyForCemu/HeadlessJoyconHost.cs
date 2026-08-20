@@ -812,9 +812,10 @@ namespace BetterJoyForCemu {
                 return records;
 
             foreach (Joycon jc in Program.mgr.j) {
-                ControllerKind kind = jc.isPro ? ControllerKind.Pro
+                ControllerKind kind = jc.isDualSense ? ControllerKind.DualSense
                     : jc.isSnes ? ControllerKind.Snes
                     : jc.is64 ? ControllerKind.N64
+                    : jc.isPro ? ControllerKind.Pro
                     : jc.isLeft ? ControllerKind.Left
                     : ControllerKind.Right;
 

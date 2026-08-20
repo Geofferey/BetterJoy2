@@ -497,7 +497,7 @@ namespace BetterJoyForCemu {
                     handled.Add((byte)record.OtherPadId);
                 } else {
                     button.BackgroundImage = IconFor(record);
-                    SetConnectionTooltip(button, record.Kind == ControllerKind.Pro);
+                    SetConnectionTooltip(button, record.Kind == ControllerKind.Pro || record.Kind == ControllerKind.DualSense);
                 }
 
                 button.Tag = (int)record.PadId;
@@ -519,6 +519,7 @@ namespace BetterJoyForCemu {
         private Bitmap IconFor(ControllerRecord record) {
             switch (record.Kind) {
                 case ControllerKind.Pro: return Properties.Resources.pro;
+                case ControllerKind.DualSense: return Properties.Resources.dualsense;
                 case ControllerKind.Snes: return Properties.Resources.snes;
                 case ControllerKind.N64: return Properties.Resources.ultra;
                 case ControllerKind.Left:
@@ -818,9 +819,10 @@ namespace BetterJoyForCemu {
         // the background scan thread, so it marshals onto the UI thread itself.
         public void AssignSlot(Joycon joycon) {
             Bitmap icon;
-            if (joycon.isPro) icon = Properties.Resources.pro;
+            if (joycon.isDualSense) icon = Properties.Resources.dualsense;
             else if (joycon.isSnes) icon = Properties.Resources.snes;
             else if (joycon.is64) icon = Properties.Resources.ultra;
+            else if (joycon.isPro) icon = Properties.Resources.pro;
             else icon = joycon.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
 
             SafeBeginInvoke(() => {
@@ -892,7 +894,7 @@ namespace BetterJoyForCemu {
         // not USB-powered); this just shows it. Not Invoke-wrapped, matching that prior
         // behavior - NotifyIcon operations aren't Control-handle-affine the way Buttons are.
         public void NotifyLowBattery(Joycon joycon) {
-            string label = joycon.isPro ? "Pro Controller" : (joycon.isSnes ? "SNES Controller" : (joycon.is64 ? "N64 Controller" : (joycon.isLeft ? "Joycon Left" : "Joycon Right")));
+            string label = joycon.isDualSense ? "DualSense Controller" : (joycon.isSnes ? "SNES Controller" : (joycon.is64 ? "N64 Controller" : (joycon.isPro ? "Pro Controller" : (joycon.isLeft ? "Joycon Left" : "Joycon Right"))));
             notifyIcon.Visible = true;
             notifyIcon.BalloonTipText = String.Format("Controller {0} ({1}) - low battery notification!", joycon.PadId, label);
             notifyIcon.ShowBalloonTip(0);
