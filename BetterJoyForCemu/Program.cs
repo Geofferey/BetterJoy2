@@ -299,6 +299,13 @@ namespace BetterJoyForCemu {
                     if (!handledProfiles.Add(profileId))
                         continue;
 
+                    // Covers identities that only exist after joining (a "pair:" profile) or
+                    // self-pairing into vertical - the raw per-controller attach hook only ever
+                    // sees the solo identity a controller had the instant it connected. No-op,
+                    // no-disk-write once the profile already exists (see EnsureProfileSaved), so
+                    // this is safe on every call here, not just the ones that follow a connect.
+                    ControllerMappings.EnsureProfileSaved(profileId);
+
                     bool paired = jc.other != null && jc.other != jc;
                     Joycon active = jc;
                     Joycon passive = null;
@@ -616,6 +623,7 @@ namespace BetterJoyForCemu {
                     CreateOutputControllers(jc);
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     jc.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
+                    ControllerMappings.EnsureProfileSaved(profileId);
 
                     jc.Begin();
                     if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {

@@ -38,6 +38,7 @@ namespace BetterJoyForCemu {
         private readonly List<ControllerProfileInfo> remoteProfiles = new List<ControllerProfileInfo>();
         private readonly string preferredProfileId;
         private ComboBox controllerSelector;
+        private Button btn_delete_profile;
         private Button gameControllersButton;
         private Label profileStatusDot;
         private Label profileStatusLabel;
@@ -408,10 +409,21 @@ namespace BetterJoyForCemu {
                 ForeColor = ProfileText,
                 Font = new Font(Font.FontFamily, 9.25F),
                 Location = new Point(140, 19),
-                Size = new Size(535, 25),
+                Size = new Size(450, 25),
             };
             controllerSelector.SelectedIndexChanged += ControllerSelector_SelectedIndexChanged;
             header.Controls.Add(controllerSelector);
+
+            btn_delete_profile = new Button { Text = "Delete" };
+            StyleStandardButton(btn_delete_profile, false);
+            btn_delete_profile.Location = new Point(600, 17);
+            btn_delete_profile.Size = new Size(72, 30);
+            btn_delete_profile.Enabled = false;
+            tip_reassign.SetToolTip(btn_delete_profile,
+                "Permanently delete this saved profile and its calibration data.\r\n" +
+                "Only available for a disconnected profile.");
+            btn_delete_profile.Click += DeleteProfileButton_Click;
+            header.Controls.Add(btn_delete_profile);
 
             profileStatusDot = CreateLabel("●", 692, 23, ProfileConnected, true);
             profileStatusLabel = CreateLabel("Connected", 709, 25, ProfileConnected, false);
@@ -1210,6 +1222,9 @@ namespace BetterJoyForCemu {
         }
 
         private void UpdateProfilePresentation(ControllerProfileInfo selected) {
+            if (btn_delete_profile != null)
+                btn_delete_profile.Enabled = selected != null && !selected.IsConnected;
+
             if (selected == null) {
                 SetProfileStatus("No profile", ProfileMuted);
                 if (virtualControllerNameLabel != null)
@@ -1270,6 +1285,34 @@ namespace BetterJoyForCemu {
             if (useAs == ControllerMappings.UseAsDualShock4)
                 return "DualShock 4 virtual controller";
             return "Virtual controller output disabled";
+        }
+
+        // Permanently forgets a saved profile: its binds/options (ControllerMappings) and the
+        // physical calibration data (CalibrationState) for every serial embedded in its profile
+        // ID - deliberately both together, even though a sibling profile for the same physical
+        // unit (e.g. a solo profile and a paired profile for the same Joy-Con) may still exist
+        // and lose its calibration too. Only enabled for a disconnected profile (see
+        // UpdateProfilePresentation) - deleting a live one makes no sense and this double-checks
+        // rather than trusting the button's Enabled state alone.
+        private void DeleteProfileButton_Click(object sender, EventArgs e) {
+            ControllerProfileInfo selected = SelectedProfile;
+            if (selected == null || selected.IsConnected)
+                return;
+
+            DialogResult confirm = MessageBox.Show(this,
+                "Permanently delete \"" + selected.DisplayName + "\"?\r\n\r\n" +
+                "This removes its saved button mappings and gyro/stick calibration. " +
+                "This cannot be undone.",
+                "Delete Controller Profile", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (confirm != DialogResult.Yes)
+                return;
+
+            foreach (string serial in ControllerMappings.SerialsForProfileId(selected.ProfileId))
+                CalibrationState.DeleteCalibrationData(serial);
+            ControllerMappings.DeleteProfile(selected.ProfileId);
+
+            RefreshControllerChoices();
         }
 
         private void GameControllersButton_Click(object sender, EventArgs e) {

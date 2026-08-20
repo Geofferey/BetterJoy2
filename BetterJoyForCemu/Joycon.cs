@@ -1490,11 +1490,43 @@ namespace BetterJoyForCemu {
         // gyro-mouse bias learning above (session-only, mouse-specific), this is a much
         // higher-stakes, deliberately much stricter check - see TryAutoCalibrate.
         bool AutoCalibrationEnabled = Boolean.Parse(ConfigurationManager.AppSettings["AutoCalibrationEnabled"]);
+        // Fixed, not scaled by anything - see AutoCalTrendFraction below for why this no longer
+        // needs to vary with how far off the reading looks.
         float AutoCalStillDurationSeconds = float.Parse(ConfigurationManager.AppSettings["AutoCalStillDurationSeconds"]);
-        float AutoCalAccelTolerance = float.Parse(ConfigurationManager.AppSettings["AutoCalAccelTolerance"]);
-        float AutoCalGyroRateLimit = float.Parse(ConfigurationManager.AppSettings["AutoCalGyroRateLimit"]);
-        float AutoCalGyroRangeLimit = float.Parse(ConfigurationManager.AppSettings["AutoCalGyroRangeLimit"]);
+        // No absolute or relative-to-magnitude tolerance here on purpose - a prior version tried
+        // exactly that (an absolute deg/s or g floor, later widened by a percentage of the
+        // reading's own size) and it was never going to work: the whole reason a controller needs
+        // auto-calibration is that its bias is unknown in advance, so no physical-unit number
+        // (fixed or scaled) can be picked that's simultaneously loose enough to admit a badly
+        // miscalibrated controller's real noise floor and tight enough to reject real motion.
+        // Real per-axis sensor noise measured on an actual uncalibrated Joy-Con at rest
+        // (gyro_mouse_debug.log) was already comparable to or bigger than every threshold tried.
+        //
+        // Sidestep needing a physical-unit number at all: split the window in half by time and
+        // compare the first-half average to the second-half average, judged against the window's
+        // OWN observed spread (max-min), not an external constant. A sensor bias - however large -
+        // sits on a fixed value; both halves land in the same place regardless of what that place
+        // is. Real motion (or a human trying to hold something steady) doesn't - the second half
+        // measurably drifts from the first, no matter how small or large the underlying numbers
+        // are. This fraction is the one remaining tunable, and it's dimensionless: "the two
+        // halves must agree to within this fraction of the window's own noise," not tied to
+        // deg/s, g, or any other physical unit, so the same value should hold regardless of how
+        // badly any given controller is miscalibrated.
+        float AutoCalTrendFraction = float.Parse(ConfigurationManager.AppSettings["AutoCalTrendFraction"]);
         int AutoCalArmDelaySeconds = Int32.Parse(ConfigurationManager.AppSettings["AutoCalArmDelaySeconds"]);
+        // The on-screen debug console (DebugType=IMU) requires the app/controller to be watched
+        // live and is easy to miss entirely - a real log file is what actually worked for
+        // diagnosing the gyro range-limit tuning earlier, so auto-cal gets the same treatment as
+        // GyroStickDebugLogging: every state transition also lands in autocal_debug.log under
+        // AppPaths.DataDir, independent of whether anyone's looking at the console when it happens.
+        bool AutoCalDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["AutoCalDebugLogging"]);
+        // Buttons don't drift the way sensors do, so "nothing pressed in this long" is treated
+        // as an OVERRIDE, not just a corroborating signal (see TryAutoCalibrate) - once
+        // satisfied, it lets calibration through even if the accel/gyro readings themselves look
+        // like they're drifting, since that drift is exactly what a bad/absent calibration
+        // produces. Deliberately long (minutes, not seconds): this is the "nothing has been
+        // touched for a very long time, just trust it" fallback, not the primary/fast path.
+        float AutoCalButtonInactivitySeconds = float.Parse(ConfigurationManager.AppSettings["AutoCalButtonInactivitySeconds"]);
         // True once a successful auto-calibration has published for this physical connection -
         // never attempted again until the next reconnect (a fresh Joycon instance), so a
         // well-calibrated controller doesn't keep re-writing its calibration every time it sits
@@ -1504,8 +1536,31 @@ namespace BetterJoyForCemu {
         private bool autoCalWindowOpen = false;
         private long autoCalWindowStartTimestamp;
         private readonly long autoCalConnectTimestamp = Stopwatch.GetTimestamp();
-        private float autoCalAccelMagMin, autoCalAccelMagMax;
-        private float autoCalGyroRateMin, autoCalGyroRateMax;
+        // Per-axis throughout, not magnitude - a constant magnitude with a slowly changing
+        // direction (e.g. a smooth hand-driven arc) would pass a magnitude-only check but is real
+        // motion. Min/max give the window's own noise spread (the yardstick the trend comparison
+        // below is judged against); the two half-window sum/count pairs give the first-half vs
+        // second-half means the trend itself is measured from. See AutoCalTrendFraction.
+        private Vector3 autoCalGyroWindowMin, autoCalGyroWindowMax;
+        private Vector3 autoCalGyroFirstHalfSum, autoCalGyroSecondHalfSum;
+        private int autoCalGyroFirstHalfCount, autoCalGyroSecondHalfCount;
+        private Vector3 autoCalAccelWindowMin, autoCalAccelWindowMax;
+        private Vector3 autoCalAccelFirstHalfSum, autoCalAccelSecondHalfSum;
+        private int autoCalAccelFirstHalfCount, autoCalAccelSecondHalfCount;
+
+        // Optional, separately toggleable: rides the exact same stillness window as gyro auto-
+        // calibration above, but only ever replaces a stick's CENTER, never its range - a
+        // stillness-only pass can never produce genuine max/min range data (that needs the user
+        // actually rotating the stick to its physical edges), so the range half of whatever's
+        // currently active (factory SPI data, or an earlier manual/auto calibration) is always
+        // kept as-is. Needs no shared/global sample buffers the way gyro's does: raw stick
+        // position is already a private instance field (stick_precal/stick2_precal), so these
+        // just accumulate directly with no cross-controller claim/race concerns at all.
+        bool AutoCalibrateStickCenter = Boolean.Parse(ConfigurationManager.AppSettings["AutoCalibrateStickCenter"]);
+        private readonly List<int> autoCalStickCenterX = new List<int>();
+        private readonly List<int> autoCalStickCenterY = new List<int>();
+        private readonly List<int> autoCalStick2CenterX = new List<int>();
+        private readonly List<int> autoCalStick2CenterY = new List<int>();
 
         // Raw mode retains the gyro-only quaternion mapper for A/B comparison. Filtered mode uses
         // the proven Player Space approach from GamepadMotionHelpers: gravity influences which
@@ -2235,6 +2290,10 @@ namespace BetterJoyForCemu {
             return Math.Max(Math.Abs(value.X), Math.Max(Math.Abs(value.Y), Math.Abs(value.Z)));
         }
 
+        private static Vector3 AbsVector3(Vector3 value) {
+            return new Vector3(Math.Abs(value.X), Math.Abs(value.Y), Math.Abs(value.Z));
+        }
+
         // Returns gyro rate with the learned stationary zero-rate offset removed. Before the
         // first stable 0.5s window completes, a sample that is itself a stillness candidate is
         // suppressed rather than allowed to crawl the cursor; deliberate motion immediately
@@ -2307,9 +2366,58 @@ namespace BetterJoyForCemu {
         // exact function tonight's yaw-sign calibration bug lived in).
         //
         // Much stricter than the gyro-mouse bias learning above on purpose: that's a fast,
-        // session-only nudge; this is a permanent disk write, so both the tolerances (see
-        // AutoCal* constants) and the "whole window must stay in range, not just each instant"
-        // check below are deliberately tighter.
+        // session-only nudge; this is a permanent disk write. It also can't reuse that learner's
+        // approach directly - ApplyGyroMouseStationaryBias checks the reading against a fixed
+        // still-rate limit, which assumes the bias is already small. Auto-cal exists specifically
+        // for controllers where that's not true, so it detects the bias pattern itself (see the
+        // first-half-vs-second-half trend check below) instead of checking against any expected
+        // physical value.
+
+        private static readonly ConcurrentQueue<string> autoCalDiagQueue = new ConcurrentQueue<string>();
+        private static int autoCalDiagWriterStarted;
+
+        // Always mirrors to the on-screen debug console (unconditionally - callers no longer call
+        // DebugPrint directly); additionally queues to autocal_debug.log when AutoCalDebugLogging
+        // is on, via the same async background-writer pattern as the gyro-stick CSV diagnostics,
+        // so this never risks blocking a controller's own Poll thread on file I/O.
+        private void AutoCalLog(string message) {
+            DebugPrint(message, DebugType.IMU);
+            if (!AutoCalDebugLogging)
+                return;
+
+            EnsureAutoCalDiagWriterStarted();
+            autoCalDiagQueue.Enqueue(string.Format(CultureInfo.InvariantCulture,
+                "{0:HH:mm:ss.fff} [{1}] {2}\r\n", DateTime.Now, serial_number, message));
+        }
+
+        private static void EnsureAutoCalDiagWriterStarted() {
+            if (Interlocked.CompareExchange(ref autoCalDiagWriterStarted, 1, 0) != 0)
+                return;
+            new Thread(AutoCalDiagWriterLoop) {
+                IsBackground = true,
+                Name = "AutoCalDiagLogWriter"
+            }.Start();
+        }
+
+        private static void AutoCalDiagWriterLoop() {
+            string logPath = Path.Combine(AppPaths.DataDir, "autocal_debug.log");
+            while (true) {
+                Thread.Sleep(500);
+                if (autoCalDiagQueue.IsEmpty)
+                    continue;
+
+                var batch = new StringBuilder();
+                while (autoCalDiagQueue.TryDequeue(out string line))
+                    batch.Append(line);
+
+                try {
+                    File.AppendAllText(logPath, batch.ToString());
+                } catch {
+                    // Diagnostic only: never let an unavailable log path affect controller I/O.
+                }
+            }
+        }
+
         private void TryAutoCalibrate() {
             if (!AutoCalibrationEnabled || autoCalCompleted)
                 return;
@@ -2325,72 +2433,190 @@ namespace BetterJoyForCemu {
             if (sinceConnectSeconds < AutoCalArmDelaySeconds)
                 return;
 
-            float accelMagnitude = gyroMouseSensorAccel.Length();
-            float gyroRateMagnitude = gyroMouseSensorRate.Length();
-            bool stillCandidate = Math.Abs(accelMagnitude - 1.0f) <= AutoCalAccelTolerance &&
-                                  gyroRateMagnitude <= AutoCalGyroRateLimit;
-
-            if (!stillCandidate) {
-                if (autoCalWindowOpen) {
-                    CalibrationState.Release(this);
-                    autoCalWindowOpen = false;
-                }
-                return;
-            }
+            double sinceLastButtonSeconds = (now - inactivity) / (double)Stopwatch.Frequency;
+            // Buttons don't drift the way sensors do, so a long enough stretch with literally
+            // nothing pressed is, on its own, stronger proof of genuine stillness than the
+            // accel/gyro constancy check below - a human cannot go this long without touching
+            // anything if they're actually holding/using the controller. Once true, this
+            // OVERRIDES the constancy check entirely rather than just adding to it - it exists
+            // specifically to let calibration through when the controller's own drift is bad
+            // enough to otherwise keep failing that check (the exact case auto-cal is for).
+            bool buttonInactiveOverride = sinceLastButtonSeconds >= AutoCalButtonInactivitySeconds;
 
             if (!autoCalWindowOpen) {
-                // Something else (a manual calibration, or another controller's own auto-cal
-                // window) already holds the shared claim - do nothing this report, retry on a
-                // later one. Stillness tends to persist across many reports when genuine, so this
-                // naturally retries opportunistically without any extra bookkeeping.
+                // No instantaneous "does this already look calibrated" pre-filter, on either
+                // sensor - detection happens entirely from the completed window's own shape (see
+                // below), not from how the reading compares to any external expectation. Opening
+                // unconditionally (once claimable) means a window can briefly flicker open during
+                // genuinely active use, but real motion fails the trend check once the window
+                // completes, so it costs nothing but a claim/release cycle.
                 if (!CalibrationState.TryClaim(this))
                     return;
 
+                AutoCalLog("Auto-calibration: stillness window opened.");
                 autoCalWindowOpen = true;
                 autoCalWindowStartTimestamp = now;
-                autoCalAccelMagMin = autoCalAccelMagMax = accelMagnitude;
-                autoCalGyroRateMin = autoCalGyroRateMax = gyroRateMagnitude;
+                autoCalGyroWindowMin = autoCalGyroWindowMax = gyroMouseSensorRate;
+                autoCalAccelWindowMin = autoCalAccelWindowMax = gyroMouseSensorAccel;
+                autoCalGyroFirstHalfSum = autoCalGyroSecondHalfSum = Vector3.Zero;
+                autoCalGyroFirstHalfCount = autoCalGyroSecondHalfCount = 0;
+                autoCalAccelFirstHalfSum = autoCalAccelSecondHalfSum = Vector3.Zero;
+                autoCalAccelFirstHalfCount = autoCalAccelSecondHalfCount = 0;
+                ClearAutoCalStickSamples();
                 return;
             }
 
             // Lost the claim to a manual calibration elsewhere (see CalibrationState.ForceClaim) -
             // abort silently, publish nothing under this controller's serial.
             if (!CalibrationState.IsClaimedBy(this)) {
+                AutoCalLog("Auto-calibration: lost claim to another calibration, aborting window.");
                 autoCalWindowOpen = false;
+                ClearAutoCalStickSamples();
                 return;
             }
 
-            autoCalAccelMagMin = Math.Min(autoCalAccelMagMin, accelMagnitude);
-            autoCalAccelMagMax = Math.Max(autoCalAccelMagMax, accelMagnitude);
-            autoCalGyroRateMin = Math.Min(autoCalGyroRateMin, gyroRateMagnitude);
-            autoCalGyroRateMax = Math.Max(autoCalGyroRateMax, gyroRateMagnitude);
+            Vector3 gyroRate = gyroMouseSensorRate;
+            Vector3 accel = gyroMouseSensorAccel;
+            autoCalGyroWindowMin = Vector3.Min(autoCalGyroWindowMin, gyroRate);
+            autoCalGyroWindowMax = Vector3.Max(autoCalGyroWindowMax, gyroRate);
+            autoCalAccelWindowMin = Vector3.Min(autoCalAccelWindowMin, accel);
+            autoCalAccelWindowMax = Vector3.Max(autoCalAccelWindowMax, accel);
 
+            // Split the window in half by time so it can be judged for a TREND at the end,
+            // instead of checking against any external, physical-unit threshold (see
+            // AutoCalTrendFraction).
             double elapsedSeconds = (now - autoCalWindowStartTimestamp) / (double)Stopwatch.Frequency;
+            if (elapsedSeconds < AutoCalStillDurationSeconds / 2.0) {
+                autoCalGyroFirstHalfSum += gyroRate;
+                autoCalGyroFirstHalfCount++;
+                autoCalAccelFirstHalfSum += accel;
+                autoCalAccelFirstHalfCount++;
+            } else {
+                autoCalGyroSecondHalfSum += gyroRate;
+                autoCalGyroSecondHalfCount++;
+                autoCalAccelSecondHalfSum += accel;
+                autoCalAccelSecondHalfCount++;
+            }
+
+            // Rides the same window as the gyro/accel tracking above - no separate stillness
+            // gate, no separate claim (see the field comment on autoCalStickCenterX).
+            if (AutoCalibrateStickCenter) {
+                autoCalStickCenterX.Add(stick_precal[0]);
+                autoCalStickCenterY.Add(stick_precal[1]);
+                if (isPro) {
+                    autoCalStick2CenterX.Add(stick2_precal[0]);
+                    autoCalStick2CenterY.Add(stick2_precal[1]);
+                }
+            }
+
             if (elapsedSeconds < AutoCalStillDurationSeconds)
                 return;
 
-            // The real data-quality gate is this range check, not duration alone - a controller
-            // can read "still" at any single instant while slowly drifting (thermal, mechanical
-            // settling) across the whole window.
-            bool staysWithinRange = (autoCalAccelMagMax - autoCalAccelMagMin) <= AutoCalAccelTolerance &&
-                                    (autoCalGyroRateMax - autoCalGyroRateMin) <= AutoCalGyroRangeLimit;
-            if (!staysWithinRange) {
+            // Neither signal is checked against where it "should" read at rest (near-zero gyro
+            // rate, 1g of accel), and neither is checked against any fixed or magnitude-scaled
+            // physical-unit tolerance - a bad or absent calibration can leave either one reading
+            // an arbitrarily large constant offset (this is exactly what the accZ sign bug found
+            // earlier this session looked like), and there is no way to know that offset's size
+            // in advance, so no such number could ever be picked correctly. Instead, detect the
+            // actual signature of a sensor bias directly: it sits on a fixed value, so the
+            // window's first half and second half land in the same place, whatever that place
+            // is. Real motion - or a human trying to hold something artificially steady - can't
+            // sustain that; the second half measurably drifts from the first. The drift is judged
+            // against the window's OWN observed spread (max-min), not an external constant, so
+            // the same fraction applies regardless of how large the underlying bias turns out to
+            // be. See AutoCalTrendFraction.
+            bool passesTrendCheck = buttonInactiveOverride;
+            Vector3 gyroDrift = Vector3.Zero, gyroSpread = Vector3.Zero;
+            Vector3 accelDrift = Vector3.Zero, accelSpread = Vector3.Zero;
+            if (!buttonInactiveOverride) {
+                if (autoCalGyroFirstHalfCount == 0 || autoCalGyroSecondHalfCount == 0 ||
+                    autoCalAccelFirstHalfCount == 0 || autoCalAccelSecondHalfCount == 0) {
+                    // Not enough samples in one half to judge a trend at all - shouldn't happen
+                    // at normal poll rates over a multi-second window, but fail closed rather
+                    // than publish off too little data.
+                    passesTrendCheck = false;
+                } else {
+                    Vector3 gyroFirstMean = autoCalGyroFirstHalfSum / autoCalGyroFirstHalfCount;
+                    Vector3 gyroSecondMean = autoCalGyroSecondHalfSum / autoCalGyroSecondHalfCount;
+                    gyroDrift = AbsVector3(gyroSecondMean - gyroFirstMean);
+                    gyroSpread = autoCalGyroWindowMax - autoCalGyroWindowMin;
+
+                    Vector3 accelFirstMean = autoCalAccelFirstHalfSum / autoCalAccelFirstHalfCount;
+                    Vector3 accelSecondMean = autoCalAccelSecondHalfSum / autoCalAccelSecondHalfCount;
+                    accelDrift = AbsVector3(accelSecondMean - accelFirstMean);
+                    accelSpread = autoCalAccelWindowMax - autoCalAccelWindowMin;
+
+                    passesTrendCheck =
+                        gyroDrift.X <= gyroSpread.X * AutoCalTrendFraction &&
+                        gyroDrift.Y <= gyroSpread.Y * AutoCalTrendFraction &&
+                        gyroDrift.Z <= gyroSpread.Z * AutoCalTrendFraction &&
+                        accelDrift.X <= accelSpread.X * AutoCalTrendFraction &&
+                        accelDrift.Y <= accelSpread.Y * AutoCalTrendFraction &&
+                        accelDrift.Z <= accelSpread.Z * AutoCalTrendFraction;
+                }
+            }
+
+            if (!passesTrendCheck) {
+                AutoCalLog(string.Format(CultureInfo.InvariantCulture,
+                    "Auto-calibration: second half drifted from first half, aborting. " +
+                    "gyroDrift x={0:F3} y={1:F3} z={2:F3} gyroSpread x={3:F3} y={4:F3} z={5:F3} " +
+                    "accelDrift x={6:F4} y={7:F4} z={8:F4} accelSpread x={9:F4} y={10:F4} z={11:F4} fraction={12:F2}",
+                    gyroDrift.X, gyroDrift.Y, gyroDrift.Z, gyroSpread.X, gyroSpread.Y, gyroSpread.Z,
+                    accelDrift.X, accelDrift.Y, accelDrift.Z, accelSpread.X, accelSpread.Y, accelSpread.Z,
+                    AutoCalTrendFraction));
                 CalibrationState.Release(this);
                 autoCalWindowOpen = false;
+                ClearAutoCalStickSamples();
                 return;
             }
 
             // Re-verify immediately before publishing - belt-and-suspenders alongside
             // FinishCalibration's own internal ownership check (see CalibrationState.TryClaim).
             if (!CalibrationState.IsClaimedBy(this)) {
+                AutoCalLog("Auto-calibration: lost claim just before publish, aborting.");
                 autoCalWindowOpen = false;
+                ClearAutoCalStickSamples();
                 return;
             }
 
             CalibrationState.FinishCalibration(this);
             getActiveData();
+            if (AutoCalibrateStickCenter)
+                PublishAutoCalStickCenter();
             autoCalWindowOpen = false;
             autoCalCompleted = true;
+            AutoCalLog("Auto-calibration: complete, new calibration published.");
+        }
+
+        private void ClearAutoCalStickSamples() {
+            autoCalStickCenterX.Clear();
+            autoCalStickCenterY.Clear();
+            autoCalStick2CenterX.Clear();
+            autoCalStick2CenterY.Clear();
+        }
+
+        // Only ever replaces a stick's center - see the field comment on autoCalStickCenterX for
+        // why range is deliberately untouched. Median, not average, matching the manual wizard's
+        // own center-phase computation (CalibrationState.ComputeStickCal) - robust against a
+        // stray outlier reading rather than letting one skew the result.
+        private static int Median(List<int> values) {
+            List<int> sorted = new List<int>(values);
+            sorted.Sort();
+            return sorted[sorted.Count / 2];
+        }
+
+        private void PublishAutoCalStickCenter() {
+            if (autoCalStickCenterX.Count > 0) {
+                CalibrationState.PublishStickCenter(serial_number, false, stick_cal,
+                    Median(autoCalStickCenterX), Median(autoCalStickCenterY));
+                getActiveStickData();
+            }
+            if (isPro && autoCalStick2CenterX.Count > 0) {
+                CalibrationState.PublishStickCenter(serial_number, true, stick2_cal,
+                    Median(autoCalStick2CenterX), Median(autoCalStick2CenterY));
+                getActiveStickData();
+            }
+            ClearAutoCalStickSamples();
         }
 
         // Makes the pose held at the moment the Re-Centre Gyro bind is pressed the new neutral

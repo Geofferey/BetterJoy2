@@ -198,6 +198,28 @@ namespace BetterJoyForCemu {
             return -1;
         }
 
+        // Permanently forgets a physical controller's stored gyro/accelerometer and stick
+        // calibration - used by Reassign's Delete button. A controller with no stored entry
+        // falls back to CaliData's built-in "0" default exactly as if it had never been
+        // calibrated, and gyro auto-calibration is free to recalibrate it fresh on its next
+        // connection. No-op for a serial with nothing stored (FindSerialIndex/RemoveAll are both
+        // already safe on a miss - this never touches the "0" default entry itself, since a real
+        // controller's serial_number is never that literal string).
+        public static void DeleteCalibrationData(string serialNumber) {
+            if (String.IsNullOrEmpty(serialNumber))
+                return;
+
+            lock (samplesLock) {
+                int serIndex = FindSerialIndex(serialNumber);
+                if (serIndex != -1)
+                    CaliData.RemoveAt(serIndex);
+                StickCaliData.RemoveAll(kv => kv.Key == serialNumber);
+                Stick2CaliData.RemoveAll(kv => kv.Key == serialNumber);
+            }
+            Config.SaveCaliData(CaliData);
+            Config.SaveStickCaliData(StickCaliData, Stick2CaliData);
+        }
+
         // Called from a Joycon's own read thread once per packet (twice for a Pro controller -
         // once per physical stick) while StickCalibrating is true - same admission pattern as
         // AddSample above, just against the independent Stick* flags so this phase can keep
@@ -269,6 +291,34 @@ namespace BetterJoyForCemu {
                 (ushort)cx, (ushort)cy,
                 (ushort)minBelowX, (ushort)minBelowY,
             };
+        }
+
+        // Used by gyro auto-calibration's optional stick-center pass (Joycon.
+        // PublishAutoCalStickCenter) - replaces only a stick's center (index 2,3), keeping
+        // whatever range (max-above/min-below, index 0,1,4,5) is already active in currentCal
+        // exactly as-is. A stillness-only background pass can never produce genuine range data
+        // (that needs the user actually rotating the stick to its physical edges the way the
+        // manual wizard's own range phase does), so this deliberately never touches it - callers
+        // pass the controller's own currently-active stick_cal/stick2_cal (whatever that already
+        // resolved to - factory SPI data, or an earlier manual/auto calibration) as currentCal.
+        public static void PublishStickCenter(string serialNumber, bool secondary,
+                                              ushort[] currentCal, int centerX, int centerY) {
+            ushort[] cal = new ushort[] {
+                currentCal[0], currentCal[1],
+                (ushort)centerX, (ushort)centerY,
+                currentCal[4], currentCal[5],
+            };
+            List<KeyValuePair<string, ushort[]>> stickSnapshot, stick2Snapshot;
+            // Locked and deferred for the same reason as FinishCalibration's CaliData publish -
+            // auto-calibration can make this run concurrently from more than one controller's own
+            // Poll thread, which the manual-only wizard never did, and a background caller should
+            // never block HID reads/output on a synchronous file write.
+            lock (samplesLock) {
+                StoreStickCal(secondary ? Stick2CaliData : StickCaliData, serialNumber, cal);
+                stickSnapshot = new List<KeyValuePair<string, ushort[]>>(StickCaliData);
+                stick2Snapshot = new List<KeyValuePair<string, ushort[]>>(Stick2CaliData);
+            }
+            Task.Run(() => Config.SaveStickCaliData(stickSnapshot, stick2Snapshot));
         }
 
         // Mirrors FinishCalibration's shape (stop admission, snapshot under the lock, compute

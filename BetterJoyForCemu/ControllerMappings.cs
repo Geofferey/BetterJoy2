@@ -109,6 +109,70 @@ namespace BetterJoyForCemu {
             return LegacyValue(key);
         }
 
+        // Permanently forgets a profile's binds/options - used by Reassign's Delete button for a
+        // disconnected profile. Only removes the mapping entry itself; the caller is responsible
+        // for also clearing any physical calibration data via CalibrationState.DeleteCalibrationData
+        // for the serial(s) SerialsForProfileId returns, since that's keyed separately (by raw
+        // physical serial, not logical profile ID) and may still be referenced by a sibling
+        // profile for the same physical unit (e.g. a solo profile and a paired profile for the
+        // same Joy-Con) - deleting one profile doesn't imply the physical unit itself is gone.
+        // A no-op (not an error) if profileId isn't currently known, matching the delete button's
+        // "gone either way" semantics.
+        public static void DeleteProfile(string profileId) {
+            if (String.IsNullOrEmpty(profileId))
+                return;
+
+            EnsureLoaded();
+            lock (writeLock) {
+                if (!profiles.ContainsKey(profileId))
+                    return;
+                var next = CloneProfiles(profiles);
+                next.Remove(profileId);
+                profiles = next;
+            }
+            Save();
+        }
+
+        // Persists a bare, all-defaults profile entry as soon as a controller's identity is
+        // known (solo attach, or pair/self-pair formation), rather than leaving it unsaved until
+        // the user happens to open Controller Profiles and change something or click Apply.
+        // Calibration data is written immediately regardless (it lives in a separate store), so
+        // the previous behavior wasn't actually losing anything - it just looked like nothing had
+        // been saved at all, which was confusing. A no-op, no-disk-write fast path once the
+        // profile already exists, so this is safe to call on every connect/reconcile pass, not
+        // just a genuine first-ever connection.
+        public static void EnsureProfileSaved(string profileId) {
+            if (String.IsNullOrEmpty(profileId))
+                return;
+
+            EnsureLoaded();
+            bool created;
+            lock (writeLock) {
+                created = !profiles.ContainsKey(profileId);
+                if (created) {
+                    var next = CloneProfiles(profiles);
+                    var profile = new Dictionary<string, string>(StringComparer.Ordinal);
+                    SnapshotMissingProfileValues(profile);
+                    next[profileId] = profile;
+                    profiles = next;
+                }
+            }
+            if (created)
+                Save();
+        }
+
+        // Extracts the physical serial(s) embedded in a profile ID (see ProfileIdFor for the
+        // inverse) - one for every topology except "pair:", which embeds both physical halves
+        // joined by "+".
+        public static string[] SerialsForProfileId(string profileId) {
+            if (String.IsNullOrEmpty(profileId))
+                return new string[0];
+
+            int colonIndex = profileId.IndexOf(':');
+            string idPart = colonIndex >= 0 ? profileId.Substring(colonIndex + 1) : profileId;
+            return idPart.Split('+');
+        }
+
         public static void SetValue(string profileId, string key, string value) {
             if (String.IsNullOrEmpty(profileId))
                 throw new ArgumentException("A connected controller profile is required.", nameof(profileId));
