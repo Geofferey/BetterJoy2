@@ -5,6 +5,24 @@ exposed real structural risk in how `Joycon.cs` shares code across device
 types. Nothing in this document has been implemented yet - it's the plan to
 review before touching any code.
 
+## Guiding principles for how this gets executed
+
+- **Get each step right the first time, not "ship and iterate through
+  regressions."** The DualSense baseline work that motivated this refactor
+  moved fast and fixed several real regressions along the way - acceptable
+  for a fast-moving feature build, not acceptable for restructuring code
+  three other controller types already depend on correctly. Each migration
+  step below should be verified against the checklists before moving to the
+  next one, not batched up and debugged together at the end.
+- **Readability and human-understandability are explicit goals of this
+  refactor, not just a side effect of reducing risk.** A large part of why
+  this is worth doing at all is that `Joycon.cs` today is hard for a human
+  to reason about - device-identity checks interleaved through shared
+  logic, one class doing five things. Prefer clear, well-named
+  abstractions (the capability properties, the `GyroMath.cs` split below)
+  over clever ones, even where a cleverer approach might be marginally
+  shorter.
+
 ## Why this is needed
 
 `Joycon.cs` (4595 lines) represents five physical controller types - Joy-Con,
@@ -280,6 +298,45 @@ inherit it unused. This mirrors what Tier 2's size comparison already showed
 (Joy-Con-family code is ~630 lines of real shared protocol, not incidental
 overlap).
 
+### `GyroMath.cs` - core gyro/IMU algorithms as their own module, not class hierarchy
+
+A second, orthogonal extraction alongside the `Controller` hierarchy above:
+pull the actual gyro/IMU math - AHRS orientation update, gyro-mouse cursor
+computation, gyro-stick axis mapping, roll compensation, the auto-
+calibration trend-detection math - out of `Joycon.cs` into its own file,
+as a set of algorithms that don't live on any device object at all. Today
+this ~1200-line pipeline is already correctly device-agnostic *logic*
+(Tier 1), but it's still written as instance methods on the device class,
+with device-specific selection (which offset array, which axis, which sign
+flip - see `ExtractIMUValues`'s `isPro`/`isLeft` branches) interleaved
+directly into the math rather than applied as a distinct step before or
+after it runs.
+
+The target shape: `GyroMath.cs` holds the base algorithms as (ideally
+static, input-in/output-out) functions that take already-normalized sensor
+values and known parameters - no `isPro`/`isLeft`/device-identity checks
+inside the math itself anywhere. Each `Controller` subclass is responsible
+only for supplying its own **quirks** - which raw fields map to which axis,
+what sign convention its hardware uses, any device-specific offset/bias -
+as data or a thin adapter, before handing off to the shared algorithm. This
+is the same "base algorithm + per-device quirk" shape the meaningful-scales
+work (see "Related, deferred" below) already needs a home for - the
+normalization step that work requires belongs naturally in this module, at
+the boundary between "device quirk" and "base algorithm."
+
+Benefits beyond code organization: algorithms with no device-identity
+branching are far easier to reason about correctness for (matches the
+priority below on getting gyro/IMU right the first time, not iterating
+through regressions), and are natural candidates for isolated testing
+against known input/output pairs, which nothing in this pipeline has today.
+
+This is a genuinely separate extraction from the `Controller` class split -
+worth sequencing deliberately (probably after `Controller`/
+`DualSenseController` exist, since "what counts as a device quirk vs. base
+algorithm" is easier to see clearly once DualSense's own gyro data actually
+exists to compare against Joy-Con's) rather than assumed to happen in the
+same pass.
+
 ### Replacing the `isPro` superset flag: explicit capabilities, not inherited booleans
 
 The root cause of today's incident was a boolean that means "this device
@@ -334,12 +391,18 @@ fixing the Tier 3 danger-zone pattern that caused today's incident.
 
 ## Modularity for future controller types
 
-The goal stated for this refactor: adding a sixth controller type later
-should mean writing one new `XyzController : Controller` (or
+**The success criterion for this whole refactor, stated precisely**: once
+someone can already interpret a new controller's raw byte stream (its HID
+report layout - the genuinely unavoidable, external reverse-engineering
+work, same as this session's DualSense byte-offset investigation), wiring
+that up in BetterJoy should be relatively painless from there - not another
+architectural fight. The hard part of adding a controller should be reading
+its protocol, never fighting this codebase to plug a known protocol in.
+Concretely: writing one new `XyzController : Controller` (or
 `: NintendoController` if it's SPI/subcommand-based) file, registering its
 VID/PID at the single `Program.cs:623` construction site, and adding one
 `ControllerKind` value - not touching `Joycon.cs`, not risking every other
-device type's behavior. Concretely, that means:
+device type's behavior. That means:
 
 1. A `Controller` reference (not `new Joycon(...)`) is what `Program.cs`
    constructs, via a small factory keyed on VID/PID - the one existing
@@ -353,6 +416,26 @@ device type's behavior. Concretely, that means:
    analog triggers, gyro, adaptive triggers, touchpad, lightbar) is a
    virtual property or method on `Controller` with a safe default, not a
    boolean flag callers have to know to check.
+
+### Before reverse-engineering a new controller's protocol, check for one first
+
+For most major/licensed controller brands, the byte-stream reverse
+engineering this section assumes as a given is usually already done
+somewhere else - this session's DualSense work found real, working
+Windows-native reference implementations (DS4Windows, DualSenseX,
+JoyShockMapper, Ds2vJoy, PCXSense) that had already solved the exact byte-
+offset problems being investigated from scratch, and licensed controllers
+for a given platform brand tend to share a standardized report protocol
+across models/vendors rather than each reinventing one. Before treating a
+new controller's protocol as unknown: look for an existing open-source
+Windows implementation (same reasoning as
+[[verify-against-real-platform-data]] - same-platform reference source,
+not a different OS's driver) and cross-check any offsets/layouts found
+there against real captured bytes from the actual device, the same way
+DS4Windows's DualSense offsets were confirmed against a real idle capture
+this session rather than trusted blind. The reverse-engineering-from-
+scratch case should be the exception, not the default assumption, for
+"another major/licensed controller."
 
 ## Settings architecture: moving off global App.config toward per-profile settings
 
@@ -517,7 +600,13 @@ incremental and independently testable, not a single large rewrite:
    subclasses under `NintendoController` - lower priority, since that
    family isn't where new controller types are expected to land, and it's
    the largest, most interleaved (isLeft/isPro/other) code in the file.
-5. Fix the `connection`/`isUSB` staleness bug as part of whichever step
+5. Extract `GyroMath.cs` - after step 3 at the earliest (see the reasoning
+   under that section: telling device quirk apart from base algorithm is
+   easier once DualSense's own gyro data exists to compare against, not
+   before). A pure mechanical move first (same logic, new file, still
+   called the same way), device-quirk-vs-base-algorithm separation as a
+   deliberate follow-up, not bundled into the same commit.
+6. Fix the `connection`/`isUSB` staleness bug as part of whichever step
    touches those fields, not as an afterthought. Do **not** add DS4-output
    support to `DualSenseController` - see the explicit decision above.
 
