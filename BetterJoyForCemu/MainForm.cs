@@ -1308,9 +1308,7 @@ namespace BetterJoyForCemu {
         private void StartPhase() {
             switch (calibPhase) {
                 case CalibPhase.GyroCollect:
-                    CalibrationState.ClearSamples();
-                    CalibrationState.CalibratingController = calibSteps[calibStepIndex].Target;
-                    CalibrationState.Calibrating = true;
+                    CalibrationState.ForceClaim(calibSteps[calibStepIndex].Target);
                     calibDialog.SetInstruction("Hold still...");
                     this.count = 3;
                     calibDialog.ShowCountdown(this.count);
@@ -1354,7 +1352,7 @@ namespace BetterJoyForCemu {
             // try/catch below is a hard requirement, not just tidiness.
             Joycon gyroTarget = calibSteps[calibStepIndex].Target;
             try {
-                CalibrationState.FinishCalibration(gyroTarget.serial_number, gyroTarget.isLeft);
+                CalibrationState.FinishCalibration(gyroTarget);
                 gyroTarget.getActiveData();
                 this.console.Text += "Gyro calibration completed!!!" + "\r\n";
                 AdvanceStep();
@@ -1416,8 +1414,9 @@ namespace BetterJoyForCemu {
         // (captured locally, not via the calibDialog field, in case a new run starts before the
         // delay elapses) so a completion/failure message is actually readable before it vanishes.
         private void FinishCalibrationFlow() {
-            CalibrationState.Calibrating = false;
-            CalibrationState.CalibratingController = null;
+            // No-op if calibratingJoycon doesn't currently hold the claim (e.g. a gyro step
+            // already released it normally via FinishCalibration) - safe to call unconditionally.
+            CalibrationState.Release(calibratingJoycon);
             CalibrationState.StickCalibrating = false;
             CalibrationState.StickCalibratingController = null;
             CalibrationState.PendingConfirmController = null;

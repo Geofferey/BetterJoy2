@@ -1237,6 +1237,8 @@ namespace BetterJoyForCemu {
                 }
             }
 
+            TryAutoCalibrate();
+
             DetectShake();
 
             if (buttons_down[(int)Button.CAPTURE])
@@ -1480,6 +1482,30 @@ namespace BetterJoyForCemu {
         private Vector3 gyroMouseBiasWindowMin;
         private Vector3 gyroMouseBiasWindowMax;
         private int gyroMouseBiasWindowCount;
+
+        // Gyro auto-calibration: watches for genuine stillness and, once seen for long enough,
+        // silently runs the same calibration CalibrationState.FinishCalibration already performs
+        // for the manual wizard - just triggered by a background stillness check instead of a
+        // human clicking through a dialog. Persists to the same on-disk data, so unlike the
+        // gyro-mouse bias learning above (session-only, mouse-specific), this is a much
+        // higher-stakes, deliberately much stricter check - see TryAutoCalibrate.
+        bool AutoCalibrationEnabled = Boolean.Parse(ConfigurationManager.AppSettings["AutoCalibrationEnabled"]);
+        float AutoCalStillDurationSeconds = float.Parse(ConfigurationManager.AppSettings["AutoCalStillDurationSeconds"]);
+        float AutoCalAccelTolerance = float.Parse(ConfigurationManager.AppSettings["AutoCalAccelTolerance"]);
+        float AutoCalGyroRateLimit = float.Parse(ConfigurationManager.AppSettings["AutoCalGyroRateLimit"]);
+        float AutoCalGyroRangeLimit = float.Parse(ConfigurationManager.AppSettings["AutoCalGyroRangeLimit"]);
+        int AutoCalArmDelaySeconds = Int32.Parse(ConfigurationManager.AppSettings["AutoCalArmDelaySeconds"]);
+        // True once a successful auto-calibration has published for this physical connection -
+        // never attempted again until the next reconnect (a fresh Joycon instance), so a
+        // well-calibrated controller doesn't keep re-writing its calibration every time it sits
+        // idle for a while.
+        private bool autoCalCompleted = false;
+        // True only while THIS instance currently holds the CalibrationState claim.
+        private bool autoCalWindowOpen = false;
+        private long autoCalWindowStartTimestamp;
+        private readonly long autoCalConnectTimestamp = Stopwatch.GetTimestamp();
+        private float autoCalAccelMagMin, autoCalAccelMagMax;
+        private float autoCalGyroRateMin, autoCalGyroRateMax;
 
         // Raw mode retains the gyro-only quaternion mapper for A/B comparison. Filtered mode uses
         // the proven Player Space approach from GamepadMotionHelpers: gravity influences which
@@ -2270,6 +2296,101 @@ namespace BetterJoyForCemu {
             }
 
             return gyroMouseBiasInitialized ? residual : Vector3.Zero;
+        }
+
+        // Watches for the controller sitting genuinely motionless for AutoCalStillDurationSeconds
+        // and, if so, silently claims the shared CalibrationState session and publishes a fresh
+        // calibration - the same FinishCalibration/getActiveData pipeline the manual wizard uses,
+        // just triggered by this background check instead of a human running the dialog. Called
+        // once per report from DoThingsWithButtons - no sub-sample-rate responsiveness is needed
+        // for a multi-second window, and this deliberately stays out of ExtractIMUValues (the
+        // exact function tonight's yaw-sign calibration bug lived in).
+        //
+        // Much stricter than the gyro-mouse bias learning above on purpose: that's a fast,
+        // session-only nudge; this is a permanent disk write, so both the tolerances (see
+        // AutoCal* constants) and the "whole window must stay in range, not just each instant"
+        // check below are deliberately tighter.
+        private void TryAutoCalibrate() {
+            if (!AutoCalibrationEnabled || autoCalCompleted)
+                return;
+            // Mirrors the live (not cached) AllowCalibration check ExtractIMUValues already uses
+            // to gate AddSample - auto-cal piggybacks on that same call site, so it's equally
+            // inert whenever calibration sampling itself is turned off, and reacts the same way
+            // if the user flips it mid-session.
+            if (!Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]))
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            double sinceConnectSeconds = (now - autoCalConnectTimestamp) / (double)Stopwatch.Frequency;
+            if (sinceConnectSeconds < AutoCalArmDelaySeconds)
+                return;
+
+            float accelMagnitude = gyroMouseSensorAccel.Length();
+            float gyroRateMagnitude = gyroMouseSensorRate.Length();
+            bool stillCandidate = Math.Abs(accelMagnitude - 1.0f) <= AutoCalAccelTolerance &&
+                                  gyroRateMagnitude <= AutoCalGyroRateLimit;
+
+            if (!stillCandidate) {
+                if (autoCalWindowOpen) {
+                    CalibrationState.Release(this);
+                    autoCalWindowOpen = false;
+                }
+                return;
+            }
+
+            if (!autoCalWindowOpen) {
+                // Something else (a manual calibration, or another controller's own auto-cal
+                // window) already holds the shared claim - do nothing this report, retry on a
+                // later one. Stillness tends to persist across many reports when genuine, so this
+                // naturally retries opportunistically without any extra bookkeeping.
+                if (!CalibrationState.TryClaim(this))
+                    return;
+
+                autoCalWindowOpen = true;
+                autoCalWindowStartTimestamp = now;
+                autoCalAccelMagMin = autoCalAccelMagMax = accelMagnitude;
+                autoCalGyroRateMin = autoCalGyroRateMax = gyroRateMagnitude;
+                return;
+            }
+
+            // Lost the claim to a manual calibration elsewhere (see CalibrationState.ForceClaim) -
+            // abort silently, publish nothing under this controller's serial.
+            if (!CalibrationState.IsClaimedBy(this)) {
+                autoCalWindowOpen = false;
+                return;
+            }
+
+            autoCalAccelMagMin = Math.Min(autoCalAccelMagMin, accelMagnitude);
+            autoCalAccelMagMax = Math.Max(autoCalAccelMagMax, accelMagnitude);
+            autoCalGyroRateMin = Math.Min(autoCalGyroRateMin, gyroRateMagnitude);
+            autoCalGyroRateMax = Math.Max(autoCalGyroRateMax, gyroRateMagnitude);
+
+            double elapsedSeconds = (now - autoCalWindowStartTimestamp) / (double)Stopwatch.Frequency;
+            if (elapsedSeconds < AutoCalStillDurationSeconds)
+                return;
+
+            // The real data-quality gate is this range check, not duration alone - a controller
+            // can read "still" at any single instant while slowly drifting (thermal, mechanical
+            // settling) across the whole window.
+            bool staysWithinRange = (autoCalAccelMagMax - autoCalAccelMagMin) <= AutoCalAccelTolerance &&
+                                    (autoCalGyroRateMax - autoCalGyroRateMin) <= AutoCalGyroRangeLimit;
+            if (!staysWithinRange) {
+                CalibrationState.Release(this);
+                autoCalWindowOpen = false;
+                return;
+            }
+
+            // Re-verify immediately before publishing - belt-and-suspenders alongside
+            // FinishCalibration's own internal ownership check (see CalibrationState.TryClaim).
+            if (!CalibrationState.IsClaimedBy(this)) {
+                autoCalWindowOpen = false;
+                return;
+            }
+
+            CalibrationState.FinishCalibration(this);
+            getActiveData();
+            autoCalWindowOpen = false;
+            autoCalCompleted = true;
         }
 
         // Makes the pose held at the moment the Re-Centre Gyro bind is pressed the new neutral

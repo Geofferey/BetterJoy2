@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace BetterJoyForCemu {
     // Calibration sample buffers and stored per-controller calibration data, extracted out of
@@ -17,6 +18,60 @@ namespace BetterJoyForCemu {
         // old "exactly one controller connected" UI restriction was actually working around -
         // scoping admission to one specific controller makes that restriction unnecessary.
         public static Joycon CalibratingController = null;
+
+        // Claims the shared calibration session for controller, clearing sample buffers as part
+        // of the same critical section. Returns false if something else already holds it -
+        // callers must not admit/collect samples without a successful claim, and must re-check
+        // IsClaimedBy(this) immediately before publishing via FinishCalibration, not just once
+        // at claim time - a manual calibration can always preempt an in-flight claim (see
+        // ForceClaim), and only the side that still holds it when the window completes may
+        // publish. Introduced alongside gyro auto-calibration: previously Calibrating/
+        // CalibratingController were written directly with no check, which was invisible only
+        // because exactly one human-driven calibration flow was ever active at a time - a
+        // background watcher running independently per-controller makes that assumption false.
+        public static bool TryClaim(Joycon controller) {
+            lock (samplesLock) {
+                if (Calibrating)
+                    return false;
+                Calibrating = true;
+                CalibratingController = controller;
+                XG.Clear(); YG.Clear(); ZG.Clear();
+                XA.Clear(); YA.Clear(); ZA.Clear();
+                return true;
+            }
+        }
+
+        // Human-initiated calibration always wins - unconditionally takes the claim from
+        // whatever (if anything) currently holds it, discarding any in-flight auto-calibration
+        // window rather than blocking or failing the explicit user action. The displaced side
+        // discovers this on its own next check (IsClaimedBy returns false) and aborts cleanly,
+        // publishing nothing under its own serial.
+        public static void ForceClaim(Joycon controller) {
+            lock (samplesLock) {
+                Calibrating = true;
+                CalibratingController = controller;
+                XG.Clear(); YG.Clear(); ZG.Clear();
+                XA.Clear(); YA.Clear(); ZA.Clear();
+            }
+        }
+
+        public static bool IsClaimedBy(Joycon controller) {
+            lock (samplesLock) {
+                return Calibrating && CalibratingController == controller;
+            }
+        }
+
+        // No-op if controller doesn't currently hold the claim - safe to call from an abort path
+        // that isn't sure whether it still owns it (e.g. it may have already been preempted by
+        // ForceClaim).
+        public static void Release(Joycon controller) {
+            lock (samplesLock) {
+                if (CalibratingController == controller) {
+                    Calibrating = false;
+                    CalibratingController = null;
+                }
+            }
+        }
 
         // Names the controller a calibration Start/Done prompt is currently showing for, so
         // Joycon.DoThingsWithButtons (running on that controller's own Poll thread) knows a face
@@ -269,9 +324,16 @@ namespace BetterJoyForCemu {
         // zero) after every calibration, feeding a bad "which way is down" reference into
         // UpdateCanonicalGyroMouseImu/Player Space and showing up as reversed yaw, right-side
         // only, in both gyro-mouse and gyro-stick.
-        public static void FinishCalibration(string serialNumber, bool isLeft) {
+        // Takes the controller itself, not a bare (serialNumber, isLeft) pair - lets this
+        // independently re-verify ownership right before publishing (see TryClaim's doc comment)
+        // instead of trusting every caller to have checked first, so a claim lost mid-window
+        // (preempted by a different controller's manual calibration - see ForceClaim) can never
+        // publish contaminated samples under the wrong serial number.
+        public static void FinishCalibration(Joycon controller) {
             List<int> xg, yg, zg, xa, ya, za;
             lock (samplesLock) {
+                if (CalibratingController != controller)
+                    throw new InvalidOperationException("Calibration claim lost before publish.");
                 Calibrating = false;
                 CalibratingController = null;
                 xg = new List<int>(XG);
@@ -289,15 +351,25 @@ namespace BetterJoyForCemu {
             arr[2] = (float)QuickselectMedian(zg, rnd.Next);
             arr[3] = (float)QuickselectMedian(xa, rnd.Next);
             arr[4] = (float)QuickselectMedian(ya, rnd.Next);
-            arr[5] = (float)QuickselectMedian(za, rnd.Next) - (isLeft ? 4010f : -4010f); // Joycon.cs acc_sen 16384
+            arr[5] = (float)QuickselectMedian(za, rnd.Next) - (controller.isLeft ? 4010f : -4010f); // Joycon.cs acc_sen 16384
 
-            int serIndex = FindSerialIndex(serialNumber);
-            if (serIndex == -1)
-                CaliData.Add(new KeyValuePair<string, float[]>(serialNumber, arr));
-            else
-                CaliData[serIndex] = new KeyValuePair<string, float[]>(serialNumber, arr);
+            List<KeyValuePair<string, float[]>> snapshot;
+            lock (samplesLock) {
+                int serIndex = FindSerialIndex(controller.serial_number);
+                if (serIndex == -1)
+                    CaliData.Add(new KeyValuePair<string, float[]>(controller.serial_number, arr));
+                else
+                    CaliData[serIndex] = new KeyValuePair<string, float[]>(controller.serial_number, arr);
+                snapshot = new List<KeyValuePair<string, float[]>>(CaliData);
+            }
 
-            Config.SaveCaliData(CaliData);
+            // Deferred rather than inline: FinishCalibration can now run on a controller's own
+            // Poll thread (gyro auto-calibration), where a synchronous File.WriteAllLines could
+            // stall HID reads/rumble/output for that controller for the duration of the write.
+            // Applies uniformly to manual calibration too rather than special-casing by caller -
+            // its UX doesn't depend on the save being synchronous, the completion dialog already
+            // shows regardless.
+            Task.Run(() => Config.SaveCaliData(snapshot));
         }
 
         private static double QuickselectMedian(List<int> l, Func<int, int> pivotFn) {

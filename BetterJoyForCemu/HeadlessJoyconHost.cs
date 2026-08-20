@@ -571,6 +571,11 @@ namespace BetterJoyForCemu {
             // throw with the guard already set and no continuation left to ever release it.
             // FirstOrDefault never throws either way.
             Joycon jc = Program.mgr?.j.FirstOrDefault(v => v.PadId == padId);
+            // Tracks whichever controller currently holds the gyro calibration claim, if any -
+            // for a joined pair this may be jc.other, not jc itself, once the second gyro step
+            // starts. The catch block below needs this to release the right claim rather than
+            // assuming it's always jc.
+            Joycon activeClaimHolder = null;
             if (jc == null) {
                 SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
                 return;
@@ -628,16 +633,16 @@ namespace BetterJoyForCemu {
                     CalibrationState.PendingConfirmController = gyroTarget;
                     await WaitForCalibReady();
 
-                    CalibrationState.ClearSamples();
-                    CalibrationState.CalibratingController = gyroTarget;
-                    CalibrationState.Calibrating = true;
+                    CalibrationState.ForceClaim(gyroTarget);
+                    activeClaimHolder = gyroTarget;
                     for (int t = 3; t >= 0; t--) {
                         SendCalibrationStep(padId, gyroStepNumber, totalSteps, gyroLabel, "Hold still...", CalibStepUiMode.Countdown, t);
                         if (t > 0)
                             await Task.Delay(1000);
                     }
 
-                    CalibrationState.FinishCalibration(gyroTarget.serial_number, gyroTarget.isLeft);
+                    CalibrationState.FinishCalibration(gyroTarget);
+                    activeClaimHolder = null; // FinishCalibration already released it on success
                     gyroTarget.getActiveData();
                 }
 
@@ -680,9 +685,10 @@ namespace BetterJoyForCemu {
             } catch {
                 // Any step can fail (e.g. the controller disconnected mid-window) -
                 // calibrationInProgress and the CalibrationState flags MUST still clear here or
-                // every future calibration request fails until the service restarts.
-                CalibrationState.Calibrating = false;
-                CalibrationState.CalibratingController = null;
+                // every future calibration request fails until the service restarts. No-op if
+                // activeClaimHolder doesn't currently hold the claim (e.g. it was already
+                // released normally, or never claimed it - a stick-step failure).
+                CalibrationState.Release(activeClaimHolder);
                 CalibrationState.StickCalibrating = false;
                 CalibrationState.StickCalibratingController = null;
                 CalibrationState.PendingConfirmController = null;
