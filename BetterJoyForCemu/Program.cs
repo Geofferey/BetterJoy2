@@ -388,6 +388,26 @@ namespace BetterJoyForCemu {
             return instanceId != null;
         }
 
+        // Reads the DualSense's own Bluetooth MAC address over USB via HID feature report 0x09
+        // ("pairing info"). hidapi's hid_get_feature_report convention: caller sets buf[0] to the
+        // report ID before the call: the returned buffer still has the report ID at index 0
+        // followed by the report body, and the return value counts that leading byte. Report
+        // layout confirmed against the Linux kernel's hid-playstation.c driver
+        // (DS_FEATURE_REPORT_PAIRING_INFO, size 20, MAC at buf[1..6]).
+        private const byte DualSensePairingInfoReportId = 0x09;
+        private const int DualSensePairingInfoReportSize = 20;
+
+        private static bool TryGetDualSenseMac(IntPtr handle, byte[] mac) {
+            byte[] buf = new byte[DualSensePairingInfoReportSize];
+            buf[0] = DualSensePairingInfoReportId;
+            int ret = HIDapi.hid_get_feature_report(handle, buf, new UIntPtr((uint)buf.Length));
+            if (ret < 7)
+                return false;
+
+            Array.Copy(buf, 1, mac, 0, 6);
+            return true;
+        }
+
         // Walks up the PnP device tree from a HID interface to find the underlying bus (USB or
         // Bluetooth) it's actually connected through. GetInstanceIdFromInterfaceId only resolves
         // to the HID-level device node itself (always prefixed "HID\...", for either transport),
@@ -602,11 +622,66 @@ namespace BetterJoyForCemu {
                     form.AssignSlot(j.Last());
 
                     byte[] mac = new byte[6];
+                    bool macParsed = false;
+                    string macSource = "serial";
                     try {
                         for (int n = 0; n < 6; n++)
                             mac[n] = byte.Parse(enumerate.serial_number.Substring(n * 2, 2), System.Globalization.NumberStyles.HexNumber);
+                        macParsed = true;
                     } catch (Exception) {
                         // could not parse mac address
+                    }
+                    if (!macParsed) {
+                        // A device whose serial_number doesn't parse as a MAC (confirmed on real
+                        // hardware: a wired DualSense reports an empty serial_number over USB)
+                        // would otherwise silently leave every byte at 0 - a fixed, shared value
+                        // ANY other device hitting this same fallback would also get, which
+                        // RetireDuplicateConnections (PadMacAddress.Equals) would then treat as
+                        // the same physical controller and wrongly drop one of them.
+                        //
+                        // For a DualSense specifically this has a real fix, not just a workaround:
+                        // the controller exposes its own Bluetooth MAC address to the host over
+                        // USB via HID feature report 0x09 ("pairing info", 20 bytes, MAC at bytes
+                        // 1-6 - confirmed against the Linux kernel's hid-playstation.c driver,
+                        // DS_FEATURE_REPORT_PAIRING_INFO). That's the actual hardware identity, not
+                        // a synthesized stand-in - stable across app restarts AND identical to what
+                        // the same controller reports as its serial_number when paired over
+                        // Bluetooth, so USB and BT connections of the same physical unit now
+                        // resolve to the same profile.
+                        if (isDualSense && TryGetDualSenseMac(handle, mac)) {
+                            macParsed = true;
+                            macSource = "dualsense-feature-report";
+                        } else {
+                            macSource = "path-hash";
+                            // Fallback for anything else that reaches here (or if the feature
+                            // report read fails): enumerate.path is OS-assigned and unique per
+                            // physical device instance, so hash that into the 6 bytes instead -
+                            // not a real MAC, but guaranteed not to collide with an unrelated
+                            // device the way an untouched all-zero default could. MUST be
+                            // deterministic across app runs, not just within one - a real
+                            // regression found on real hardware: string.GetHashCode() is
+                            // randomized per-process by default in .NET Framework (a security
+                            // mitigation), so hashing with it produced a DIFFERENT PadMacAddress
+                            // for the same physical device on every restart, which
+                            // ControllerMappings.DeviceId/DeviceSuffix (using PadMacAddress as
+                            // profile identity) turned into a new profile each launch. FNV-1a is a
+                            // plain, non-cryptographic string hash with no such randomization.
+                            uint hash = 2166136261;
+                            foreach (byte pb in Encoding.UTF8.GetBytes(enumerate.path ?? enumerate.serial_number ?? String.Empty)) {
+                                hash ^= pb;
+                                hash *= 16777619;
+                            }
+                            byte[] hashBytes = BitConverter.GetBytes(hash);
+                            Array.Copy(hashBytes, 0, mac, 0, Math.Min(hashBytes.Length, mac.Length));
+                        }
+                    }
+                    if (isDualSense) {
+                        // TEMPORARY diagnostic: comparing the resolved MAC across USB vs
+                        // Bluetooth connections of the same physical DualSense, since real
+                        // hardware testing found they don't currently match.
+                        form.AppendTextBox(string.Format(CultureInfo.InvariantCulture,
+                            "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")\r\n",
+                            BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     }
                     j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
                 }

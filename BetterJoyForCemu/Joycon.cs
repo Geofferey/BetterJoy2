@@ -873,10 +873,23 @@ namespace BetterJoyForCemu {
         // window otherwise leaves both the old and new entries live at once, each driving their
         // own virtual output device (double presses/duplicate input in games).
         private void RetireDuplicateConnections() {
+            // TEMPORARY diagnostic: suspected cross-controller contamination when a DualSense and
+            // a Joy-Con are connected together - log every comparison this makes so the real
+            // PadId/PadMacAddress values are visible instead of guessed at.
+            LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                "RetireDuplicateConnections: this pad={0} dualSense={1} mac={2}",
+                PadId, isDualSense, PadMacAddress));
             foreach (Joycon other in Program.mgr.j) {
+                if (other != this) {
+                    LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                        "  vs pad={0} dualSense={1} mac={2} state={3} equalMac={4}",
+                        other.PadId, other.isDualSense, other.PadMacAddress, other.state,
+                        other.PadMacAddress.Equals(PadMacAddress)));
+                }
                 if (other != this && other.state != state_.DROPPED && other.PadMacAddress.Equals(PadMacAddress)) {
                     other.state = state_.DROPPED;
                     form.AppendTextBox("Retiring duplicate connection for the same controller.\r\n");
+                    LogDualSenseRawDump("  ^ RETIRED as duplicate");
                 }
             }
         }
@@ -989,7 +1002,17 @@ namespace BetterJoyForCemu {
                 // only placeholder-serial heuristic isUSB otherwise depends on.
                 if (dsRet == 64 || dsRet == 78) {
                     isUSB = dsRet == 64;
-                    int reportOffset = dsRet == 78 ? 1 : 0;
+                    // hid_read_timeout does NOT strip the leading report-ID byte for either
+                    // transport - byte 0 is a constant 0x01 (USB) or 0x31 (BT) report ID. USB has
+                    // no further padding, so real data starts at byte 1. BT has one more padding/
+                    // tag byte after the report ID before real data starts at byte 2. Confirmed two
+                    // independent ways: (1) decoding a real idle BT capture at offset 2 gives sane
+                    // values (sticks dead-center, triggers at 0, button byte reading the DualSense's
+                    // documented dpad-neutral encoding 0x08) while offset 1 does not; (2)
+                    // DS4Windows's own DualSenseDevice.cs (a shipped Windows implementation) uses
+                    // reportOffset = BT ? 1 : 0 relative to a buffer that, like ours, still includes
+                    // the report-ID byte - i.e. absolute offset 2 (BT) / 1 (USB), matching (1).
+                    int reportOffset = isUSB ? 1 : 2;
 
                     // TEMPORARY diagnostic: the offsets guessed from a secondhand reference are
                     // demonstrably wrong (confirmed on real hardware - trigger/button bytes don't
@@ -1015,11 +1038,15 @@ namespace BetterJoyForCemu {
                     return dsRet;
                 }
 
-                // An unexpected length isn't a real read error (don't count it toward the
-                // DROPPED threshold below), but it's also not a report we know how to parse -
-                // treat it the same as a timeout rather than risk parsing garbage.
+                // An unexpected length means the report stream is no longer what this parser
+                // expects - possibly a transient glitch, but also possibly a connection that's
+                // genuinely gone bad (confirmed on real hardware: report framing can shift after
+                // something puts the controller in a bad state). Treating this as harmless
+                // previously meant such a connection could never reach DROPPED and would sit in
+                // joy.cpl as a stale, frozen "connected" entry forever - count it as a real error
+                // instead so a truly broken connection gets cleaned up like any other.
                 if (dsRet > 0)
-                    return 0;
+                    return -1;
                 return dsRet; // 0 = timeout, <0 = read error - Poll()'s state machine already handles both
             }
 
@@ -2526,6 +2553,14 @@ namespace BetterJoyForCemu {
         }
 
         private void TryAutoCalibrate() {
+            // DualSense's baseline support never populates gyroMouseSensorRate/Accel (no gyro
+            // parsing yet) - they stay at a constant Vector3.Zero forever, which would trivially
+            // pass the stillness/trend check every single time (an unchanging zero reading looks
+            // like perfect stillness) and publish bogus all-zero calibration data almost
+            // immediately after every connect, while also contending for the shared
+            // CalibrationState claim with any other controller's own legitimate auto-cal window.
+            if (isDualSense)
+                return;
             if (!AutoCalibrationEnabled || autoCalCompleted)
                 return;
             // Mirrors the live (not cached) AllowCalibration check ExtractIMUValues already uses
@@ -3284,16 +3319,37 @@ namespace BetterJoyForCemu {
             Interlocked.Exchange(ref pendingLedPlayerNum, playerNum);
         }
 
+        // How long a connection can go without a single successful read before being forced to
+        // DROPPED even though nothing ever came back as a hard read error - see the staleness
+        // check at the bottom of Poll()'s loop for why this exists.
+        private const double StaleConnectionSeconds = 3.0;
+
         private void Poll() {
             stop_polling = false;
             int attempts = 0;
+            long lastSuccessTimestamp = Stopwatch.GetTimestamp();
             while (!stop_polling & state > state_.NO_JOYCONS) {
                 int requestedLed = Interlocked.Exchange(ref pendingLedPlayerNum, -1);
                 if (requestedLed >= 0) {
                     SetLEDByPlayerNum(requestedLed);
                 }
                 if (rumble_obj.queue.Count > 0) {
-                    SendRumble(rumble_obj.GetData());
+                    if (isDualSense) {
+                        // DualSense's simple dual-motor rumble has no equivalent to the low/high-
+                        // frequency split Rumble.GetData() encodes for Joy-Con's HD rumble - just
+                        // take the queued amplitude directly and drive both motors the same. Was
+                        // disabled after real hardware went into continuous, non-stopping rumble
+                        // the first time this ran - root cause found: outputReport[2] (USB) /
+                        // [3] (BT) is a required feature-flags byte (0x55: mic LED, audio mute,
+                        // touchpad strips, player lights, motor power) that was left at 0x00 by
+                        // omission, not an intentional "leave alone" zero. Re-enabled with that
+                        // byte now set.
+                        float amp = rumble_obj.queue.Dequeue()[2];
+                        byte motor = (byte)(Math.Max(0f, Math.Min(1f, amp)) * 255f);
+                        SendDualSenseRumble(motor, motor);
+                    } else {
+                        SendRumble(rumble_obj.GetData());
+                    }
                 }
 
                 int a;
@@ -3314,6 +3370,7 @@ namespace BetterJoyForCemu {
                 if (a > 0 && state > state_.DROPPED) {
                     state = state_.IMU_DATA_OK;
                     attempts = 0;
+                    lastSuccessTimestamp = Stopwatch.GetTimestamp();
 
                     if (!retiredDuplicates) {
                         retiredDuplicates = true;
@@ -3333,6 +3390,23 @@ namespace BetterJoyForCemu {
                 } else if (a == 0) {
                     // The non-blocking read timed out. No need to sleep.
                     // No need to increase attempts because it's not an error.
+                }
+
+                // Belt-and-suspenders on top of the attempts>240 hard-error threshold above: a
+                // connection whose transport just goes quiet (e.g. a Bluetooth radio link
+                // dropping) rather than the HID handle itself becoming invalid can have
+                // hid_read_timeout return plain timeouts (a==0) forever, never a hard error -
+                // confirmed on real hardware with a Bluetooth DualSense, which the attempts
+                // counter above never penalizes, so it never reached DROPPED and sat as a stale,
+                // frozen "connected" entry (and virtual controller) indefinitely. This is a
+                // second, independent detector using elapsed wall-clock time since the last
+                // genuinely successful read, regardless of why reads have been failing.
+                if (state > state_.DROPPED &&
+                    (Stopwatch.GetTimestamp() - lastSuccessTimestamp) / (double)Stopwatch.Frequency > StaleConnectionSeconds) {
+                    state = state_.DROPPED;
+                    form.AppendTextBox("Dropped (connection went silent).\r\n");
+                    DebugPrint("Connection lost - no successful read in " + StaleConnectionSeconds + "s.", DebugType.ALL);
+                    break;
                 }
             }
 
@@ -3512,13 +3586,19 @@ namespace BetterJoyForCemu {
             stick2[0] = Math.Max(-1f, Math.Min(1f, (r[2 + o] - 128) / 127f));
             stick2[1] = Math.Max(-1f, Math.Min(1f, -(r[3 + o] - 128) / 127f));
 
-            // The byte7/byte8-to-L2/R2 attribution below was inferred (not empirically isolated
-            // to a specific physical trigger) from the raw capture, and a subsequent swap based
-            // on a joy.cpl reading turned out to be based on a misread - real in-game testing
-            // (fire/ADS bindings, unambiguous) confirmed the original assignment was the correct
-            // one, so this reverts that swap rather than adding a third guess.
-            triggerVal[0] = r[7 + o];
-            triggerVal[1] = r[8 + o];
+            // USB and BT reports use the identical field order once o has skipped each
+            // transport's own report-ID(+padding) prefix (see the o assignment in ReceiveRaw) -
+            // no further per-transport swap needed here. Order after the sticks: L2, R2, a free-
+            // running sequence/status counter (field index 6, skipped), then the two button bytes.
+            // Cross-checked against DS4Windows's DualSenseDevice.cs (inputReport[5/6+ro] for
+            // triggers, [8/9+ro] for the button bytes) and against a real idle BT capture, which
+            // only decodes to sane values (dead-center sticks, zeroed triggers, neutral dpad) at
+            // these positions.
+            int triggerFieldBase = 4;
+            int buttonFieldBase = 7;
+
+            triggerVal[0] = r[triggerFieldBase + o];
+            triggerVal[1] = r[triggerFieldBase + 1 + o];
 
             lock (buttons) {
                 lock (down_) {
@@ -3527,7 +3607,7 @@ namespace BetterJoyForCemu {
                 }
                 bool[] b = new bool[20];
 
-                byte btn1 = r[4 + o];
+                byte btn1 = r[buttonFieldBase + o];
                 b[(int)Button.X] = (btn1 & 0x80) != 0; // Triangle
                 b[(int)Button.A] = (btn1 & 0x40) != 0; // Circle
                 b[(int)Button.B] = (btn1 & 0x20) != 0; // Cross
@@ -3539,7 +3619,7 @@ namespace BetterJoyForCemu {
                 b[(int)Button.DPAD_DOWN] = dpad == 3 || dpad == 4 || dpad == 5;
                 b[(int)Button.DPAD_LEFT] = dpad == 5 || dpad == 6 || dpad == 7;
 
-                byte btn2 = r[5 + o];
+                byte btn2 = r[buttonFieldBase + 1 + o];
                 b[(int)Button.STICK2] = (btn2 & 0x80) != 0;      // R3
                 b[(int)Button.STICK] = (btn2 & 0x40) != 0;       // L3
                 b[(int)Button.PLUS] = (btn2 & 0x20) != 0;        // Options
@@ -3549,10 +3629,8 @@ namespace BetterJoyForCemu {
                 b[(int)Button.SHOULDER2_1] = (btn2 & 0x02) != 0; // R1
                 b[(int)Button.SHOULDER_1] = (btn2 & 0x01) != 0;  // L1
 
-                // byte 6 is the sequence counter (skipped). PS/touchpad/mute byte position is
-                // NOT yet confirmed from real data (never went non-zero in the capture used to
-                // derive the above) - left at the next byte as the best available inference;
-                // flag/re-verify if the PS button doesn't register.
+                // byte 6 is the sequence counter (skipped). PS button confirmed via
+                // DS4Windows's DualSenseDevice.cs (inputReport[10+ro], bit 0).
                 byte btn3 = r[9 + o];
                 b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
                 // Touchpad click/mute/paddles intentionally unmapped this milestone (out of
@@ -3561,6 +3639,18 @@ namespace BetterJoyForCemu {
                 buttons = b;
                 CommitButtonState();
             }
+
+            // Battery offset (52+o) confirmed via DS4Windows's DualSenseDevice.cs
+            // (inputReport[53+ro], same absolute position once o's own transport skip is
+            // accounted for). Low nibble is a coarse 0-8 level (bit 5 = full charge, forced to 8);
+            // halved to match GetBatteryColor's existing 0-4 scale, the same way Joy-Con's own
+            // coarser battery nibble already does.
+            byte batteryByte = r[52 + o];
+            int rawLevel = (batteryByte & 0x20) != 0 ? 8 : (batteryByte & 0x0F);
+            int newBattery = battery;
+            battery = Math.Min(4, rawLevel / 2);
+            if (newBattery != battery)
+                BatteryChanged();
         }
 
         // Get Gyro/Accel data
@@ -3726,6 +3816,67 @@ namespace BetterJoyForCemu {
             Array.Copy(buf, 0, buf_, 2, 8);
             PrintArray(buf_, DebugType.RUMBLE, format: "Rumble data sent: {0:S}");
             HIDapi.hid_write(handle, buf_, new UIntPtr(report_len));
+        }
+
+        // Standard IEEE 802.3 CRC32 (polynomial 0xEDB88320, the same one zlib/most CRC32
+        // libraries use) - DualSense's Bluetooth output reports are silently ignored by the
+        // controller unless this checksum is present and correct; USB output needs none.
+        private static readonly uint[] crc32Table = BuildCrc32Table();
+
+        private static uint[] BuildCrc32Table() {
+            var table = new uint[256];
+            for (uint i = 0; i < 256; i++) {
+                uint c = i;
+                for (int k = 0; k < 8; k++)
+                    c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+                table[i] = c;
+            }
+            return table;
+        }
+
+        // seed is a virtual leading byte folded into the running CRC state before data - the
+        // real DualSense Bluetooth output checksum is computed as if a 0xA2 byte preceded the
+        // actual report, without that byte itself being part of the transmitted buffer.
+        private static uint Crc32(byte seed, byte[] data, int length) {
+            uint crc = 0xFFFFFFFF;
+            crc = crc32Table[(crc ^ seed) & 0xFF] ^ (crc >> 8);
+            for (int i = 0; i < length; i++)
+                crc = crc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+            return crc ^ 0xFFFFFFFF;
+        }
+
+        // DualSense baseline rumble - both motors driven by the same single amplitude value
+        // dequeued from rumble_obj (see the Poll() call site), since DualSense's simple dual-
+        // motor rumble has no equivalent to Joy-Con's HD-rumble low/high-frequency split
+        // Rumble.GetData() encodes. Report layout (motor byte offsets, enable-rumble flags,
+        // Bluetooth CRC32-with-0xA2-seed) from DS4Windows's DualSense output-report code.
+        private void SendDualSenseRumble(byte leftMotor, byte rightMotor) {
+            bool bt = !isUSB;
+            int len = bt ? DualSenseMaxReportLen : 64;
+            byte[] buf = new byte[len];
+            if (bt) {
+                buf[0] = 0x31;
+                buf[1] = 0x02;
+                buf[2] = 0x0F; // enable rumble
+                // Required feature-flags byte (mic LED, audio mute, touchpad strips, player
+                // lights, motor power) - NOT safe to leave at 0x00 (confirmed on real hardware:
+                // omitting this the first time caused continuous, non-stopping rumble).
+                buf[3] = 0x55;
+                buf[4] = rightMotor;
+                buf[5] = leftMotor;
+                uint crc = Crc32(0xA2, buf, len - 4);
+                buf[len - 4] = (byte)crc;
+                buf[len - 3] = (byte)(crc >> 8);
+                buf[len - 2] = (byte)(crc >> 16);
+                buf[len - 1] = (byte)(crc >> 24);
+            } else {
+                buf[0] = 0x02;
+                buf[1] = 0x0F; // enable rumble
+                buf[2] = 0x55; // required feature-flags byte - see the BT branch's comment
+                buf[3] = rightMotor;
+                buf[4] = leftMotor;
+            }
+            HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
         }
 
         private byte[] Subcommand(byte sc, byte[] buf, uint len, bool print = true) {
