@@ -73,12 +73,17 @@ three get the same "re-verify after every step, not just at the end"
 treatment, and none is subordinate to the others:
 
 **1. PadId reassignment and Joy-Con auto-join/split.** Confirmed working
-again as of this plan, after today's incident. This logic lives in
+again as of this plan, after today's incident. This logic currently lives in
 `Program.cs` (`CleanUp`, `ReassignPadIds`, `AssignPadId`, the auto-join
 block) and in `Joycon.cs`'s `other` property and `virtualControllerSequence`
-- see "What stays as shared infrastructure" below. Three prior commits
-(`fb3dca1`, `3d1c38a`, `156dcf3`) each fixed a real regression in this exact
-area before DualSense existed; this refactor must not reopen any of them.
+- unlike the gyro/mapping-profile pipelines, this is not staying where it is:
+see "Virtual controller lifecycle" under "Target architecture" below for the
+plan to extract it into its own module, with the Joy-Con-only split/join
+quirk deliberately kept out of that module. Three prior commits (`fb3dca1`,
+`3d1c38a`, `156dcf3`) each fixed a real regression in this exact area before
+DualSense existed; this refactor must not reopen any of them - the
+extraction is a chance to make this subsystem cleaner, not an excuse to
+touch its actual behavior.
 
 **2. Button/stick mapping to the virtual XInput (ViGEmBus) output** - for
 Joy-Con-family (all four Nintendo types) *and* DualSense. This is
@@ -337,6 +342,44 @@ algorithm" is easier to see clearly once DualSense's own gyro data actually
 exists to compare against Joy-Con's) rather than assumed to happen in the
 same pass.
 
+### Virtual controller lifecycle - PadId assignment/compaction/creation/destruction as its own module
+
+A third extraction, alongside `Controller` and `GyroMath.cs`: the PadId
+compaction/reassignment logic and virtual controller (ViGEmBus)
+creation/destruction/teardown-and-recreate logic currently living in
+`Program.cs` (`CleanUp`, `ReassignPadIds`, `AssignPadId`,
+`CreateOutputControllers`) moves into its own module too - call it
+`VirtualControllerLifecycle.cs` or similar. This is highest-stakes-surface
+#1 from "What must not regress" above, but that section was about
+*preserving* it as-is; this is about actively giving it the same clean,
+standalone home `GyroMath.cs` gets, for the same reason - it's already
+confirmed fully generic today (no `isPro`/`isSnes`/`is64` conditionals
+anywhere in it), but it's still physically embedded in `Program.cs`
+alongside device-scanning/enumeration code it has nothing to do with.
+
+**The Joy-Con split/join ("pairing") quirk must not live in this module.**
+Joy-Con is, as far as is known, the only device type that supports two
+physical units combining into one logical controller - that's a
+`JoyconController`-specific quirk, not something every controller needs to
+understand. Concretely: the generic lifecycle module should only need to
+know "does this controller currently want an active virtual controller, or
+is it passively parked without one" (a state any controller type can be in,
+e.g. also relevant to a solo Joy-Con that's temporarily inactive) - not
+*why* a controller might be passive. The auto-join block's "which half is
+the loser, destroy its virtual controller" logic stays firmly inside
+`JoyconController`/wherever Joy-Con pairing lives, and calls into the
+generic lifecycle module's primitives (create/destroy/reassign) rather than
+duplicating them or the generic module knowing anything about pairing.
+
+**Design goal**: make compaction specifically an isolated, skippable step
+in this module - not inlined into `CleanUp`'s removal loop the way it is
+today - so that a future feature like "disable compaction" (leave gaps in
+PadId numbering instead of closing them on disconnect) is a small, obvious
+change to make, not a rewrite. This is a concrete test of whether the
+extraction actually achieved the modularity goal: if adding that toggle
+later requires touching more than this one module, the extraction wasn't
+clean enough.
+
 ### Replacing the `isPro` superset flag: explicit capabilities, not inherited booleans
 
 The root cause of today's incident was a boolean that means "this device
@@ -375,10 +418,6 @@ fixing the Tier 3 danger-zone pattern that caused today's incident.
 
 ### What stays as shared infrastructure (do not move, do not fork)
 
-- `Program.cs`'s `CleanUp`/`ReassignPadIds`/`AssignPadId`/auto-join block -
-  already fully generic (verified: contains no `isPro`/`isSnes`/`is64`
-  conditionals), works against the base type/interface with no changes to
-  its own logic, only to the collection's element type.
 - The gyro-mouse/gyro-stick pipeline and mapping-profile engine - stay on
   `Controller` as shared methods. Not worth splitting further right now;
   they're already correctly device-agnostic and splitting them adds risk
@@ -593,20 +632,28 @@ incremental and independently testable, not a single large rewrite:
 2. Extract `Controller` as a base class with `Joycon` (renamed or not) as
    its first/only subclass initially - a pure mechanical move of Tier 1
    content, zero behavior change. Verify again.
-3. Extract `DualSenseController`/`DualSense.cs` as a second subclass,
+3. Extract the virtual controller lifecycle module (`CleanUp`/
+   `ReassignPadIds`/`AssignPadId`/`CreateOutputControllers`) out of
+   `Program.cs` - doesn't depend on DualSense specifics, only on the
+   `Controller` base existing to operate over, so it can happen here rather
+   than waiting for step 4. The Joy-Con "loser" auto-join destroy logic
+   stays with Joy-Con pairing code, calling into this module's primitives
+   instead of duplicating them. Verify the PadId/auto-join checklist
+   thoroughly here - this is the module directly responsible for it.
+4. Extract `DualSenseController`/`DualSense.cs` as a second subclass,
    moving Tier 2 DualSense code out of the now-slimmer base. Verify again,
    including the DualSense-specific checklist item.
-4. Only then consider splitting Joy-Con/Pro/SNES/N64 apart into their own
+5. Only then consider splitting Joy-Con/Pro/SNES/N64 apart into their own
    subclasses under `NintendoController` - lower priority, since that
    family isn't where new controller types are expected to land, and it's
    the largest, most interleaved (isLeft/isPro/other) code in the file.
-5. Extract `GyroMath.cs` - after step 3 at the earliest (see the reasoning
+6. Extract `GyroMath.cs` - after step 4 at the earliest (see the reasoning
    under that section: telling device quirk apart from base algorithm is
    easier once DualSense's own gyro data exists to compare against, not
    before). A pure mechanical move first (same logic, new file, still
    called the same way), device-quirk-vs-base-algorithm separation as a
    deliberate follow-up, not bundled into the same commit.
-6. Fix the `connection`/`isUSB` staleness bug as part of whichever step
+7. Fix the `connection`/`isUSB` staleness bug as part of whichever step
    touches those fields, not as an afterthought. Do **not** add DS4-output
    support to `DualSenseController` - see the explicit decision above.
 
