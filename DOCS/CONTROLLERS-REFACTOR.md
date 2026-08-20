@@ -91,6 +91,18 @@ risk. The user has additional gyro work already planned (see "Related,
 deferred" below); that work depends on this pipeline staying intact through
 the refactor, not just on it compiling.
 
+**Explicit, non-negotiable constraint**: gyro/IMU behavior for Joy-Con and
+Pro Controller must keep working exactly as it does today, unchanged,
+through every part of this refactor - both the class-hierarchy split above
+and the settings-architecture migration below. This isn't just "don't
+introduce bugs" - it's "the actual runtime numbers a Joy-Con/Pro user
+experiences (sensitivity, deflection, roll compensation, auto-cal timing)
+must not shift at all" as a side effect of restructuring where the code or
+its config values live. The settings-architecture migration in particular
+(moving `GyroMouseSensitivityX/Y` and the other gyro `AppSettings` keys to
+per-profile) is the likeliest place for this to go wrong by accident - see
+the explicit seeding requirement added there.
+
 **Verification checklist to run after every step**, not just at the end:
 
 *PadId / auto-join:*
@@ -457,6 +469,19 @@ matching their names.
   e.g. very early startup behavior) can reasonably stay there, but that
   should end up being a small, deliberately-justified remainder, not the
   default assumption for a new setting the way it is today.
+- **Non-negotiable migration-correctness requirement**: moving a
+  sensitivity/behavior key off `ConfigurationManager.AppSettings` must not
+  change what an existing Joy-Con/Pro/DualSense profile actually does the
+  moment this ships. Every profile that already exists in
+  `controller_mappings.xml` at migration time - not just new ones seeded
+  from `Default` afterward - needs the newly-profileized keys backfilled
+  from whatever the *current live global value* was, using the same
+  missing-key-backfill mechanism `SnapshotMissingProfileValues` already uses
+  for the `AppConfigBackedKeys` bridge today, not a fresh/reset default. A
+  user's gyro-mouse sensitivity, roll compensation, stick scaling, etc. must
+  read identically before and after this migration for every controller
+  they already have configured - see the matching constraint under
+  "What must not regress" above.
 
 ### Relationship to the `Controller` class refactor above
 
@@ -505,6 +530,27 @@ not one large branch merged all at once.
   written down; surface them into this document (or a new one) before
   starting, since `HasGyro`/the acc/gyr-neutral initialization gap above
   directly affects how that gets designed.
+- **Meaningful, device-agnostic gyro sensitivity scales.** Explicitly not
+  part of this rebase, but directly relevant to DualSense gyro support
+  landing later: today's gyro tuning values (`GyroMouseSensitivityX/Y`,
+  `GyroStickSensitivityX/Y`, `GyroStickReduction`, `GyroAnalogSensitivity`,
+  `AHRS_beta`, and friends) are numbers tuned against Joy-Con's raw gyro
+  output - there's no reason to assume they'd produce equivalent real-world
+  feel if fed unchanged from a different controller's gyro (different
+  sensor scale/sample rate). The goal: define a real, physically-meaningful
+  scale (e.g. true degrees/second, normalized before any sensitivity
+  multiplier is applied) that every device's gyro pipeline converts into,
+  then transpose today's Joy-Con-tuned defaults onto that scale so a
+  Joy-Con/Pro user's experience is unchanged - **and**, if the scale is
+  chosen well, those same transposed defaults should feel sane on DualSense
+  too without separate per-device tuning. This is the actual test of
+  whether the new scale is meaningful, not just renamed. Worth doing before
+  or alongside DualSense gyro support, not before the class-hierarchy/
+  settings-architecture work above - but wherever `ExtractIMUValues`/
+  `gyr_g` (the point raw sensor data enters the shared pipeline today) ends
+  up living after this refactor is exactly where a normalization step would
+  need to be inserted, so keep this in mind when placing that code, even
+  though the scale work itself isn't happening now.
 - The three near-identical async diagnostic-log-writer implementations
   (`DualSenseRawDumpWriterLoop`, `AutoCalDiagWriterLoop`,
   `GyroStickDiagWriterLoop`) are a good candidate for a single shared
