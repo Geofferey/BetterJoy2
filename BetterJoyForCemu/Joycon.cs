@@ -564,7 +564,23 @@ namespace BetterJoyForCemu {
         public int constate = 2;
         public int connection = 3;
 
-        public PhysicalAddress PadMacAddress = new PhysicalAddress(new byte[] { 01, 02, 03, 04, 05, 06 });
+        private PhysicalAddress _padMacAddress = new PhysicalAddress(new byte[] { 01, 02, 03, 04, 05, 06 });
+        // A real MAC/identity is often resolved slightly AFTER this object starts existing (e.g.
+        // Program.cs's DualSense feature-report/serial resolution runs after construction, and
+        // Attach()'s own BT-address parse below runs after that) - if anything reads a mapping
+        // profile bind before that lands, mappingProfileId's lazy cache would otherwise lock onto
+        // the placeholder MAC's fallback identity (a "path-" encoded one) for the rest of this
+        // connection, silently diverging from the profile the user actually edits in the UI.
+        // Invalidating the cache here, the same way the "other" (join/split) setter already does,
+        // makes it self-correcting regardless of exactly when the real MAC lands.
+        public PhysicalAddress PadMacAddress {
+            get { return _padMacAddress; }
+            set {
+                if (!value.Equals(_padMacAddress))
+                    mappingProfileId = null;
+                _padMacAddress = value;
+            }
+        }
         public ulong Timestamp = 0;
         public int packetCounter = 0;
 
@@ -1015,11 +1031,14 @@ namespace BetterJoyForCemu {
         private static readonly ConcurrentQueue<string> dualSenseRawDumpQueue = new ConcurrentQueue<string>();
         private static int dualSenseRawDumpWriterStarted;
 
-        // TEMPORARY diagnostic writer (see the call site's comment) - same async queue +
-        // background-writer pattern as autocal_debug.log, so this can't block a controller's own
-        // Poll thread on file I/O. Unconditional (no config gate) since this is throwaway code
-        // meant to be removed once the real report layout is confirmed, not a shipped feature.
+        // Same async queue + background-writer pattern as autocal_debug.log, so this can't block
+        // a controller's own Poll thread on file I/O. Gated behind DualSenseDebugLogging (default
+        // off) - this writes continuously while a DualSense is connected, so it shouldn't run
+        // unconditionally for every user, only when actually troubleshooting something.
         internal void LogDualSenseRawDump(string message) {
+            if (!Boolean.Parse(ConfigurationManager.AppSettings["DualSenseDebugLogging"]))
+                return;
+
             if (Interlocked.CompareExchange(ref dualSenseRawDumpWriterStarted, 1, 0) == 0) {
                 new Thread(DualSenseRawDumpWriterLoop) {
                     IsBackground = true,
