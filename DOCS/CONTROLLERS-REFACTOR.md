@@ -342,6 +342,135 @@ device type's behavior. Concretely, that means:
    virtual property or method on `Controller` with a safe default, not a
    boolean flag callers have to know to check.
 
+## Settings architecture: moving off global App.config toward per-profile settings
+
+A second, related consolidation the user wants done as part of this same
+planning effort: BetterJoy currently has **three overlapping config
+surfaces**, and the oldest of them keeps accumulating settings that should
+never have been global in the first place.
+
+### Current state (found via direct grep, not assumption)
+
+1. **`App.config`/the deployed `.exe.config`**, read via
+   `ConfigurationManager.AppSettings[key]` scattered across essentially every
+   file (60+ distinct call sites found in `Joycon.cs`, `Program.cs`,
+   `MainForm.cs`, `Reassign.cs`, `ControllerMappings.cs`, `UpdServer.cs`,
+   `DesktopInputBackend.cs`). `MainForm.cs:99`'s legacy Settings UI edits a
+   `displayedConfigKeys`-driven list of these directly.
+2. **A separate `settings` file**, read via a distinct `Config` class
+   (`Config.Value`, `Config.GetDefaultValue`, `Config.ReloadSettingsOnly`,
+   `Config.SaveCaliData`/`SaveStickCaliData`) - used for calibration data and
+   as a fallback inside `ControllerMappings.LegacyValue`.
+3. **`controller_mappings.xml`**, read/written via `ControllerMappings`
+   (`Value`/`OptionValue`/`BoolOption`/`IntOption`, per `profileId`) - the
+   modern, per-controller-profile store this whole refactor is built around.
+
+Bridging (2)/(1) into (3): `ControllerMappings.AppConfigBackedKeys` (a fixed
+set: `left_click`, `right_click`, `center_click`, `scroll_up`,
+`scroll_down`, `clench_gyro`, `ratchet_gyro`) plus `GyroActivationKeys`
+(`active_gyro_mouse`, `active_gyro_left_stick`, `active_gyro_right_stick`)
+fall back to reading `App.config`/`Config` directly (`LegacyValue`/
+`LegacyGyroActivationValue`/`LegacyOptionValue`) whenever a profile doesn't
+have its own stored value - i.e. whenever a brand-new profile is created.
+This is fragile in exactly the way the user is objecting to: it was the
+direct cause of a real bug this session (`GyroToJoyOrMouse`'s stale
+`"mouse"` default silently propagating `active_gyro_mouse=always` into every
+newly-created profile, contradicting the file's own "Default: none"
+comment) and it only covers a handful of keys - every other AppSettings key
+below has **no per-profile override path at all today**, global is the only
+option.
+
+### The sensitivity/behavior settings that are global today but shouldn't be
+
+Grepping every `ConfigurationManager.AppSettings[...]` call site turns up
+roughly 60 keys. The large majority are gyro-mouse/gyro-stick/auto-
+calibration tuning values that are read fresh, globally, every time they're
+used - meaning **every connected controller, regardless of type or the
+user's own per-controller preference, shares identical sensitivity**:
+`GyroMouseSensitivityX/Y`, `GyroMouseScreenTraversalDegrees`,
+`GyroMouseTighteningThreshold`, `GyroMouseSmoothingTimeMs/Threshold`,
+`GyroStickSensitivityX/Y`, `GyroStickReduction`, `GyroStickTiltRangeX/Y`,
+`GyroStickHybridRateWeight`, `GyroAnalogSensitivity`,
+`GyroMouseRollCompensation`, `GyroMouseDirectCursor`, `GyroMouseScreenWrap`,
+`GyroMouseLeftHanded`, `ChangeOrientationDoubleClick`, the `AutoCal*` family
+(`AutoCalibrationEnabled`, `AutoCalStillDurationSeconds`,
+`AutoCalTrendFraction`, `AutoCalArmDelaySeconds`,
+`AutoCalButtonInactivitySeconds`, `AutoCalibrateStickCenter`),
+`StickScalingFactor`/`StickScalingFactor2` (directly relevant to this
+session's DualSense stick-calibration work), `EnableShakeInput`/
+`ShakeInputSensitivity`/`ShakeInputDelay`, `LowFreqRumble`/`HighFreqRumble`/
+`EnableRumble`. These belong on `Controller`/per-profile, not global - a
+user should be able to want different gyro-mouse sensitivity on their
+DualSense than on their Joy-Con, or shake-input on one controller and not
+another, without it affecting every other connected device.
+
+A smaller set is genuinely app-wide and correctly belongs in a global
+section, not per-controller: `UseHidHide`, `IP`/`Port` (the Cemu motion
+server), `AutoAddControllers`/`BlockAutoAddUSB`/`BlockAutoAddBluetooth`,
+`PassiveScan`, `DoNotRejoinJoycons`, `HideStatus`, `StartInTray`,
+`UnhideOnExit`, `MotionServer`, `UseFakerInput`, `AllowCalibration` (gates
+whether the wizard is reachable at all), and the various `*DebugLogging`
+toggles (`DualSenseDebugLogging`, `GyroMouseDebugLogging`,
+`GyroStickDebugLogging`, `AutoCalDebugLogging`).
+
+`ShowAsXInput`/`ShowAsDS4`/`GyroToJoyOrMouse` are already dead weight once
+Default-profile seeding (below) exists - they only exist today as
+`LegacyOptionValue`/`LegacyGyroActivationValue` migration sources, not as
+settings anyone should edit directly going forward.
+
+**This grep is a starting inventory, not a final classification** - a real
+pass through this refactor should re-examine every one of these ~60 keys
+individually, not just sort them into the two buckets above by pattern-
+matching their names.
+
+### Target design
+
+- **A reserved `Default` profile** (sentinel profile ID, e.g. `"default"` -
+  distinct in shape from every real device-derived ID like `pro:xxxxx` or
+  `dualsense:xxxxx`, so it can never collide with one) replaces
+  `AppConfigBackedKeys`/`LegacyValue`/`LegacyGyroActivationValue`/
+  `LegacyOptionValue` entirely. `EnsureProfileSaved`/
+  `SnapshotMissingProfileValues` seeds a brand-new profile from the `Default`
+  profile's stored values instead of reading `App.config`/`Config`
+  key-by-key. Per the user's framing ("if enabled"), this seeding is itself
+  a toggle - when off, new profiles fall back to hardcoded in-code defaults
+  instead of the user-edited `Default` profile. The `Default` profile is
+  editable through the same Controller Profiles UI (`Reassign.cs`) real
+  controllers use today - exact UI entry point (a permanent extra row in the
+  controller dropdown? a separate button?) is a real design decision to
+  settle before implementing, not assumed here.
+- **A reserved global-settings profile** (another sentinel ID, e.g.
+  `"__global__"`) reuses the exact same storage/persistence/file-watcher/
+  `Reload()` machinery `ControllerMappings` already has - not a fourth
+  config surface. This holds the app-wide keys listed above. The legacy
+  Settings UI (`MainForm.cs`'s `displayedConfigKeys` list) either goes away
+  or becomes a thin editor over this profile instead of raw `App.config`.
+- **The sensitivity/behavior keys move to being genuine profile `OptionKey`s**
+  (like `HomeLEDOn`/`SwapAB`/the `GyroStick*` deflection settings already
+  are today) - each controller's own profile can override them, with the
+  `Default` profile providing the seed value for new ones. `Controller`
+  reads these the same way it already reads `MappingValue`/
+  `ProfileBoolOption`/etc. today, not via `ConfigurationManager.AppSettings`
+  at the point of use.
+- `App.config` itself doesn't disappear entirely - whatever is genuinely
+  process-bootstrap config (read once before any profile store could exist,
+  e.g. very early startup behavior) can reasonably stay there, but that
+  should end up being a small, deliberately-justified remainder, not the
+  default assumption for a new setting the way it is today.
+
+### Relationship to the `Controller` class refactor above
+
+These are two separable concerns (class hierarchy vs. settings storage) but
+they touch the same surface - every sensitivity read this section moves off
+`ConfigurationManager.AppSettings` is a read that would otherwise need to be
+re-homed again when `Controller`/`DualSenseController` are extracted.
+Sequencing worth considering once both plans are final: doing the
+Default-profile/global-settings-profile plumbing in `ControllerMappings.cs`
+first (self-contained, lower risk, doesn't touch `Joycon.cs`'s device
+branching at all) before or alongside migration step 1 below, so the
+capability-property pass and the settings-read migration happen together
+per call site instead of touching the same lines twice.
+
 ## Suggested migration approach
 
 Given the stakes (PadId reassignment breaking is the specific failure mode
