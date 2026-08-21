@@ -688,7 +688,11 @@ namespace BetterJoyForCemu {
         public Vector3 GetAccel() {
             return acc_g;
         }
-        public int Attach() {
+        // No shared shell worth extracting - past the state_.ATTACHED transition, this is
+        // entirely one device-specific branch or the other (DualSense's early return vs.
+        // Nintendo's whole USB/BT handshake + SPI calibration dump + subcommand sequence). See
+        // Controller.Attach's abstract declaration.
+        public override int Attach() {
             state = state_.ATTACHED;
 
             if (!UsesNintendoProtocol) {

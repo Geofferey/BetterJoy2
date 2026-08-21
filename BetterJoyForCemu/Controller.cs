@@ -189,6 +189,13 @@ namespace BetterJoyForCemu {
             Interlocked.Exchange(ref pendingLedPlayerNum, playerNum);
         }
 
+        // Establishes the connection - part of the Controller contract (Program.cs's connect
+        // loop calls this on anything it opens), but with no shared shell worth extracting:
+        // every implementation is either wholly one device-specific handshake or another (see
+        // Joycon.Attach for Nintendo's SPI/subcommand sequence vs. DualSense's early-return
+        // baseline path), unlike Detach below where most of the method really is shared.
+        public abstract int Attach();
+
         // Device-agnostic disconnect shell: stop the poll loop, tear down whatever virtual
         // output exists, and release the HID handle. OnDetachingWhileAttached is the one point a
         // subclass gets to send its own "give the connection back" bytes before the handle
