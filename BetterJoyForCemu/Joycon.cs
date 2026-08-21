@@ -374,18 +374,6 @@ namespace BetterJoyForCemu {
 
         public bool send = true;
 
-        public enum DebugType : int {
-            NONE,
-            ALL,
-            COMMS,
-            THREADING,
-            IMU,
-            RUMBLE,
-            SHAKE,
-            STICK, // appended, not inserted - existing numeric values are persisted in App.config/settings
-        };
-        public DebugType debug_type = (DebugType)int.Parse(ConfigurationManager.AppSettings["DebugType"]);
-        //public DebugType debug_type = DebugType.NONE; //Keep this for manual debugging during development.
         public bool isLeft;
 
         private float[] stick = { 0, 0 };
@@ -538,7 +526,7 @@ namespace BetterJoyForCemu {
         int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
 
         public byte LED { get; private set; } = 0x0;
-        public void SetLEDByPlayerNum(int id) {
+        public override void SetLEDByPlayerNum(int id) {
             if (!UsesNintendoProtocol)
                 return;
             if (id > 3) {
@@ -658,12 +646,6 @@ namespace BetterJoyForCemu {
                 other.SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
         }
 
-        public void DebugPrint(String s, DebugType d) {
-            if (debug_type == DebugType.NONE) return;
-            if (d == DebugType.ALL || d == debug_type || debug_type == DebugType.ALL) {
-                form.AppendTextBox(s + "\r\n");
-            }
-        }
         public bool GetButtonDown(Button b) {
             return buttons_down[(int)b];
         }
@@ -864,7 +846,7 @@ namespace BetterJoyForCemu {
         // than waiting for its own poll thread to notice the connection went silent - that
         // window otherwise leaves both the old and new entries live at once, each driving their
         // own virtual output device (double presses/duplicate input in games).
-        private void RetireDuplicateConnections() {
+        protected override void RetireDuplicateConnections() {
             // TEMPORARY diagnostic: suspected cross-controller contamination when a DualSense and
             // a Joy-Con are connected together - log every comparison this makes so the real
             // PadId/PadMacAddress values are visible instead of guessed at.
@@ -994,7 +976,7 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private int ReceiveRaw() {
+        protected override int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
 
             if (isDualSense) {
@@ -3297,7 +3279,7 @@ namespace BetterJoyForCemu {
                 form.SimulateScroll(up);
         }
 
-        private void ReleaseGyroMouseActions() {
+        protected override void ReleaseGyroMouseActions() {
             SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left,
                                     false);
             SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right,
@@ -3308,110 +3290,28 @@ namespace BetterJoyForCemu {
             SimulateGyroMouseScroll("scroll_down", false, false);
         }
 
-        // Guards RetireDuplicateConnections() above so it only ever runs once per controller,
-        // the first time it actually proves itself alive (not merely that Attach() didn't
-        // throw, which happens before the connection is known to be stable/receiving real data).
-        private bool retiredDuplicates = false;
-
-        // How long a connection can go without a single successful read before being forced to
-        // DROPPED even though nothing ever came back as a hard read error - see the staleness
-        // check at the bottom of Poll()'s loop for why this exists.
-        private const double StaleConnectionSeconds = 3.0;
-
-        // protected, not private: Controller.Begin() starts a thread pointed at this. Not yet
-        // moved itself - it has real device-branching inside (UsesNintendoProtocol-gated rumble
-        // handling), the Tier-3 danger zone DOCS/CONTROLLERS-REFACTOR.md calls out, so it stays
-        // in Joycon until that's worth splitting out on its own.
-        protected override void Poll() {
-            stop_polling = false;
-            int attempts = 0;
-            long lastSuccessTimestamp = Stopwatch.GetTimestamp();
-            while (!stop_polling & state > state_.NO_JOYCONS) {
-                int requestedLed = Interlocked.Exchange(ref pendingLedPlayerNum, -1);
-                if (requestedLed >= 0) {
-                    SetLEDByPlayerNum(requestedLed);
-                }
-                if (rumble_obj.queue.Count > 0) {
-                    if (!UsesNintendoProtocol) {
-                        // DualSense's simple dual-motor rumble has no equivalent to the low/high-
-                        // frequency split Rumble.GetData() encodes for Joy-Con's HD rumble - just
-                        // take the queued amplitude directly and drive both motors the same. Was
-                        // disabled after real hardware went into continuous, non-stopping rumble
-                        // the first time this ran - root cause found: outputReport[2] (USB) /
-                        // [3] (BT) is a required feature-flags byte (0x55: mic LED, audio mute,
-                        // touchpad strips, player lights, motor power) that was left at 0x00 by
-                        // omission, not an intentional "leave alone" zero. Re-enabled with that
-                        // byte now set.
-                        float amp = rumble_obj.queue.Dequeue()[2];
-                        byte motor = (byte)(Math.Max(0f, Math.Min(1f, amp)) * 255f);
-                        SendDualSenseRumble(motor, motor);
-                    } else {
-                        SendRumble(rumble_obj.GetData());
-                    }
-                }
-
-                int a;
-                try {
-                    a = ReceiveRaw();
-                } catch (Exception ex) {
-                    // ReceiveRaw covers report parsing, gyro/stick processing, and ViGEm report
-                    // building for every packet - an unhandled exception anywhere in that chain
-                    // reaches here uncaught, and this runs on a bare Thread (not a UI/task
-                    // context with its own handler), so .NET terminates the whole process by
-                    // default. One malformed packet or transient edge case shouldn't take down
-                    // every connected controller - treat it the same as a read error below
-                    // (brief pause, count toward the drop threshold) instead.
-                    DebugPrint("Unhandled exception in ReceiveRaw: " + ex, DebugType.ALL);
-                    a = -1;
-                }
-
-                if (a > 0 && state > state_.DROPPED) {
-                    state = state_.IMU_DATA_OK;
-                    attempts = 0;
-                    lastSuccessTimestamp = Stopwatch.GetTimestamp();
-
-                    if (!retiredDuplicates) {
-                        retiredDuplicates = true;
-                        RetireDuplicateConnections();
-                    }
-                } else if (attempts > 240) {
-                    state = state_.DROPPED;
-                    form.AppendTextBox("Dropped.\r\n");
-
-                    DebugPrint("Connection lost. Is the Joy-Con connected?", DebugType.ALL);
-                    break;
-                } else if (a < 0) {
-                    // An error on read.
-                    //form.AppendTextBox("Pause 5ms");
-                    Thread.Sleep((Int32)5);
-                    ++attempts;
-                } else if (a == 0) {
-                    // The non-blocking read timed out. No need to sleep.
-                    // No need to increase attempts because it's not an error.
-                }
-
-                // Belt-and-suspenders on top of the attempts>240 hard-error threshold above: a
-                // connection whose transport just goes quiet (e.g. a Bluetooth radio link
-                // dropping) rather than the HID handle itself becoming invalid can have
-                // hid_read_timeout return plain timeouts (a==0) forever, never a hard error -
-                // confirmed on real hardware with a Bluetooth DualSense, which the attempts
-                // counter above never penalizes, so it never reached DROPPED and sat as a stale,
-                // frozen "connected" entry (and virtual controller) indefinitely. This is a
-                // second, independent detector using elapsed wall-clock time since the last
-                // genuinely successful read, regardless of why reads have been failing.
-                if (state > state_.DROPPED &&
-                    (Stopwatch.GetTimestamp() - lastSuccessTimestamp) / (double)Stopwatch.Frequency > StaleConnectionSeconds) {
-                    state = state_.DROPPED;
-                    form.AppendTextBox("Dropped (connection went silent).\r\n");
-                    DebugPrint("Connection lost - no successful read in " + StaleConnectionSeconds + "s.", DebugType.ALL);
-                    break;
+        // Called from Controller.Poll()'s shared shell whenever rumble_obj's queue has data -
+        // rumble_obj/SendRumble/SendDualSenseRumble aren't promoted to Controller yet, so this
+        // stays a hook rather than shared logic.
+        protected override void SendQueuedRumbleIfAny() {
+            if (rumble_obj.queue.Count > 0) {
+                if (!UsesNintendoProtocol) {
+                    // DualSense's simple dual-motor rumble has no equivalent to the low/high-
+                    // frequency split Rumble.GetData() encodes for Joy-Con's HD rumble - just
+                    // take the queued amplitude directly and drive both motors the same. Was
+                    // disabled after real hardware went into continuous, non-stopping rumble
+                    // the first time this ran - root cause found: outputReport[2] (USB) /
+                    // [3] (BT) is a required feature-flags byte (0x55: mic LED, audio mute,
+                    // touchpad strips, player lights, motor power) that was left at 0x00 by
+                    // omission, not an intentional "leave alone" zero. Re-enabled with that
+                    // byte now set.
+                    float amp = rumble_obj.queue.Dequeue()[2];
+                    byte motor = (byte)(Math.Max(0f, Math.Min(1f, amp)) * 255f);
+                    SendDualSenseRumble(motor, motor);
+                } else {
+                    SendRumble(rumble_obj.GetData());
                 }
             }
-
-            // A disconnect or detach may prevent another input report from arriving. Release
-            // stateful desktop inputs here as the final backstop instead of leaving Windows with
-            // a button-down whose corresponding physical controller can no longer report up.
-            ReleaseGyroMouseActions();
         }
 
         public float[] otherStick = { 0, 0 };
