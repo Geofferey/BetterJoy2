@@ -345,17 +345,18 @@ namespace BetterJoyForCemu {
                 return null;
 
             string ownId = DeviceId(joycon);
-            if (joycon.isSnes)
-                return "snes:" + ownId;
-            if (joycon.is64)
-                return "n64:" + ownId;
-            // Checked ahead of isPro - isDualSense implies isPro (see the Joycon constructor's
-            // "single-unit controller" convention), so without this it would silently land in
-            // the "pro:" branch and display as a Pro Controller in the UI.
-            if (joycon.isDualSense)
-                return "dualsense:" + ownId;
-            if (joycon.isPro)
-                return "pro:" + ownId;
+            // joycon.Kind is the single source of truth for this ordering (DualSense before
+            // Snes/N64/Pro) - see Joycon.cs's Kind property. Previously re-derived inline here via
+            // isSnes/is64/isDualSense/isPro directly, which needed its own comment explaining why
+            // isDualSense had to be checked ahead of isPro (isDualSense implies isPro, see the
+            // Joycon constructor's "single-unit controller" convention) - now impossible to get
+            // wrong since there's only one place this ordering is expressed.
+            switch (joycon.Kind) {
+                case ControllerKind.Snes: return "snes:" + ownId;
+                case ControllerKind.N64: return "n64:" + ownId;
+                case ControllerKind.DualSense: return "dualsense:" + ownId;
+                case ControllerKind.Pro: return "pro:" + ownId;
+            }
             if (joycon.other == joycon)
                 return (joycon.isLeft ? "vertical-left:" : "vertical-right:") + ownId;
             if (joycon.other == null)
@@ -382,18 +383,18 @@ namespace BetterJoyForCemu {
             }
 
             string type;
-            if (joycon.isSnes)
-                type = "SNES Controller";
-            else if (joycon.is64)
-                type = "N64 Controller";
-            else if (joycon.isDualSense)
-                type = "DualSense Controller";
-            else if (joycon.isPro)
-                type = "Pro Controller";
-            else if (joycon.other == joycon)
-                type = joycon.isLeft ? "Left Joy-Con (vertical)" : "Right Joy-Con (vertical)";
-            else
-                type = joycon.isLeft ? "Left Joy-Con (solo)" : "Right Joy-Con (solo)";
+            switch (joycon.Kind) {
+                case ControllerKind.Snes: type = "SNES Controller"; break;
+                case ControllerKind.N64: type = "N64 Controller"; break;
+                case ControllerKind.DualSense: type = "DualSense Controller"; break;
+                case ControllerKind.Pro: type = "Pro Controller"; break;
+                default:
+                    if (joycon.other == joycon)
+                        type = joycon.isLeft ? "Left Joy-Con (vertical)" : "Right Joy-Con (vertical)";
+                    else
+                        type = joycon.isLeft ? "Left Joy-Con (solo)" : "Right Joy-Con (solo)";
+                    break;
+            }
 
             return new ControllerProfileInfo {
                 ProfileId = ProfileIdFor(joycon),

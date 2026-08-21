@@ -22,6 +22,37 @@ namespace BetterJoyForCemu {
         public bool isSnes = false;
         public bool is64 = false;
         public bool isDualSense = false;
+
+        // Capability properties - step 1 of DOCS/CONTROLLERS-REFACTOR.md's migration order.
+        // isPro is a SUPERSET flag (isPro = isPro || isSnes || is64 || isDualSense, set in the
+        // constructor below), so every existing "if (isPro)" check silently also matches SNES/
+        // N64/DualSense whether that's actually intended or not - the exact mechanism behind a
+        // real incident this session (a DualSense-scoped change leaked into Joy-Con's own code
+        // path via a shared isPro-gated method). These properties name what each call site is
+        // ACTUALLY testing for, so the intent is explicit instead of relying on isPro-superset
+        // trivia. Their default implementations below are deliberately literal, behavior-
+        // preserving aliases of today's existing flags for every current device type - this is a
+        // pure rename/naming pass, not a behavior change (SNES/N64 mathematically get the same
+        // HasDualSticks=true a raw "isPro" check already gave them, even though SNES genuinely
+        // has zero sticks - that real divergence is deferred to when Controller/subclasses exist
+        // and SnesController can correctly override this, not fixed here).
+        public bool SupportsPairing => !isPro;      // Joy-Con-only: can combine with another unit into one logical controller
+        public bool HasDualSticks => isPro;         // has two physical sticks/thumb-stick-click buttons on one unit
+        public bool HasGyro => !isDualSense;         // currently populates real gyr_g/acc_g data
+        public bool HasAnalogTriggers => isDualSense; // L2/R2 report a real analog value, not just a digital button bit
+        public bool UsesNintendoProtocol => !isDualSense; // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
+
+        // Single source of truth for device-kind identity, replacing the same isDualSense-
+        // before-isSnes-before-is64-before-isPro ordering dependency that used to be re-derived
+        // independently (and correctly, but duplicated) in HeadlessJoyconHost.cs and
+        // ControllerMappings.cs - see DOCS/CONTROLLERS-REFACTOR.md's settings/step-1 notes.
+        public ControllerKind Kind =>
+            isDualSense ? ControllerKind.DualSense :
+            isSnes ? ControllerKind.Snes :
+            is64 ? ControllerKind.N64 :
+            isPro ? ControllerKind.Pro :
+            (isLeft ? ControllerKind.Left : ControllerKind.Right);
+
         public byte[] triggerVal = { 0, 0 }; // raw 0-255 analog L2/R2, DualSense only
         bool isUSB = false;
         private Joycon _other = null;
@@ -308,7 +339,7 @@ namespace BetterJoyForCemu {
         }
 
         private bool OwnsGyroMouse() {
-            return isPro || other == null || other == this ||
+            return !SupportsPairing || other == null || other == this ||
                  (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
                     ? isLeft : !isLeft);
         }
@@ -331,7 +362,7 @@ namespace BetterJoyForCemu {
         // canonical reserved index before filtering so join order cannot make us consume the
         // wrong physical control.
         private int CanonicalButtonToLocalVigemIndex(int canonicalIndex) {
-            if (isPro || other == null || other == this || isLeft)
+            if (!SupportsPairing || other == null || other == this || isLeft)
                 return canonicalIndex;
 
             switch ((Button)canonicalIndex) {
@@ -606,7 +637,7 @@ namespace BetterJoyForCemu {
 
         public byte LED { get; private set; } = 0x0;
         public void SetLEDByPlayerNum(int id) {
-            if (isDualSense)
+            if (!UsesNintendoProtocol)
                 return;
             if (id > 3) {
                 // No support for any higher than 3 (4 Joycons/Controllers supported in the application normally)
@@ -668,7 +699,7 @@ namespace BetterJoyForCemu {
             // real serial never matches it, but leaving isUSB unconditional here would still
             // read false correctly by coincidence. Made explicit anyway since real transport is
             // decided per-read from actual report length in ReceiveRaw, not this field.
-            isUSB = !isDualSense && serialNum == "000000000001";
+            isUSB = UsesNintendoProtocol && serialNum == "000000000001";
             this.thirdParty = thirdParty;
 
             this.path = path;
@@ -702,7 +733,7 @@ namespace BetterJoyForCemu {
                 PrintArray(stick_cal, DebugType.STICK, len: 6, start: 0, format: "Applied recalibrated stick data: {0:S}");
             }
 
-            if (isPro) {
+            if (HasDualSticks) {
                 ushort[] secondary = CalibrationState.ActiveStickCal(serial_number, true);
                 if (secondary != null) {
                     Array.Copy(secondary, stick2_cal, 6);
@@ -757,7 +788,7 @@ namespace BetterJoyForCemu {
         public int Attach() {
             state = state_.ATTACHED;
 
-            if (isDualSense) {
+            if (!UsesNintendoProtocol) {
                 // None of what follows applies - the USB handshake bytes, SPI calibration dump,
                 // home-light/player-LED writes, and IMU/rumble/input-mode subcommands are all
                 // either meaningless to a DualSense or (the Subcommand-based ones) block for up
@@ -866,7 +897,7 @@ namespace BetterJoyForCemu {
         }
 
         public void BlinkHomeLight() { // do not call after initial setup
-            if (thirdParty || isDualSense)
+            if (thirdParty || !UsesNintendoProtocol)
                 return;
             byte[] a = Enumerable.Repeat((byte)0xFF, 25).ToArray();
             a[0] = 0x18;
@@ -875,7 +906,7 @@ namespace BetterJoyForCemu {
         }
 
         public void SetHomeLight(bool on) {
-            if (thirdParty || isDualSense)
+            if (thirdParty || !UsesNintendoProtocol)
                 return;
             byte[] a = Enumerable.Repeat((byte)0xFF, 25).ToArray();
             if (on) {
@@ -1401,7 +1432,7 @@ namespace BetterJoyForCemu {
         // own buttons. Checking DPAD_* here instead, unconditionally for every non-Pro case,
         // is what actually stays correct for whichever single physical Joycon the caller means.
         private bool CalibrationConfirmPressed() {
-            if (isPro)
+            if (!SupportsPairing)
                 return buttons_down[(int)Button.A] || buttons_down[(int)Button.B] || buttons_down[(int)Button.X] || buttons_down[(int)Button.Y];
             return buttons_down[(int)Button.DPAD_UP] || buttons_down[(int)Button.DPAD_DOWN] || buttons_down[(int)Button.DPAD_LEFT] || buttons_down[(int)Button.DPAD_RIGHT];
         }
@@ -1418,7 +1449,7 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            int powerOffButton = (int)((isPro || !isLeft || other != null) ? Button.HOME : Button.CAPTURE);
+            int powerOffButton = (int)((!SupportsPairing || !isLeft || other != null) ? Button.HOME : Button.CAPTURE);
 
             long timestamp = Stopwatch.GetTimestamp();
             if (ProfileBoolOption("HomeLongPowerOff") && buttons[powerOffButton]) {
@@ -1432,7 +1463,7 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && !isPro) {
+            if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && SupportsPairing) {
                 if ((buttons_down_timestamp[(int)Button.STICK] - lastDoubleClick) < 3000000) {
                     ReleaseGyroMouseActions();
                     form.JoinOrSplitJoycon(this); // trigger connection button click
@@ -1441,7 +1472,7 @@ namespace BetterJoyForCemu {
                     return;
                 }
                 lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
-            } else if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && !isPro) {
+            } else if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && SupportsPairing) {
                 lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
             }
 
@@ -1585,10 +1616,10 @@ namespace BetterJoyForCemu {
                     : (manualRecenterRequested ? "RESET" : "STICK RECENTER"));
             }
 
-            if (GyroAnalogSliders && (other != null || isPro)) {
+            if (GyroAnalogSliders && (other != null || HasDualSticks)) {
                 Button leftT = isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2;
                 Button rightT = isLeft ? Button.SHOULDER2_2 : Button.SHOULDER_2;
-                Joycon left = isLeft ? this : (isPro ? this : this.other); Joycon right = !isLeft ? this : (isPro ? this : this.other);
+                Joycon left = isLeft ? this : (HasDualSticks ? this : this.other); Joycon right = !isLeft ? this : (HasDualSticks ? this : this.other);
 
                 int ldy, rdy;
                 if (UseFilteredIMU) {
@@ -2289,9 +2320,9 @@ namespace BetterJoyForCemu {
         }
 
         private string GyroMouseDiagnosticSource() {
-            string controller = isPro ? "Pro" : (isLeft ? "JoyCon-L" : "JoyCon-R");
+            string controller = !SupportsPairing ? "Pro" : (isLeft ? "JoyCon-L" : "JoyCon-R");
             string transport = isUSB ? "USB" : "BT";
-            string layout = isPro ? "single" :
+            string layout = !SupportsPairing ? "single" :
                 (other == null ? "solo" : (other == this ? "self" : "joined"));
             return controller + "/" + transport + "/" + layout;
         }
@@ -2645,7 +2676,7 @@ namespace BetterJoyForCemu {
             // like perfect stillness) and publish bogus all-zero calibration data almost
             // immediately after every connect, while also contending for the shared
             // CalibrationState claim with any other controller's own legitimate auto-cal window.
-            if (isDualSense)
+            if (!HasGyro)
                 return;
             if (!AutoCalibrationEnabled || autoCalCompleted)
                 return;
@@ -2731,7 +2762,7 @@ namespace BetterJoyForCemu {
             if (AutoCalibrateStickCenter) {
                 autoCalStickCenterX.Add(stick_precal[0]);
                 autoCalStickCenterY.Add(stick_precal[1]);
-                if (isPro) {
+                if (HasDualSticks) {
                     autoCalStick2CenterX.Add(stick2_precal[0]);
                     autoCalStick2CenterY.Add(stick2_precal[1]);
                 }
@@ -2839,7 +2870,7 @@ namespace BetterJoyForCemu {
                     Median(autoCalStickCenterX), Median(autoCalStickCenterY));
                 getActiveStickData();
             }
-            if (isPro && autoCalStick2CenterX.Count > 0) {
+            if (HasDualSticks && autoCalStick2CenterX.Count > 0) {
                 CalibrationState.PublishStickCenter(serial_number, true, stick2_cal,
                     Median(autoCalStick2CenterX), Median(autoCalStick2CenterY));
                 getActiveStickData();
@@ -3420,7 +3451,7 @@ namespace BetterJoyForCemu {
                     SetLEDByPlayerNum(requestedLed);
                 }
                 if (rumble_obj.queue.Count > 0) {
-                    if (isDualSense) {
+                    if (!UsesNintendoProtocol) {
                         // DualSense's simple dual-motor rumble has no equivalent to the low/high-
                         // frequency split Rumble.GetData() encodes for Joy-Con's HD rumble - just
                         // take the queued amplitude directly and drive both motors the same. Was
@@ -3526,7 +3557,7 @@ namespace BetterJoyForCemu {
                 stick_raw[1] = report_buf[7 + (isLeft ? 0 : 3)];
                 stick_raw[2] = report_buf[8 + (isLeft ? 0 : 3)];
 
-                if (isPro) {
+                if (HasDualSticks) {
                     stick2_raw[0] = report_buf[6 + (!isLeft ? 0 : 3)];
                     stick2_raw[1] = report_buf[7 + (!isLeft ? 0 : 3)];
                     stick2_raw[2] = report_buf[8 + (!isLeft ? 0 : 3)];
@@ -3537,7 +3568,7 @@ namespace BetterJoyForCemu {
                 CalibrationState.AddStickSample(this, false, stick_precal[0], stick_precal[1]);
                 stick = CenterSticks(stick_precal, stick_cal, deadzone, isLeft ? stickScalingFactor : stickScalingFactor2);
 
-                if (isPro) {
+                if (HasDualSticks) {
                     stick2_precal[0] = (UInt16)(stick2_raw[0] | ((stick2_raw[1] & 0xf) << 8));
                     stick2_precal[1] = (UInt16)((stick2_raw[1] >> 4) | (stick2_raw[2] << 4));
                     CalibrationState.AddStickSample(this, true, stick2_precal[0], stick2_precal[1]);
@@ -3581,7 +3612,7 @@ namespace BetterJoyForCemu {
                 buttons[(int)Button.SR] = (report_buf[3 + (isLeft ? 2 : 0)] & 0x10) != 0;
                 buttons[(int)Button.SL] = (report_buf[3 + (isLeft ? 2 : 0)] & 0x20) != 0;
 
-                if (isPro) {
+                if (HasDualSticks) {
                     buttons[(int)Button.B] = (report_buf[3 + (!isLeft ? 2 : 0)] & (!isLeft ? 0x01 : 0x04)) != 0;
                     buttons[(int)Button.A] = (report_buf[3 + (!isLeft ? 2 : 0)] & (!isLeft ? 0x04 : 0x08)) != 0;
                     buttons[(int)Button.X] = (report_buf[3 + (!isLeft ? 2 : 0)] & (!isLeft ? 0x02 : 0x02)) != 0;
@@ -3790,7 +3821,7 @@ namespace BetterJoyForCemu {
                     }
                 } else {
                     Int16[] offset;
-                    if (isPro)
+                    if (!SupportsPairing)
                         offset = pro_hor_offset;
                     else if (isLeft)
                         offset = left_hor_offset;
@@ -3816,7 +3847,7 @@ namespace BetterJoyForCemu {
                     }
                 }
 
-                if (other == null && !isPro) { // single joycon mode; Z do not swap, rest do
+                if (other == null && SupportsPairing) { // single joycon mode; Z do not swap, rest do
                     if (isLeft) {
                         acc_g.X = -acc_g.X;
                         acc_g.Y = -acc_g.Y;
@@ -4078,7 +4109,7 @@ namespace BetterJoyForCemu {
 
             PrintArray(stick_cal, len: 6, start: 0, format: "Stick calibration data: {0:S}");
 
-            if (isPro) {
+            if (HasDualSticks) {
                 buf_ = ReadSPI(0x80, (!isLeft ? (byte)0x12 : (byte)0x1d), 9); // get user calibration data if possible
                 found = false;
                 for (int i = 0; i < 9; ++i) {
@@ -4278,11 +4309,11 @@ namespace BetterJoyForCemu {
             var swapAB = input.swapAB;
             var swapXY = input.swapXY;
 
-            var isPro = input.isPro;
             var isLeft = input.isLeft;
             var isSnes = input.isSnes;
             var is64 = input.is64;
-            var isDualSense = input.isDualSense;
+            var hasDualSticks = input.HasDualSticks;
+            var hasAnalogTriggers = input.HasAnalogTriggers;
             var other = input.other;
             var GyroAnalogSliders = input.GyroAnalogSliders;
 
@@ -4318,7 +4349,7 @@ namespace BetterJoyForCemu {
                 output.guide = buttons[(int)Button.HOME];
 
             }
-            else if (isPro) {
+            else if (hasDualSticks) {
                 output.a = buttons[(int)(!swapAB ? Button.B : Button.A)];
                 output.b = buttons[(int)(!swapAB ? Button.A : Button.B)];
                 output.y = buttons[(int)(!swapXY ? Button.X : Button.Y)];
@@ -4380,7 +4411,7 @@ namespace BetterJoyForCemu {
                 output.guide = false;
 
             if (!(isSnes || is64)) {
-                if (other != null || isPro) { // no need for && other != this
+                if (other != null || hasDualSticks) { // no need for && other != this
                     output.axis_left_x = CastStickValue((other == input && !isLeft) ? stick2[0] : stick[0]);
                     output.axis_left_y = CastStickValue((other == input && !isLeft) ? stick2[1] : stick[1]);
 
@@ -4394,13 +4425,13 @@ namespace BetterJoyForCemu {
 
             if (!is64)
             {
-                if (isDualSense) {
+                if (hasAnalogTriggers) {
                     // A DualSense's L2/R2 are genuinely analog, unlike Joy-Con/Pro (which have no
                     // trigger sensor at all and only ever derive a digital 0-or-max value from a
                     // button bit below) - pass the real raw value straight through.
                     output.trigger_left = input.triggerVal[0];
                     output.trigger_right = input.triggerVal[1];
-                } else if (other != null || isPro) {
+                } else if (other != null || hasDualSticks) {
                     byte lval = GyroAnalogSliders ? sliderVal[0] : Byte.MaxValue;
                     byte rval = GyroAnalogSliders ? sliderVal[1] : Byte.MaxValue;
                     output.trigger_left = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2)] ? lval : 0);
@@ -4420,10 +4451,10 @@ namespace BetterJoyForCemu {
             var swapAB = input.swapAB;
             var swapXY = input.swapXY;
 
-            var isPro = input.isPro;
             var isLeft = input.isLeft;
             var isSnes = input.isSnes;
             var is64 = input.is64;
+            var hasDualSticks = input.HasDualSticks;
             var other = input.other;
             var GyroAnalogSliders = input.GyroAnalogSliders;
 
@@ -4473,7 +4504,7 @@ namespace BetterJoyForCemu {
                     output.dPad = DpadDirection.East;                
             }
 
-            if (isPro) {
+            if (hasDualSticks) {
                 output.cross = buttons[(int)(!swapAB ? Button.B : Button.A)];
                 output.circle = buttons[(int)(!swapAB ? Button.A : Button.B)];
                 output.triangle = buttons[(int)(!swapXY ? Button.X : Button.Y)];
@@ -4562,7 +4593,7 @@ namespace BetterJoyForCemu {
                 output.ps = false;
 
             if (!(isSnes || is64)) {
-                if (other != null || isPro) { // no need for && other != this
+                if (other != null || hasDualSticks) { // no need for && other != this
                     output.thumb_left_x = CastStickValueByte((other == input && !isLeft) ? -stick2[0] : -stick[0]);
                     output.thumb_left_y = CastStickValueByte((other == input && !isLeft) ? stick2[1] : stick[1]);
                     output.thumb_right_x = CastStickValueByte((other == input && !isLeft) ? -stick[0] : -stick2[0]);
@@ -4575,7 +4606,7 @@ namespace BetterJoyForCemu {
 
             if (!is64)
             {
-                if (other != null || isPro) {
+                if (other != null || hasDualSticks) {
                     byte lval = GyroAnalogSliders ? sliderVal[0] : Byte.MaxValue;
                     byte rval = GyroAnalogSliders ? sliderVal[1] : Byte.MaxValue;
                     output.trigger_left_value = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2)] ? lval : 0);

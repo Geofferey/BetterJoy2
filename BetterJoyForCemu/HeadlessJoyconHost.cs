@@ -59,12 +59,12 @@ namespace BetterJoyForCemu {
         // calls this via IJoyconHost the same as GUI mode) and the remote JoinOrSplit command
         // from a connected GUI (see JoinOrSplitByPadId below).
         public void JoinOrSplitJoycon(Joycon v, bool forceSelfPair = false) {
-            if (v.other == null && !v.isPro) {
+            if (v.other == null && v.SupportsPairing) {
                 if (forceSelfPair || Program.mgr.j.Count == 1) {
                     v.other = v; // self-pair - single joycon in vertical mode
                 } else {
                     foreach (Joycon jc in Program.mgr.j) {
-                        if (!jc.isPro && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
+                        if (jc.SupportsPairing && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
                             v.other = jc;
                             jc.other = v;
 
@@ -86,7 +86,7 @@ namespace BetterJoyForCemu {
                         }
                     }
                 }
-            } else if (v.other != null && !v.isPro) {
+            } else if (v.other != null && v.SupportsPairing) {
                 v.other.other = null;
                 v.other = null;
             }
@@ -601,12 +601,12 @@ namespace BetterJoyForCemu {
             bool isPair = jc.other != null && jc.other != jc;
             var gyroSteps = new List<(Joycon Target, string Label)>();
             // No gyro support yet (ExtractIMUValues/CalibrationState.AddSample are never reached
-            // for a DualSense - see TryAutoCalibrate's own isDualSense guard, and MainForm's local
+            // for a DualSense - see TryAutoCalibrate's own !HasGyro guard, and MainForm's local
             // StartCalibrate has the same skip) - leaving gyroSteps empty here just runs the stick
             // steps below with no gyro phase, same as the local path.
-            if (jc.isDualSense) {
+            if (!jc.HasGyro) {
                 // no gyro steps
-            } else if (isPair && !jc.isPro) {
+            } else if (isPair && jc.SupportsPairing) {
                 Joycon leftGyroJc = jc.isLeft ? jc : jc.other;
                 Joycon rightGyroJc = jc.isLeft ? jc.other : jc;
                 gyroSteps.Add((leftGyroJc, "Left Gyroscope"));
@@ -616,7 +616,7 @@ namespace BetterJoyForCemu {
             }
 
             var stickSteps = new List<(Joycon Target, bool Secondary, string Label)>();
-            if (jc.isPro) {
+            if (jc.HasDualSticks) {
                 stickSteps.Add((jc, false, "Left Stick"));
                 stickSteps.Add((jc, true, "Right Stick"));
             } else if (isPair) {
@@ -818,12 +818,7 @@ namespace BetterJoyForCemu {
                 return records;
 
             foreach (Joycon jc in Program.mgr.j) {
-                ControllerKind kind = jc.isDualSense ? ControllerKind.DualSense
-                    : jc.isSnes ? ControllerKind.Snes
-                    : jc.is64 ? ControllerKind.N64
-                    : jc.isPro ? ControllerKind.Pro
-                    : jc.isLeft ? ControllerKind.Left
-                    : ControllerKind.Right;
+                ControllerKind kind = jc.Kind;
 
                 sbyte otherPadId = (jc.other != null && jc.other != jc) ? (sbyte)jc.other.PadId : (sbyte)-1;
                 ControllerProfileInfo profile = ControllerMappings.ProfileFor(jc);
