@@ -172,6 +172,11 @@ namespace BetterJoyForCemu {
 
         protected Rumble rumble_obj;
 
+        public void SetRumble(float low_freq, float high_freq, float amp) {
+            if (state <= state_.ATTACHED) return;
+            rumble_obj.set_vals(low_freq, high_freq, amp);
+        }
+
         public PhysicalAddress PadMacAddress = new PhysicalAddress(new byte[] { 01, 02, 03, 04, 05, 06 });
         public ulong Timestamp = 0;
         public int packetCounter = 0;
@@ -193,7 +198,7 @@ namespace BetterJoyForCemu {
         // Set once at connect time for Joy-Con (placeholder-serial heuristic), re-derived every
         // packet for DualSense based on observed report length - same field, two different "who
         // updates it and when" contracts (see DOCS/CONTROLLERS-REFACTOR.md's known-issues list).
-        protected bool isUSB = false;
+        internal bool isUSB = false;
 
         // Calibrated stick position, gyro/accel readings, and filtered orientation - written by
         // each subclass's own report-parsing code (Joycon.ExtractIMUValues stays Nintendo-report-
@@ -444,6 +449,12 @@ namespace BetterJoyForCemu {
         // outright) so that guard stays exactly where the rest of Joycon's Nintendo-only output
         // wiring lives.
         public virtual void SetLEDByPlayerNum(int id) { }
+
+        // No-op by default; Joycon overrides this with Nintendo's actual home-LED subcommand -
+        // already self-guards on UsesNintendoProtocol today, same reasoning as SetLEDByPlayerNum
+        // above. Called from ApplyControllerProfileOptions (Program.cs) on every profile-option
+        // pass, generically, regardless of device kind.
+        public virtual void SetHomeLight(bool on) { }
 
 
         // The canonical per-report button state every subclass's report parser populates (see

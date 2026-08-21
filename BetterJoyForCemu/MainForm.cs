@@ -975,7 +975,9 @@ namespace BetterJoyForCemu {
                     v.other = v; // hacky; implement check in Joycon.cs to account for this
                     succ = true;
                 } else {
-                    foreach (Joycon jc in Program.mgr.j) {
+                    foreach (Controller jcBase in Program.mgr.j) {
+                        if (!(jcBase is Joycon jc))
+                            continue;
                         if (!jc.isPro && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
                             v.other = jc;
                             jc.other = v;

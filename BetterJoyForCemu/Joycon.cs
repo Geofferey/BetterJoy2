@@ -346,7 +346,7 @@ namespace BetterJoyForCemu {
             Subcommand(0x38, a, 25);
         }
 
-        public void SetHomeLight(bool on) {
+        public override void SetHomeLight(bool on) {
             if (thirdParty || !UsesNintendoProtocol)
                 return;
             byte[] a = Enumerable.Repeat((byte)0xFF, 25).ToArray();
@@ -408,11 +408,11 @@ namespace BetterJoyForCemu {
             LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
                 "RetireDuplicateConnections: this pad={0} dualSense={1} mac={2}",
                 PadId, isDualSense, PadMacAddress));
-            foreach (Joycon other in Program.mgr.j) {
+            foreach (Controller other in Program.mgr.j) {
                 if (other != this) {
                     LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
                         "  vs pad={0} dualSense={1} mac={2} state={3} equalMac={4}",
-                        other.PadId, other.isDualSense, other.PadMacAddress, other.state,
+                        other.PadId, (other as Joycon)?.isDualSense, other.PadMacAddress, other.state,
                         other.PadMacAddress.Equals(PadMacAddress)));
                 }
                 if (other != this && other.state != state_.DROPPED && other.PadMacAddress.Equals(PadMacAddress)) {
@@ -427,7 +427,7 @@ namespace BetterJoyForCemu {
                     // fix: tell the Bluetooth radio itself to drop that connection, the same way
                     // DS4Windows's DisconnectBT does (IOCTL_BTH_DISCONNECT_DEVICE), once USB has
                     // taken over for the same physical controller.
-                    if (isDualSense && other.isDualSense && isUSB && !other.isUSB) {
+                    if (isDualSense && (other as Joycon)?.isDualSense == true && isUSB && !other.isUSB) {
                         // Blue lightbar confirmation is handled unconditionally on the first
                         // confirmed-USB read in ReceiveRaw (sentUsbActiveLightbar) - covers this
                         // case too, not just fresh/no-prior-BT USB connects.
@@ -1040,11 +1040,6 @@ namespace BetterJoyForCemu {
             }
         }
 
-
-        public void SetRumble(float low_freq, float high_freq, float amp) {
-            if (state <= Joycon.state_.ATTACHED) return;
-            rumble_obj.set_vals(low_freq, high_freq, amp);
-        }
 
         private void SendRumble(byte[] buf) {
             byte[] buf_ = new byte[report_len];

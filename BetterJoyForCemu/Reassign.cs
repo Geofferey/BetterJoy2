@@ -1336,7 +1336,7 @@ namespace BetterJoyForCemu {
             int ordinal;
 
             if (serviceClient == null) {
-                Joycon outputOwner = Program.mgr?.j.FirstOrDefault(jc =>
+                Controller outputOwner = Program.mgr?.j.FirstOrDefault(jc =>
                     ControllerMappings.ProfileIdFor(jc) == selected.ProfileId &&
                     (jc.out_xbox != null || jc.out_ds4 != null));
                 if (outputOwner == null)
@@ -1575,7 +1575,12 @@ namespace BetterJoyForCemu {
                 return;
 
             int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
-            foreach (Joycon jc in Program.mgr.j) {
+            // GetButton's buttons[] array is still Joycon-only state (not yet promoted to
+            // Controller) - every live controller really is a Joycon until Phase J, so this
+            // filter changes nothing today; revisit once DualSenseController exists.
+            foreach (Controller jcBase in Program.mgr.j) {
+                if (!(jcBase is Joycon jc))
+                    continue;
                 // A joined pair's two halves each cross-reference the other's raw buttons into
                 // their own buttons[] array (see Joycon.DoThingsWithButtons, the "other != null"
                 // block) so that EITHER side alone already has a complete, correctly-labeled view

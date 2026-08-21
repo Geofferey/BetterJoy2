@@ -52,7 +52,7 @@ namespace BetterJoyForCemu {
         private const ushort vigemDs4VendorId = 0x054C;
         private const ushort vigemDs4ProductId = 0x05C4;
 
-        public ConcurrentList<Joycon> j { get; private set; } // Array of all connected Joy-Cons
+        public ConcurrentList<Controller> j { get; private set; } // Array of all connected controllers
         static JoyconManager instance;
 
         public IJoyconHost form;
@@ -78,7 +78,7 @@ namespace BetterJoyForCemu {
 
         public void Awake() {
             instance = this;
-            j = new ConcurrentList<Joycon>();
+            j = new ConcurrentList<Controller>();
             HIDapi.hid_init();
         }
 
@@ -104,7 +104,7 @@ namespace BetterJoyForCemu {
         }
 
         bool ControllerAlreadyAdded(string path) {
-            foreach (Joycon v in j)
+            foreach (Controller v in j)
                 if (v.path == path)
                     return true;
             return false;
@@ -113,8 +113,8 @@ namespace BetterJoyForCemu {
         public void ApplyControllerProfileOptions() {
             RunExclusiveOfScanning(() => {
                 var handledProfiles = new HashSet<string>(StringComparer.Ordinal);
-                foreach (Joycon jc in j) {
-                    if (jc.state == Joycon.state_.DROPPED)
+                foreach (Controller jc in j) {
+                    if (jc.state == Controller.state_.DROPPED)
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     jc.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
@@ -129,8 +129,8 @@ namespace BetterJoyForCemu {
                     ControllerMappings.EnsureProfileSaved(profileId);
 
                     bool paired = jc.other != null && jc.other != jc;
-                    Joycon active = jc;
-                    Joycon passive = null;
+                    Controller active = jc;
+                    Controller passive = null;
                     if (paired) {
                         bool jcHasOutput = jc.out_xbox != null || jc.out_ds4 != null;
                         bool otherHasOutput = jc.other.out_xbox != null || jc.other.out_ds4 != null;
@@ -498,12 +498,12 @@ namespace BetterJoyForCemu {
                         // same physical DualSense, since real hardware testing found they don't
                         // currently match. Gated behind DualSenseDebugLogging (see
                         // LogDualSenseRawDump) - file-only, never the GUI panel.
-                        j.Last().LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                        (j.Last() as Joycon)?.LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
                             "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")",
                             BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     }
                     j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
-                    j[j.Count - 1].InvalidateMappingProfileCache();
+                    (j[j.Count - 1] as Joycon)?.InvalidateMappingProfileCache();
                 }
 
                 ptr = enumerate.next;
@@ -521,12 +521,12 @@ namespace BetterJoyForCemu {
             // to connect second kept showing its own solo player number instead of the pair's,
             // and the pair's virtual controller didn't actually work in games afterward even
             // though it looked fine in joy.cpl.
-            foreach (Joycon jc in j) { // Connect device straight away
-                if (jc.state == Joycon.state_.NOT_ATTACHED) {
+            foreach (Controller jc in j) { // Connect device straight away
+                if (jc.state == Controller.state_.NOT_ATTACHED) {
                     try {
                         jc.Attach();
                     } catch (Exception) {
-                        jc.state = Joycon.state_.DROPPED;
+                        jc.state = Controller.state_.DROPPED;
                         continue;
                     }
 
@@ -550,11 +550,14 @@ namespace BetterJoyForCemu {
 
             if (foundNew && !Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"])) { // attempt to auto join-up joycons on connection
                 Joycon temp = null;
-                foreach (Joycon v in j) {
+                // Pairing is Joy-Con-only (see Controller.other's comment) - the auto-join
+                // decision itself stays Joycon-typed/filtered here rather than moving to the
+                // generic lifecycle module, per DOCS/CONTROLLERS-REFACTOR.md's design.
+                foreach (Controller vBase in j) {
                     // Do not attach two controllers if they are either:
-                    // - Not a Joycon
+                    // - Not a Joycon, or a Joycon that doesn't support pairing
                     // - Already attached to another Joycon (that isn't itself)
-                    if (v.isPro || (v.other != null && v.other != v)) {
+                    if (!(vBase is Joycon v) || !v.SupportsPairing || (v.other != null && v.other != v)) {
                         continue;
                     }
 
@@ -594,8 +597,8 @@ namespace BetterJoyForCemu {
                 // says to - matching what a manual double right-click/ForceSelfPair would do,
                 // just automatically on connect. Profile lookup uses this Joycon's still-solo
                 // identity (ProfileIdFor), since that's the identity it had before this decision.
-                foreach (Joycon v in j) {
-                    if (v.isPro || v.other != null)
+                foreach (Controller vBase in j) {
+                    if (!(vBase is Joycon v) || !v.SupportsPairing || v.other != null)
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(v);
                     if (ControllerMappings.OptionValue(profileId, "DefaultOrientation") ==
@@ -611,7 +614,7 @@ namespace BetterJoyForCemu {
         }
 
         public void OnApplicationQuit() {
-            foreach (Joycon v in j) {
+            foreach (Controller v in j) {
                 if (!Program.suppressAutoPowerOffOnExit && ControllerMappings.BoolOption(
                     ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
                     v.PowerOff();

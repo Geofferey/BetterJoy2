@@ -65,7 +65,9 @@ namespace BetterJoyForCemu {
                 if (forceSelfPair || Program.mgr.j.Count == 1) {
                     v.other = v; // self-pair - single joycon in vertical mode
                 } else {
-                    foreach (Joycon jc in Program.mgr.j) {
+                    foreach (Controller jcBase in Program.mgr.j) {
+                        if (!(jcBase is Joycon jc))
+                            continue;
                         if (jc.SupportsPairing && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
                             v.other = jc;
                             jc.other = v;
@@ -540,7 +542,7 @@ namespace BetterJoyForCemu {
         }
 
         private void TestRumble(int padId) {
-            Joycon jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
+            Controller jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
             if (jc == null)
                 return;
 
@@ -549,7 +551,9 @@ namespace BetterJoyForCemu {
         }
 
         private void JoinOrSplitByPadId(int padId, bool forceSelfPair) {
-            Joycon jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
+            // Joining/splitting is Joy-Con-only pairing logic (see JoinOrSplitJoycon's own
+            // Joycon-typed parameter) - a non-Joycon match here is simply a no-op.
+            Joycon jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId) as Joycon;
             if (jc != null)
                 JoinOrSplitJoycon(jc, forceSelfPair);
         }
@@ -579,12 +583,12 @@ namespace BetterJoyForCemu {
             // (the controller this validated a moment earlier could disconnect in between) could
             // throw with the guard already set and no continuation left to ever release it.
             // FirstOrDefault never throws either way.
-            Joycon jc = Program.mgr?.j.FirstOrDefault(v => v.PadId == padId);
+            Controller jc = Program.mgr?.j.FirstOrDefault(v => v.PadId == padId);
             // Tracks whichever controller currently holds the gyro calibration claim, if any -
             // for a joined pair this may be jc.other, not jc itself, once the second gyro step
             // starts. The catch block below needs this to release the right claim rather than
             // assuming it's always jc.
-            Joycon activeClaimHolder = null;
+            Controller activeClaimHolder = null;
             if (jc == null) {
                 SendControlMessage(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationFailed, padId));
                 return;
@@ -608,7 +612,7 @@ namespace BetterJoyForCemu {
             // partner's stick (and, before gyroSteps existed, its gyro/accelerometer too) would
             // silently stay untouched every single time this pair is calibrated.
             bool isPair = jc.other != null && jc.other != jc;
-            var gyroSteps = new List<(Joycon Target, string Label)>();
+            var gyroSteps = new List<(Controller Target, string Label)>();
             // No gyro support yet (ExtractIMUValues/CalibrationState.AddSample are never reached
             // for a DualSense - see TryAutoCalibrate's own !HasGyro guard, and MainForm's local
             // StartCalibrate has the same skip) - leaving gyroSteps empty here just runs the stick
@@ -616,21 +620,21 @@ namespace BetterJoyForCemu {
             if (!jc.HasGyro) {
                 // no gyro steps
             } else if (isPair && jc.SupportsPairing) {
-                Joycon leftGyroJc = jc.isLeft ? jc : jc.other;
-                Joycon rightGyroJc = jc.isLeft ? jc.other : jc;
+                Controller leftGyroJc = jc.isLeft ? jc : jc.other;
+                Controller rightGyroJc = jc.isLeft ? jc.other : jc;
                 gyroSteps.Add((leftGyroJc, "Left Gyroscope"));
                 gyroSteps.Add((rightGyroJc, "Right Gyroscope"));
             } else {
                 gyroSteps.Add((jc, "Gyroscope"));
             }
 
-            var stickSteps = new List<(Joycon Target, bool Secondary, string Label)>();
+            var stickSteps = new List<(Controller Target, bool Secondary, string Label)>();
             if (jc.HasDualSticks) {
                 stickSteps.Add((jc, false, "Left Stick"));
                 stickSteps.Add((jc, true, "Right Stick"));
             } else if (isPair) {
-                Joycon leftJc = jc.isLeft ? jc : jc.other;
-                Joycon rightJc = jc.isLeft ? jc.other : jc;
+                Controller leftJc = jc.isLeft ? jc : jc.other;
+                Controller rightJc = jc.isLeft ? jc.other : jc;
                 stickSteps.Add((leftJc, false, "Left Stick"));
                 stickSteps.Add((rightJc, false, "Right Stick"));
             } else {
@@ -640,7 +644,7 @@ namespace BetterJoyForCemu {
 
             try {
                 for (int g = 0; g < gyroSteps.Count; g++) {
-                    Joycon gyroTarget = gyroSteps[g].Target;
+                    Controller gyroTarget = gyroSteps[g].Target;
                     string gyroLabel = gyroSteps[g].Label;
                     int gyroStepNumber = g + 1;
 
@@ -662,7 +666,7 @@ namespace BetterJoyForCemu {
                 }
 
                 for (int i = 0; i < stickSteps.Count; i++) {
-                    Joycon target = stickSteps[i].Target;
+                    Controller target = stickSteps[i].Target;
                     bool secondary = stickSteps[i].Secondary;
                     string stepName = stickSteps[i].Label;
                     int stepNumber = gyroSteps.Count + i + 1;
@@ -787,7 +791,13 @@ namespace BetterJoyForCemu {
                 return;
 
             int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
-            foreach (Joycon jc in Program.mgr.j) {
+            // GetButton's buttons/buttons_down/buttons_up arrays are still Joycon-only state
+            // (not yet promoted to Controller) - every live controller really is a Joycon until
+            // Phase J, so this filter changes nothing today; revisit once DualSenseController
+            // exists as its own type.
+            foreach (Controller jcBase in Program.mgr.j) {
+                if (!(jcBase is Joycon jc))
+                    continue;
                 // See the identical skip in Reassign.cs's JoyPoll_Tick - a joined pair's two
                 // halves cross-reference each other's raw buttons, so polling both independently
                 // reports one physical press as two (e.g. "DPAD_DOWN+B" for a single B press).
@@ -826,7 +836,7 @@ namespace BetterJoyForCemu {
             if (Program.mgr == null)
                 return records;
 
-            foreach (Joycon jc in Program.mgr.j) {
+            foreach (Controller jc in Program.mgr.j) {
                 // A joined pair's passive half isn't a virtual controller - it has no out_xbox/
                 // out_ds4 of its own, its LED just mirrors its active partner's (see
                 // ReassignPadIds), and its PadId is stale/unstable while parked (see

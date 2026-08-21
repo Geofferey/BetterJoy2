@@ -22,12 +22,10 @@ namespace BetterJoyForCemu {
     // relocated.
     //
     // Single-instance parameters (NextAvailablePadId's exclude, AssignPadId/CreateOutputControllers
-    // /DestroyOutputControllers/ReassignSplitOffJoycon's jc) are Controller-typed as of step 4
-    // Phase D - they just receive an already-resolved reference, so widening them doesn't depend
-    // on j's own element type. The loop variables that iterate j directly (CleanUp/ReassignPadIds/
-    // ResolveStalePadIdCollisions/DumpState/NextAvailablePadId's own loop) stay Joycon-typed for
-    // now - j itself is still ConcurrentList<Joycon> until step 4's atomic-flip phase, and C#
-    // generics are invariant, so a foreach variable bound to j can't be widened ahead of j itself.
+    // /DestroyOutputControllers/ReassignSplitOffJoycon's jc) were Controller-typed as of step 4
+    // Phase D already. The loop variables that iterate j directly (CleanUp/ReassignPadIds/
+    // ResolveStalePadIdCollisions/DumpState/NextAvailablePadId's own loop) are Controller-typed
+    // too as of step 4 Phase H+I, now that j itself is ConcurrentList<Controller>.
     public partial class JoyconManager {
         // Smallest PadId not currently in use by a connected controller - see the call site for
         // why j.Count itself isn't safe to use directly. exclude lets a caller ask "what's free
@@ -37,7 +35,7 @@ namespace BetterJoyForCemu {
         // "solo, counted as using its own stale value" for this computation alone.
         int NextAvailablePadId(Controller exclude = null) {
             var used = new HashSet<int>();
-            foreach (Joycon v in j) {
+            foreach (Controller v in j) {
                 if (v == exclude)
                     continue;
 
@@ -60,12 +58,12 @@ namespace BetterJoyForCemu {
         }
 
         void CleanUp() { // removes dropped controllers from list
-            List<Joycon> rem = new List<Joycon>();
-            List<Joycon> droppedNotify = new List<Joycon>();
+            List<Controller> rem = new List<Controller>();
+            List<Controller> droppedNotify = new List<Controller>();
             List<Joycon> partnerNotify = new List<Joycon>();
 
-            foreach (Joycon joycon in j) {
-                if (joycon.state == Joycon.state_.DROPPED) {
+            foreach (Controller joycon in j) {
+                if (joycon.state == Controller.state_.DROPPED) {
                     // Capture the pair partner (if any) before Detach/nulling below, so
                     // HandleJoyconDropped can still find whichever slot(s) need fixing up -
                     // the dropped Joycon's own slot, and/or the surviving partner's.
@@ -93,7 +91,7 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            foreach (Joycon v in rem)
+            foreach (Controller v in rem)
                 j.Remove(v);
 
             // Compact PadIds for whatever's left so dropping down to fewer controllers -
@@ -145,12 +143,12 @@ namespace BetterJoyForCemu {
         // share the same PadId, so splitting the pair later produced two controllers that both
         // claimed to be the same player instead of two distinct ones.
         void ReassignPadIds() {
-            var ranked = new List<Joycon>(j);
+            var ranked = new List<Controller>(j);
             ranked.Sort((a, b) => a.PadId.CompareTo(b.PadId));
 
-            var assigned = new HashSet<Joycon>();
+            var assigned = new HashSet<Controller>();
             int rank = 0;
-            foreach (Joycon jc in ranked) {
+            foreach (Controller jc in ranked) {
                 if (assigned.Contains(jc))
                     continue;
 
@@ -159,8 +157,8 @@ namespace BetterJoyForCemu {
                 if (isPair)
                     assigned.Add(jc.other);
 
-                Joycon active = jc;
-                Joycon passive = null;
+                Controller active = jc;
+                Controller passive = null;
                 if (isPair) {
                     bool jcHasOutput = jc.out_xbox != null || jc.out_ds4 != null;
                     active = jcHasOutput ? jc : jc.other;
@@ -181,7 +179,7 @@ namespace BetterJoyForCemu {
         // diagnosed from debug.log instead of guessed at.
         void DumpState(string tag) {
             var sb = new StringBuilder(tag).Append(':');
-            foreach (Joycon v in j) {
+            foreach (Controller v in j) {
                 sb.AppendFormat(CultureInfo.InvariantCulture,
                     " [pad={0} other={1} hasXbox={2} hasDs4={3}]",
                     v.PadId,
@@ -236,12 +234,12 @@ namespace BetterJoyForCemu {
             bool changed = true;
             while (changed) {
                 changed = false;
-                foreach (Joycon v in j) {
+                foreach (Controller v in j) {
                     bool isPassiveHalf = v.other != null && v.other != v && v.out_xbox == null && v.out_ds4 == null;
                     if (!isPassiveHalf)
                         continue;
 
-                    foreach (Joycon other in j) {
+                    foreach (Controller other in j) {
                         if (other == v || other.PadId != v.PadId)
                             continue;
                         bool otherIsPassiveHalf = other.other != null && other.other != other && other.out_xbox == null && other.out_ds4 == null;

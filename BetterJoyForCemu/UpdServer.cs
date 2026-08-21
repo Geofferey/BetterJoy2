@@ -13,11 +13,11 @@ namespace BetterJoyForCemu {
         private bool running;
         private byte[] recvBuffer = new byte[1024];
 
-        IList<Joycon> controllers;
+        IList<Controller> controllers;
 
         public IJoyconHost form;
 
-        public UdpServer(IList<Joycon> p) {
+        public UdpServer(IList<Controller> p) {
             controllers = p;
         }
 
@@ -317,8 +317,8 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private bool ReportToBuffer(Joycon hidReport, byte[] outputData, ref int outIdx) {
-            var ds4 = Joycon.MapToDualShock4Input(hidReport);
+        private bool ReportToBuffer(Controller hidReport, byte[] outputData, ref int outIdx) {
+            var ds4 = Controller.MapToDualShock4Input(hidReport);
 
             outputData[outIdx] = 0;
 
@@ -415,7 +415,7 @@ namespace BetterJoyForCemu {
             return true;
         }
 
-        public void NewReportIncoming(Joycon hidReport) {
+        public void NewReportIncoming(Controller hidReport) {
             if (!running)
                 return;
 
