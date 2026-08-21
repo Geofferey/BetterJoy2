@@ -74,16 +74,12 @@ namespace BetterJoyForCemu {
                             // virtualControllerSequence. The older one is the one most likely
                             // already locked onto by a running game, so it's left untouched; the
                             // newer one is safe to actually disconnect (matching a real unplug)
-                            // and recreate later from each solo profile.
+                            // and recreate later from each solo profile. The loser DECISION stays
+                            // here (pairing-specific, Joy-Con-only); the destroy itself goes
+                            // through the same pairing-ignorant primitive Program.cs uses, not a
+                            // duplicate - see DestroyOutputControllers.
                             Joycon loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
-                            if (loser.out_xbox != null) {
-                                try { loser.out_xbox.Disconnect(); } catch { }
-                                loser.out_xbox = null;
-                            }
-                            if (loser.out_ds4 != null) {
-                                try { loser.out_ds4.Disconnect(); } catch { }
-                                loser.out_ds4 = null;
-                            }
+                            Program.mgr.DestroyOutputControllers(loser);
                             break;
                         }
                     }

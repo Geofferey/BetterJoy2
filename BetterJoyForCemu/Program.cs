@@ -281,14 +281,7 @@ namespace BetterJoyForCemu {
             ResolveStalePadIdCollisions();
             jc.RequestLEDUpdate(newPadId);
 
-            if (jc.out_xbox != null) {
-                try { jc.out_xbox.Disconnect(); } catch { }
-                jc.out_xbox = null;
-            }
-            if (jc.out_ds4 != null) {
-                try { jc.out_ds4.Disconnect(); } catch { }
-                jc.out_ds4 = null;
-            }
+            DestroyOutputControllers(jc);
             CreateOutputControllers(jc);
         }
 
@@ -347,6 +340,25 @@ namespace BetterJoyForCemu {
                     if (changed)
                         break;
                 }
+            }
+        }
+
+        // Unconditionally tears down whatever virtual output(s) jc currently has, if any - the
+        // primitive every "this controller shouldn't have a virtual controller right now" call
+        // site should share instead of hand-rolling its own out_xbox/out_ds4 Disconnect(), per
+        // DOCS/CONTROLLERS-REFACTOR.md's virtual-controller-lifecycle section: the auto-join
+        // block's loser-destroy logic used to duplicate this inline rather than reusing
+        // CreateOutputControllers/AssignPadId's existing pattern, which is exactly the kind of
+        // duplication that makes a clean lifecycle-module extraction impossible. Deliberately
+        // pairing-ignorant - it destroys whatever it's given, it doesn't decide who's a "loser".
+        public void DestroyOutputControllers(Joycon jc) {
+            if (jc.out_xbox != null) {
+                try { jc.out_xbox.Disconnect(); } catch { }
+                jc.out_xbox = null;
+            }
+            if (jc.out_ds4 != null) {
+                try { jc.out_ds4.Disconnect(); } catch { }
+                jc.out_ds4 = null;
             }
         }
 
@@ -413,16 +425,8 @@ namespace BetterJoyForCemu {
                         passive = active == jc ? jc.other : jc;
                     }
 
-                    if (passive != null) {
-                        if (passive.out_xbox != null) {
-                            try { passive.out_xbox.Disconnect(); } catch { }
-                            passive.out_xbox = null;
-                        }
-                        if (passive.out_ds4 != null) {
-                            try { passive.out_ds4.Disconnect(); } catch { }
-                            passive.out_ds4 = null;
-                        }
-                    }
+                    if (passive != null)
+                        DestroyOutputControllers(passive);
                     CreateOutputControllers(active);
                 }
                 form.RefreshControllerState();
@@ -855,16 +859,13 @@ namespace BetterJoyForCemu {
                         // one). Its controller was just Connect()ed moments ago by the "connect
                         // device straight away" loop above, so this is a real disconnect, not a
                         // no-op - matches a real unplug (clean, no leftover state); the other one
-                        // is left untouched as the pair's shared controller.
+                        // is left untouched as the pair's shared controller. The loser DECISION is
+                        // pairing-specific and stays here (Joy-Con is the only type that pairs at
+                        // all - see DOCS/CONTROLLERS-REFACTOR.md's virtual-controller-lifecycle
+                        // section), but the actual destroy goes through the same pairing-ignorant
+                        // primitive AssignPadId/ApplyControllerProfileOptions use, not a duplicate.
                         Joycon loser = temp.virtualControllerSequence > v.virtualControllerSequence ? temp : v;
-                        if (loser.out_xbox != null) {
-                            try { loser.out_xbox.Disconnect(); } catch { }
-                            loser.out_xbox = null;
-                        }
-                        if (loser.out_ds4 != null) {
-                            try { loser.out_ds4.Disconnect(); } catch { }
-                            loser.out_ds4 = null;
-                        }
+                        DestroyOutputControllers(loser);
 
                         Joycon left = temp.isLeft ? temp : v;
                         Joycon right = temp.isLeft ? v : temp;
