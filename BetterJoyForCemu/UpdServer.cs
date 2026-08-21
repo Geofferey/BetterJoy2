@@ -322,10 +322,10 @@ namespace BetterJoyForCemu {
 
             outputData[outIdx] = 0;
 
-            if (ds4.dPad == Controller.DpadDirection.West || ds4.dPad == Controller.DpadDirection.Northwest || ds4.dPad == Controller.DpadDirection.Southwest) outputData[outIdx] |= 0x80;
-            if (ds4.dPad == Controller.DpadDirection.South || ds4.dPad == Controller.DpadDirection.Southwest || ds4.dPad == Controller.DpadDirection.Southeast) outputData[outIdx] |= 0x40;
-            if (ds4.dPad == Controller.DpadDirection.East || ds4.dPad == Controller.DpadDirection.Northeast || ds4.dPad == Controller.DpadDirection.Southeast) outputData[outIdx] |= 0x20;
-            if (ds4.dPad == Controller.DpadDirection.North || ds4.dPad == Controller.DpadDirection.Northwest || ds4.dPad == Controller.DpadDirection.Northeast) outputData[outIdx] |= 0x10;
+            if (ds4.dPad == VirtualOutput.DpadDirection.West || ds4.dPad == VirtualOutput.DpadDirection.Northwest || ds4.dPad == VirtualOutput.DpadDirection.Southwest) outputData[outIdx] |= 0x80;
+            if (ds4.dPad == VirtualOutput.DpadDirection.South || ds4.dPad == VirtualOutput.DpadDirection.Southwest || ds4.dPad == VirtualOutput.DpadDirection.Southeast) outputData[outIdx] |= 0x40;
+            if (ds4.dPad == VirtualOutput.DpadDirection.East || ds4.dPad == VirtualOutput.DpadDirection.Northeast || ds4.dPad == VirtualOutput.DpadDirection.Southeast) outputData[outIdx] |= 0x20;
+            if (ds4.dPad == VirtualOutput.DpadDirection.North || ds4.dPad == VirtualOutput.DpadDirection.Northwest || ds4.dPad == VirtualOutput.DpadDirection.Northeast) outputData[outIdx] |= 0x10;
 
             if (ds4.options) outputData[outIdx] |= 0x08;
             if (ds4.thumb_right) outputData[outIdx] |= 0x04;
@@ -353,10 +353,10 @@ namespace BetterJoyForCemu {
             outputData[++outIdx] = ds4.thumb_right_y;
 
             //we don't have analog buttons so just use the Button enums (which give either 0 or 0xFF)
-            outputData[++outIdx] = (ds4.dPad == Controller.DpadDirection.West || ds4.dPad == Controller.DpadDirection.Northwest || ds4.dPad == Controller.DpadDirection.Southwest) ? (byte)0xFF : (byte)0;
-            outputData[++outIdx] = (ds4.dPad == Controller.DpadDirection.South || ds4.dPad == Controller.DpadDirection.Southwest || ds4.dPad == Controller.DpadDirection.Southeast) ? (byte)0xFF : (byte)0;
-            outputData[++outIdx] = (ds4.dPad == Controller.DpadDirection.East || ds4.dPad == Controller.DpadDirection.Northeast || ds4.dPad == Controller.DpadDirection.Southeast) ? (byte)0xFF : (byte)0;
-            outputData[++outIdx] = (ds4.dPad == Controller.DpadDirection.North || ds4.dPad == Controller.DpadDirection.Northwest || ds4.dPad == Controller.DpadDirection.Northeast) ? (byte)0xFF : (byte)0; ;
+            outputData[++outIdx] = (ds4.dPad == VirtualOutput.DpadDirection.West || ds4.dPad == VirtualOutput.DpadDirection.Northwest || ds4.dPad == VirtualOutput.DpadDirection.Southwest) ? (byte)0xFF : (byte)0;
+            outputData[++outIdx] = (ds4.dPad == VirtualOutput.DpadDirection.South || ds4.dPad == VirtualOutput.DpadDirection.Southwest || ds4.dPad == VirtualOutput.DpadDirection.Southeast) ? (byte)0xFF : (byte)0;
+            outputData[++outIdx] = (ds4.dPad == VirtualOutput.DpadDirection.East || ds4.dPad == VirtualOutput.DpadDirection.Northeast || ds4.dPad == VirtualOutput.DpadDirection.Southeast) ? (byte)0xFF : (byte)0;
+            outputData[++outIdx] = (ds4.dPad == VirtualOutput.DpadDirection.North || ds4.dPad == VirtualOutput.DpadDirection.Northwest || ds4.dPad == VirtualOutput.DpadDirection.Northeast) ? (byte)0xFF : (byte)0; ;
 
             outputData[++outIdx] = ds4.square ? (byte)0xFF : (byte)0;
             outputData[++outIdx] = ds4.cross ? (byte)0xFF : (byte)0;

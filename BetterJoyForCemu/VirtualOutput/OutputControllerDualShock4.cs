@@ -1,8 +1,8 @@
-﻿using System;
+using System;
 using Nefarius.ViGEm.Client.Targets;
 using Nefarius.ViGEm.Client.Targets.DualShock4;
 
-namespace BetterJoyForCemu.Controller {
+namespace BetterJoyForCemu.VirtualOutput {
 	public enum DpadDirection {
 		None,
 		Northwest,

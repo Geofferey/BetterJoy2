@@ -11,12 +11,12 @@ using System.Numerics;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
-using BetterJoyForCemu.Controller;
+using BetterJoyForCemu.VirtualOutput;
 using Nefarius.ViGEm.Client.Targets.DualShock4;
 using Nefarius.ViGEm.Client.Targets.Xbox360;
 
 namespace BetterJoyForCemu {
-    public class Joycon {
+    public class Joycon : Controller {
         public string path = String.Empty;
         public bool isPro = false;
         public bool isSnes = false;

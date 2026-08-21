@@ -39,7 +39,7 @@ namespace BetterJoyForCemu {
 
         // ViGEmBus's default emulated identities (CreateXbox360Controller()/CreateDS4Controller()
         // are called with no VID/PID override anywhere in this codebase - see
-        // Controller.OutputControllerXbox360/OutputControllerDualShock4 - so BetterJoy's own
+        // VirtualOutput.OutputControllerXbox360/OutputControllerDualShock4 - so BetterJoy's own
         // virtual output always shows up under these). Windows exposes that virtual pad through a
         // HID interface too, for DirectInput compatibility, which otherwise passes the same
         // generic "is this a gamepad" usage-page/usage check real controllers do - letting
@@ -279,13 +279,13 @@ namespace BetterJoyForCemu {
                 return;
 
             if (useXbox && jc.out_xbox == null) {
-                jc.out_xbox = new Controller.OutputControllerXbox360();
+                jc.out_xbox = new VirtualOutput.OutputControllerXbox360();
                 if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
                     jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
                 jc.out_xbox.Connect();
             }
             if (useDs4 && jc.out_ds4 == null) {
-                jc.out_ds4 = new Controller.OutputControllerDualShock4();
+                jc.out_ds4 = new VirtualOutput.OutputControllerDualShock4();
                 if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
                     jc.out_ds4.FeedbackReceived += jc.Ds4_FeedbackReceived;
                 jc.out_ds4.Connect();
