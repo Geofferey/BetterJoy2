@@ -55,7 +55,6 @@ namespace BetterJoyForCemu {
 
         public byte[] triggerVal = { 0, 0 }; // raw 0-255 analog L2/R2, DualSense only
         bool isUSB = false;
-        private Joycon _other = null;
 
         // 64 vars
         float maxX = 0.5f;
@@ -63,33 +62,12 @@ namespace BetterJoyForCemu {
         float maxY = 0.5f;
         float minY = -0.5f;
 
-        public Joycon other {
-            get {
-                return _other;
-            }
-            set {
-                if (_other != value)
-                    PrepareForMappingProfileChange();
-                _other = value;
-                mappingProfileId = null;
+        // Join/split changes which mapping profile this physical half belongs to - see
+        // Controller.other's setter, which calls this via OnOtherChanging right before the
+        // change takes effect. Kept in Joycon (not moved to Controller with other) since it
+        // reaches into gyro-mouse/mapping-engine state that isn't shared yet.
+        protected override void OnOtherChanging() => PrepareForMappingProfileChange();
 
-                // Queued (RequestLEDUpdate), not written directly - this setter runs on
-                // whatever thread is doing the join/split (scan thread for auto-join, UI/pipe
-                // thread for a manual one), which by this point always races this Joycon's own
-                // already-running Poll() thread for the HID handle. See RequestLEDUpdate's
-                // comment.
-                if (_other == null || _other == this) {
-                    // Solo (_other == null, held sideways) and self-paired ("vertical",
-                    // _other == this, held upright) both use this Joycon's own PadId for its LED -
-                    // neither has a partner controller to share a pair's LED value with.
-                    RequestLEDUpdate(PadId);
-                } else {
-                    // Set LED to current Joycon Pair
-                    int lowestPadId = Math.Min(_other.PadId, PadId);
-                    RequestLEDUpdate(lowestPadId);
-                }
-            }
-        }
         // Kept public for compatibility with existing callers; this is now specifically the
         // activation latch for gyro-to-mouse. Stick outputs have independent latches below.
         public bool active_gyro = false;
@@ -136,9 +114,6 @@ namespace BetterJoyForCemu {
             new string[GyroOnlyBindKeys.Length + 1];
         private readonly bool[] gyroOnlyReservedButtons = new bool[20];
         private readonly bool[] vigemButtons = new bool[20];
-        // volatile: written by the other setter (join/split thread) and read by MappingValue
-        // (poll thread) - see PrepareForMappingProfileChange's comment on that race.
-        private volatile string mappingProfileId;
 
         private readonly Dictionary<string, long> lastMappingValueDumpTimestamp = new Dictionary<string, long>();
 
@@ -3353,22 +3328,6 @@ namespace BetterJoyForCemu {
         private bool retiredDuplicates = false;
 
         private Thread PollThreadObj;
-
-        // Requested LED player-number update, applied by this Joycon's own Poll() thread rather
-        // than the caller's - SetLEDByPlayerNum/Subcommand does a blocking HID write+read on the
-        // same handle Poll() is concurrently reading from, so calling it directly from a foreign
-        // thread (the scan thread doing a mass re-rank after a drop, or Joycon.other's setter
-        // during a join/split) on an already-Begin()'d controller risked the response getting
-        // interleaved with normal packet reads and the LED update silently timing out - matching
-        // the existing rumble_obj queue pattern below, just for a single latest-wins value
-        // instead of a FIFO, since only the most recent requested LED value matters. -1 means "no
-        // update pending" - Interlocked.Exchange (not volatile, which int? can't be) makes the
-        // read-and-clear in Poll() atomic against a concurrent RequestLEDUpdate call.
-        private int pendingLedPlayerNum = -1;
-
-        public void RequestLEDUpdate(int playerNum) {
-            Interlocked.Exchange(ref pendingLedPlayerNum, playerNum);
-        }
 
         // How long a connection can go without a single successful read before being forced to
         // DROPPED even though nothing ever came back as a hard read error - see the staleness

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Net.NetworkInformation;
+using System.Threading;
 using BetterJoyForCemu.VirtualOutput;
 
 namespace BetterJoyForCemu {
@@ -89,6 +90,72 @@ namespace BetterJoyForCemu {
         // Last time any button's down/up edge changed - read by auto-power-off (HomeLongPowerOff-
         // style idle checks) and gyro-mouse idle detection, both device-generic.
         protected long inactivity = Stopwatch.GetTimestamp();
+
+        // volatile: written by other's setter (join/split thread) and read by Joycon's
+        // MappingValue/ProfileBoolOption/etc (poll thread) - see OnOtherChanging's override in
+        // Joycon for the race this guards against. Type kept as Joycon (not Controller) since
+        // ProcessButtonsAndStick reaches into other.otherStick, a Joycon-only field - an accepted
+        // interim state until NintendoController exists as this property's natural typed home
+        // (see DOCS/CONTROLLERS-REFACTOR.md step 5).
+        protected volatile string mappingProfileId;
+        private Joycon _other = null;
+
+        // Pairing contract: null = solo, == this = self-paired ("vertical"), == <other instance>
+        // = a real two-unit pair. Only Joy-Con-family currently ever sets this away from null
+        // (see SupportsPairing) - the mechanism itself is device-agnostic (a device that never
+        // pairs just never touches it), which is why it lives here rather than only on the
+        // Joy-Con-specific parts of the hierarchy.
+        public Joycon other {
+            get {
+                return _other;
+            }
+            set {
+                if (_other != value)
+                    OnOtherChanging();
+                _other = value;
+                mappingProfileId = null;
+
+                // Queued (RequestLEDUpdate), not written directly - this setter runs on
+                // whatever thread is doing the join/split (scan thread for auto-join, UI/pipe
+                // thread for a manual one), which by this point always races this Joycon's own
+                // already-running Poll() thread for the HID handle. See RequestLEDUpdate's
+                // comment.
+                if (_other == null || _other == this) {
+                    // Solo (_other == null, held sideways) and self-paired ("vertical",
+                    // _other == this, held upright) both use this Joycon's own PadId for its LED -
+                    // neither has a partner controller to share a pair's LED value with.
+                    RequestLEDUpdate(PadId);
+                } else {
+                    // Set LED to current Joycon Pair
+                    int lowestPadId = Math.Min(_other.PadId, PadId);
+                    RequestLEDUpdate(lowestPadId);
+                }
+            }
+        }
+
+        // Called just before other actually changes (join/split), before the new value takes
+        // effect - lets a subclass release any state tied to its old pairing/profile identity.
+        // No-op by default; Joycon overrides this to invalidate synthetic input holds under the
+        // old profile (see Joycon.PrepareForMappingProfileChange) - kept as a hook rather than
+        // moving that method here, since it reaches into gyro-mouse/mapping-engine state that
+        // isn't shared yet.
+        protected virtual void OnOtherChanging() { }
+
+        // Requested LED player-number update, applied by this controller's own Poll() thread
+        // rather than the caller's - SetLEDByPlayerNum/Subcommand does a blocking HID write+read
+        // on the same handle Poll() is concurrently reading from, so calling it directly from a
+        // foreign thread (the scan thread doing a mass re-rank after a drop, or other's setter
+        // during a join/split) on an already-Begin()'d controller risked the response getting
+        // interleaved with normal packet reads and the LED update silently timing out - matching
+        // the existing rumble_obj queue pattern in Joycon, just for a single latest-wins value
+        // instead of a FIFO, since only the most recent requested LED value matters. -1 means "no
+        // update pending" - Interlocked.Exchange (not volatile, which int? can't be) makes the
+        // read-and-clear in Poll() atomic against a concurrent RequestLEDUpdate call.
+        protected int pendingLedPlayerNum = -1;
+
+        public void RequestLEDUpdate(int playerNum) {
+            Interlocked.Exchange(ref pendingLedPlayerNum, playerNum);
+        }
 
         // Shared by ProcessButtonsAndStick (Joy-Con/Pro) and ParseDualSenseReport - diffs the
         // freshly-populated buttons[] against down_[] (the pre-update snapshot the caller must
