@@ -538,8 +538,6 @@ namespace BetterJoyForCemu {
         int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
         int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
 
-        public IJoyconHost form;
-
         public byte LED { get; private set; } = 0x0;
         public void SetLEDByPlayerNum(int id) {
             if (!UsesNintendoProtocol)
@@ -3314,14 +3312,16 @@ namespace BetterJoyForCemu {
         // throw, which happens before the connection is known to be stable/receiving real data).
         private bool retiredDuplicates = false;
 
-        private Thread PollThreadObj;
-
         // How long a connection can go without a single successful read before being forced to
         // DROPPED even though nothing ever came back as a hard read error - see the staleness
         // check at the bottom of Poll()'s loop for why this exists.
         private const double StaleConnectionSeconds = 3.0;
 
-        private void Poll() {
+        // protected, not private: Controller.Begin() starts a thread pointed at this. Not yet
+        // moved itself - it has real device-branching inside (UsesNintendoProtocol-gated rumble
+        // handling), the Tier-3 danger zone DOCS/CONTROLLERS-REFACTOR.md calls out, so it stays
+        // in Joycon until that's worth splitting out on its own.
+        protected override void Poll() {
             stop_polling = false;
             int attempts = 0;
             long lastSuccessTimestamp = Stopwatch.GetTimestamp();
@@ -3741,18 +3741,6 @@ namespace BetterJoyForCemu {
                 // Update rotation Quaternion
                 float deg_to_rad = 0.0174533f;
                 AHRS.Update(gyr_g.X * deg_to_rad, gyr_g.Y * deg_to_rad, gyr_g.Z * deg_to_rad, acc_g.X, acc_g.Y, acc_g.Z);
-            }
-        }
-
-        public void Begin() {
-            if (PollThreadObj == null) {
-                PollThreadObj = new Thread(new ThreadStart(Poll));
-                PollThreadObj.IsBackground = true;
-                PollThreadObj.Start();
-
-                form.AppendTextBox("Starting poll thread.\r\n");
-            } else {
-                form.AppendTextBox("Poll cannot start.\r\n");
             }
         }
 

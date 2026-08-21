@@ -79,6 +79,32 @@ namespace BetterJoyForCemu {
         protected IntPtr handle;
         protected bool stop_polling = true;
 
+        // Host callback for UI/status updates (AssignSlot, AppendTextBox, etc.) - every
+        // controller type needs one, regardless of device kind.
+        public IJoyconHost form;
+
+        private Thread PollThreadObj;
+
+        // Starts this controller's own read/report thread pointed at Poll() - not itself moved
+        // here (see Joycon.Poll's comment: real device-branching inside, stays put until that's
+        // worth splitting on its own), just referenced by name. Fully device-agnostic otherwise.
+        public void Begin() {
+            if (PollThreadObj == null) {
+                PollThreadObj = new Thread(new ThreadStart(Poll));
+                PollThreadObj.IsBackground = true;
+                PollThreadObj.Start();
+
+                form.AppendTextBox("Starting poll thread.\r\n");
+            } else {
+                form.AppendTextBox("Poll cannot start.\r\n");
+            }
+        }
+
+        // Implemented per-subclass (see Joycon.Poll) - the read loop has real device-specific
+        // branching inside it, so only its entry point is referenced from the shared Begin()
+        // above, not its body.
+        protected abstract void Poll();
+
         // The canonical per-report button state every subclass's report parser populates (see
         // the Button enum above) - protected, not public, since nothing outside a Controller
         // subclass's own report-parsing/mapping code reads these directly today (verified: no
