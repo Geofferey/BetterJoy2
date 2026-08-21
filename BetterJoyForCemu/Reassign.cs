@@ -675,7 +675,7 @@ namespace BetterJoyForCemu {
             inactivitySelector = CreateProfileComboBox(145, 192, 180);
             inactivitySelector.DropDownStyle = ComboBoxStyle.DropDownList;
             inactivitySelector.Items.AddRange(new object[] {
-                "Never", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes",
+                "Never", "1 minute", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes",
             });
             inactivitySelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(inactivitySelector);
