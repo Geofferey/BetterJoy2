@@ -615,6 +615,9 @@ namespace BetterJoyForCemu {
         // promoted to Controller.
         protected virtual void OnMappingValueResolved(string key, string value) { }
 
+        protected bool swapAB => ProfileBoolOption("SwapAB");
+        protected bool swapXY => ProfileBoolOption("SwapXY");
+
         protected bool ProfileBoolOption(string key) {
             if (mappingProfileId == null)
                 mappingProfileId = ControllerMappings.ProfileIdFor(this);
@@ -3030,6 +3033,344 @@ namespace BetterJoyForCemu {
                                     false);
             SimulateGyroMouseScroll("scroll_up", true, false);
             SimulateGyroMouseScroll("scroll_down", false, false);
+        }
+
+        protected static short CastStickValue(float stick_value) {
+            return (short)Math.Max(Int16.MinValue, Math.Min(Int16.MaxValue, stick_value * (stick_value > 0 ? Int16.MaxValue : -Int16.MinValue)));
+        }
+
+        protected static byte CastStickValueByte(float stick_value) {
+            return (byte)Math.Max(Byte.MinValue, Math.Min(Byte.MaxValue, 127 - stick_value * Byte.MaxValue));
+        }
+
+        // Raw 0-255 analog L2/R2 - only ever meaningful when HasAnalogTriggers is true (DualSense
+        // today). No-op default returning a neutral zero pair; Joycon overrides this returning its
+        // own triggerVal field (still Joycon-only/DualSense-flag-specific pending step 4's later
+        // phases).
+        protected virtual byte[] TriggerVal => new byte[] { 0, 0 };
+
+        protected static OutputControllerXbox360InputState MapToXbox360Input(Controller input) {
+            var output = new OutputControllerXbox360InputState();
+
+
+            var swapAB = input.swapAB;
+            var swapXY = input.swapXY;
+
+            var isLeft = input.isLeft;
+            var isSnes = input.Kind == ControllerKind.Snes;
+            var is64 = input.Kind == ControllerKind.N64;
+            var hasDualSticks = input.HasDualSticks;
+            var hasAnalogTriggers = input.HasAnalogTriggers;
+            var other = input.other;
+            var GyroAnalogSliders = input.GyroAnalogSliders;
+
+            var buttons = input.GetButtonsForVigem();
+            var stick = input.stick;
+            var stick2 = input.stick2;
+            var sliderVal = input.sliderVal;
+
+            if (is64)
+            {
+                output.axis_right_x = (short) ((buttons[(int)Button.X] ? Int16.MinValue : 0) + (buttons[(int)Button.MINUS] ? Int16.MaxValue : 0));
+                output.axis_right_y = (short) ((buttons[(int)Button.SHOULDER2_2] ? Int16.MinValue: 0) + (buttons[(int)Button.Y] ? Int16.MaxValue: 0));
+
+                // N64's stick-drift-tracking calibration (minX/maxX/minY/maxY) is Nintendo-only
+                // state that stays on Joycon - is64 being true already guarantees input actually
+                // is one (no other Kind ever reports N64), so this cast is safe.
+                var n64Stick = Joycon.Getn64StickValues((Joycon)input);
+
+                output.axis_left_x = CastStickValue(n64Stick[0]);
+                output.axis_left_y = CastStickValue(n64Stick[1]);
+
+                output.start = buttons[(int)Button.PLUS];
+                output.a = buttons[(int)(!swapAB ? Button.B : Button.A)];
+                output.b = buttons[(int)(!swapAB ? Button.A : Button.B)];
+
+                output.shoulder_left = buttons[(int)Button.SHOULDER_1];
+                output.shoulder_right = buttons[(int)Button.SHOULDER2_1];
+
+                output.trigger_left = (byte)(buttons[(int)Button.SHOULDER_2] ? Byte.MaxValue : 0);
+                output.trigger_right = (byte)(buttons[(int)Button.STICK] ? Byte.MaxValue : 0);
+
+                output.dpad_down = buttons[(int)Button.DPAD_DOWN];
+                output.dpad_left = buttons[(int)Button.DPAD_LEFT];
+                output.dpad_right = buttons[(int)Button.DPAD_RIGHT];
+                output.dpad_up = buttons[(int)Button.DPAD_UP];
+                output.guide = buttons[(int)Button.HOME];
+
+            }
+            else if (hasDualSticks) {
+                output.a = buttons[(int)(!swapAB ? Button.B : Button.A)];
+                output.b = buttons[(int)(!swapAB ? Button.A : Button.B)];
+                output.y = buttons[(int)(!swapXY ? Button.X : Button.Y)];
+                output.x = buttons[(int)(!swapXY ? Button.Y : Button.X)];
+
+                output.dpad_up = buttons[(int)Button.DPAD_UP];
+                output.dpad_down = buttons[(int)Button.DPAD_DOWN];
+                output.dpad_left = buttons[(int)Button.DPAD_LEFT];
+                output.dpad_right = buttons[(int)Button.DPAD_RIGHT];
+
+                output.back = buttons[(int)Button.MINUS];
+                output.start = buttons[(int)Button.PLUS];
+                output.guide = buttons[(int)Button.HOME];
+
+                output.shoulder_left = buttons[(int)Button.SHOULDER_1];
+                output.shoulder_right = buttons[(int)Button.SHOULDER2_1];
+
+                output.thumb_stick_left = buttons[(int)Button.STICK];
+                output.thumb_stick_right = buttons[(int)Button.STICK2];
+            } else {
+                if (other != null) { // no need for && other != this
+                    output.a = buttons[(int)(!swapAB ? isLeft ? Button.B : Button.DPAD_DOWN : isLeft ? Button.A : Button.DPAD_RIGHT)];
+                    output.b = buttons[(int)(swapAB ? isLeft ? Button.B : Button.DPAD_DOWN : isLeft ? Button.A : Button.DPAD_RIGHT)];
+                    output.y = buttons[(int)(!swapXY ? isLeft ? Button.X : Button.DPAD_UP : isLeft ? Button.Y : Button.DPAD_LEFT)];
+                    output.x = buttons[(int)(swapXY ? isLeft ? Button.X : Button.DPAD_UP : isLeft ? Button.Y : Button.DPAD_LEFT)];
+
+                    output.dpad_up = buttons[(int)(isLeft ? Button.DPAD_UP : Button.X)];
+                    output.dpad_down = buttons[(int)(isLeft ? Button.DPAD_DOWN : Button.B)];
+                    output.dpad_left = buttons[(int)(isLeft ? Button.DPAD_LEFT : Button.Y)];
+                    output.dpad_right = buttons[(int)(isLeft ? Button.DPAD_RIGHT : Button.A)];
+
+                    output.back = buttons[(int)Button.MINUS];
+                    output.start = buttons[(int)Button.PLUS];
+                    output.guide = buttons[(int)Button.HOME];
+
+                    output.shoulder_left = buttons[(int)(isLeft ? Button.SHOULDER_1 : Button.SHOULDER2_1)];
+                    output.shoulder_right = buttons[(int)(isLeft ? Button.SHOULDER2_1 : Button.SHOULDER_1)];
+
+                    output.thumb_stick_left = buttons[(int)(isLeft ? Button.STICK : Button.STICK2)];
+                    output.thumb_stick_right = buttons[(int)(isLeft ? Button.STICK2 : Button.STICK)];
+                } else { // single joycon mode
+                    output.a = buttons[(int)(!swapAB ? isLeft ? Button.DPAD_LEFT : Button.DPAD_RIGHT : isLeft ? Button.DPAD_DOWN : Button.DPAD_UP)];
+                    output.b = buttons[(int)(swapAB ? isLeft ? Button.DPAD_LEFT : Button.DPAD_RIGHT : isLeft ? Button.DPAD_DOWN : Button.DPAD_UP)];
+                    output.y = buttons[(int)(!swapXY ? isLeft ? Button.DPAD_RIGHT : Button.DPAD_LEFT : isLeft ? Button.DPAD_UP : Button.DPAD_DOWN)];
+                    output.x = buttons[(int)(swapXY ? isLeft ? Button.DPAD_RIGHT : Button.DPAD_LEFT : isLeft ? Button.DPAD_UP : Button.DPAD_DOWN)];
+
+                    output.back = buttons[(int)Button.MINUS] | buttons[(int)Button.HOME];
+                    output.start = buttons[(int)Button.PLUS] | buttons[(int)Button.CAPTURE];
+
+                    output.shoulder_left = buttons[(int)Button.SL];
+                    output.shoulder_right = buttons[(int)Button.SR];
+
+                    output.thumb_stick_left = buttons[(int)Button.STICK];
+                }
+            }
+
+            // overwrite guide button if it's custom-mapped
+            if (input.MappingValue("home") != "0")
+                output.guide = false;
+
+            if (!(isSnes || is64)) {
+                if (other != null || hasDualSticks) { // no need for && other != this
+                    output.axis_left_x = CastStickValue((other == input && !isLeft) ? stick2[0] : stick[0]);
+                    output.axis_left_y = CastStickValue((other == input && !isLeft) ? stick2[1] : stick[1]);
+
+                    output.axis_right_x = CastStickValue((other == input && !isLeft) ? stick[0] : stick2[0]);
+                    output.axis_right_y = CastStickValue((other == input && !isLeft) ? stick[1] : stick2[1]);
+                } else { // single joycon mode
+                    output.axis_left_y = CastStickValue((isLeft ? 1 : -1) * stick[0]);
+                    output.axis_left_x = CastStickValue((isLeft ? -1 : 1) * stick[1]);
+                }
+            }
+
+            if (!is64)
+            {
+                if (hasAnalogTriggers) {
+                    // A DualSense's L2/R2 are genuinely analog, unlike Joy-Con/Pro (which have no
+                    // trigger sensor at all and only ever derive a digital 0-or-max value from a
+                    // button bit below) - pass the real raw value straight through.
+                    output.trigger_left = input.TriggerVal[0];
+                    output.trigger_right = input.TriggerVal[1];
+                } else if (other != null || hasDualSticks) {
+                    byte lval = GyroAnalogSliders ? sliderVal[0] : Byte.MaxValue;
+                    byte rval = GyroAnalogSliders ? sliderVal[1] : Byte.MaxValue;
+                    output.trigger_left = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2)] ? lval : 0);
+                    output.trigger_right = (byte)(buttons[(int)(isLeft ? Button.SHOULDER2_2 : Button.SHOULDER_2)] ? rval : 0);
+                } else {
+                    output.trigger_left = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_2 : Button.SHOULDER_1)] ? Byte.MaxValue : 0);
+                    output.trigger_right = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_1 : Button.SHOULDER_2)] ? Byte.MaxValue : 0);
+                }
+            }
+
+            return output;
+        }
+
+        public static OutputControllerDualShock4InputState MapToDualShock4Input(Controller input) {
+            var output = new OutputControllerDualShock4InputState();
+
+            var swapAB = input.swapAB;
+            var swapXY = input.swapXY;
+
+            var isLeft = input.isLeft;
+            var isSnes = input.Kind == ControllerKind.Snes;
+            var is64 = input.Kind == ControllerKind.N64;
+            var hasDualSticks = input.HasDualSticks;
+            var other = input.other;
+            var GyroAnalogSliders = input.GyroAnalogSliders;
+
+            var buttons = input.GetButtonsForVigem();
+            var stick = input.stick;
+            var stick2 = input.stick2;
+            var sliderVal = input.sliderVal;
+
+            if (is64)
+            {
+                output.thumb_right_x = (byte) ((buttons[(int)Button.X] ? Byte.MinValue : 0) + (buttons[(int)Button.MINUS] ? Byte.MaxValue : 0));
+                output.thumb_right_y = (byte) ((buttons[(int)Button.SHOULDER2_2] ? Byte.MinValue: 0) + (buttons[(int)Button.Y] ? Byte.MaxValue: 0));
+
+                output.thumb_left_x = CastStickValueByte((other == input && !isLeft) ? -stick2[0] : -stick[0]);
+                output.thumb_left_y = CastStickValueByte((other == input && !isLeft) ? stick2[1] : stick[1]);
+
+                output.options = buttons[(int)Button.PLUS];
+                output.cross = buttons[(int)(!swapAB ? Button.B : Button.A)];
+                output.circle = buttons[(int)(!swapAB ? Button.A : Button.B)];
+
+                output.shoulder_left = buttons[(int)Button.SHOULDER_1];
+                output.shoulder_right = buttons[(int)Button.SHOULDER2_1];
+
+                output.trigger_left = buttons[(int)Button.SHOULDER_2];
+                output.trigger_right = buttons[(int)Button.STICK];
+                output.trigger_left_value = (byte)(buttons[(int)Button.SHOULDER_2] ? Byte.MaxValue : 0);
+                output.trigger_right_value = (byte)(buttons[(int)Button.STICK] ? Byte.MaxValue : 0);
+
+
+                if (buttons[(int)Button.DPAD_UP]) {
+                    if (buttons[(int)Button.DPAD_LEFT])
+                        output.dPad = DpadDirection.Northwest;
+                    else if (buttons[(int)Button.DPAD_RIGHT])
+                        output.dPad = DpadDirection.Northeast;
+                    else
+                        output.dPad = DpadDirection.North;
+                } else if (buttons[(int)Button.DPAD_DOWN]) {
+                    if (buttons[(int)Button.DPAD_LEFT])
+                        output.dPad = DpadDirection.Southwest;
+                    else if (buttons[(int)Button.DPAD_RIGHT])
+                        output.dPad = DpadDirection.Southeast;
+                    else
+                        output.dPad = DpadDirection.South;
+                } else if (buttons[(int)Button.DPAD_LEFT])
+                    output.dPad = DpadDirection.West;
+                else if (buttons[(int)Button.DPAD_RIGHT])
+                    output.dPad = DpadDirection.East;                
+            }
+
+            if (hasDualSticks) {
+                output.cross = buttons[(int)(!swapAB ? Button.B : Button.A)];
+                output.circle = buttons[(int)(!swapAB ? Button.A : Button.B)];
+                output.triangle = buttons[(int)(!swapXY ? Button.X : Button.Y)];
+                output.square = buttons[(int)(!swapXY ? Button.Y : Button.X)];
+
+
+                if (buttons[(int)Button.DPAD_UP]) {
+                    if (buttons[(int)Button.DPAD_LEFT])
+                        output.dPad = DpadDirection.Northwest;
+                    else if (buttons[(int)Button.DPAD_RIGHT])
+                        output.dPad = DpadDirection.Northeast;
+                    else
+                        output.dPad = DpadDirection.North;
+                } else if (buttons[(int)Button.DPAD_DOWN]) {
+                    if (buttons[(int)Button.DPAD_LEFT])
+                        output.dPad = DpadDirection.Southwest;
+                    else if (buttons[(int)Button.DPAD_RIGHT])
+                        output.dPad = DpadDirection.Southeast;
+                    else
+                        output.dPad = DpadDirection.South;
+                } else if (buttons[(int)Button.DPAD_LEFT])
+                    output.dPad = DpadDirection.West;
+                else if (buttons[(int)Button.DPAD_RIGHT])
+                    output.dPad = DpadDirection.East;
+
+                output.share = buttons[(int)Button.CAPTURE];
+                output.options = buttons[(int)Button.PLUS];
+                output.ps = buttons[(int)Button.HOME];
+                output.touchpad = buttons[(int)Button.MINUS];
+                output.shoulder_left = buttons[(int)Button.SHOULDER_1];
+                output.shoulder_right = buttons[(int)Button.SHOULDER2_1];
+                output.thumb_left = buttons[(int)Button.STICK];
+                output.thumb_right = buttons[(int)Button.STICK2];
+            } else {
+                if (other != null) { // no need for && other != this
+                    output.cross = !swapAB ? buttons[(int)(isLeft ? Button.B : Button.DPAD_DOWN)] : buttons[(int)(isLeft ? Button.A : Button.DPAD_RIGHT)];
+                    output.circle = swapAB ? buttons[(int)(isLeft ? Button.B : Button.DPAD_DOWN)] : buttons[(int)(isLeft ? Button.A : Button.DPAD_RIGHT)];
+                    output.triangle = !swapXY ? buttons[(int)(isLeft ? Button.X : Button.DPAD_UP)] : buttons[(int)(isLeft ? Button.Y : Button.DPAD_LEFT)];
+                    output.square = swapXY ? buttons[(int)(isLeft ? Button.X : Button.DPAD_UP)] : buttons[(int)(isLeft ? Button.Y : Button.DPAD_LEFT)];
+
+                    if (buttons[(int)(isLeft ? Button.DPAD_UP : Button.X)])
+                        if (buttons[(int)(isLeft ? Button.DPAD_LEFT : Button.Y)])
+                            output.dPad = DpadDirection.Northwest;
+                        else if (buttons[(int)(isLeft ? Button.DPAD_RIGHT : Button.A)])
+                            output.dPad = DpadDirection.Northeast;
+                        else
+                            output.dPad = DpadDirection.North;
+                    else if (buttons[(int)(isLeft ? Button.DPAD_DOWN : Button.B)])
+                        if (buttons[(int)(isLeft ? Button.DPAD_LEFT : Button.Y)])
+                            output.dPad = DpadDirection.Southwest;
+                        else if (buttons[(int)(isLeft ? Button.DPAD_RIGHT : Button.A)])
+                            output.dPad = DpadDirection.Southeast;
+                        else
+                            output.dPad = DpadDirection.South;
+                    else if (buttons[(int)(isLeft ? Button.DPAD_LEFT : Button.Y)])
+                        output.dPad = DpadDirection.West;
+                    else if (buttons[(int)(isLeft ? Button.DPAD_RIGHT : Button.A)])
+                        output.dPad = DpadDirection.East;
+
+                    output.share = buttons[(int)Button.CAPTURE];
+                    output.options = buttons[(int)Button.PLUS];
+                    output.ps = buttons[(int)Button.HOME];
+                    output.touchpad = buttons[(int)Button.MINUS];
+                    output.shoulder_left = buttons[(int)(isLeft ? Button.SHOULDER_1 : Button.SHOULDER2_1)];
+                    output.shoulder_right = buttons[(int)(isLeft ? Button.SHOULDER2_1 : Button.SHOULDER_1)];
+                    output.thumb_left = buttons[(int)(isLeft ? Button.STICK : Button.STICK2)];
+                    output.thumb_right = buttons[(int)(isLeft ? Button.STICK2 : Button.STICK)];
+                } else { // single joycon mode
+                    output.cross = !swapAB ? buttons[(int)(isLeft ? Button.DPAD_LEFT : Button.DPAD_RIGHT)] : buttons[(int)(isLeft ? Button.DPAD_DOWN : Button.DPAD_UP)];
+                    output.circle = swapAB ? buttons[(int)(isLeft ? Button.DPAD_LEFT : Button.DPAD_RIGHT)] : buttons[(int)(isLeft ? Button.DPAD_DOWN : Button.DPAD_UP)];
+                    output.triangle = !swapXY ? buttons[(int)(isLeft ? Button.DPAD_RIGHT : Button.DPAD_LEFT)] : buttons[(int)(isLeft ? Button.DPAD_UP : Button.DPAD_DOWN)];
+                    output.square = swapXY ? buttons[(int)(isLeft ? Button.DPAD_RIGHT : Button.DPAD_LEFT)] : buttons[(int)(isLeft ? Button.DPAD_UP : Button.DPAD_DOWN)];
+
+                    output.ps = buttons[(int)Button.MINUS] | buttons[(int)Button.HOME];
+                    output.options = buttons[(int)Button.PLUS] | buttons[(int)Button.CAPTURE];
+
+                    output.shoulder_left = buttons[(int)Button.SL];
+                    output.shoulder_right = buttons[(int)Button.SR];
+
+                    output.thumb_left = buttons[(int)Button.STICK];
+                }
+            }
+
+            // overwrite guide button if it's custom-mapped
+            if (input.MappingValue("home") != "0")
+                output.ps = false;
+
+            if (!(isSnes || is64)) {
+                if (other != null || hasDualSticks) { // no need for && other != this
+                    output.thumb_left_x = CastStickValueByte((other == input && !isLeft) ? -stick2[0] : -stick[0]);
+                    output.thumb_left_y = CastStickValueByte((other == input && !isLeft) ? stick2[1] : stick[1]);
+                    output.thumb_right_x = CastStickValueByte((other == input && !isLeft) ? -stick[0] : -stick2[0]);
+                    output.thumb_right_y = CastStickValueByte((other == input && !isLeft) ? stick[1] : stick2[1]);
+                } else { // single joycon mode
+                    output.thumb_left_y = CastStickValueByte((isLeft ? 1 : -1) * stick[0]);
+                    output.thumb_left_x = CastStickValueByte((isLeft ? 1 : -1) * stick[1]);
+                }
+            }
+
+            if (!is64)
+            {
+                if (other != null || hasDualSticks) {
+                    byte lval = GyroAnalogSliders ? sliderVal[0] : Byte.MaxValue;
+                    byte rval = GyroAnalogSliders ? sliderVal[1] : Byte.MaxValue;
+                    output.trigger_left_value = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_2 : Button.SHOULDER2_2)] ? lval : 0);
+                    output.trigger_right_value = (byte)(buttons[(int)(isLeft ? Button.SHOULDER2_2 : Button.SHOULDER_2)] ? rval : 0);
+                } else {
+                    output.trigger_left_value = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_2 : Button.SHOULDER_1)] ? Byte.MaxValue : 0);
+                    output.trigger_right_value = (byte)(buttons[(int)(isLeft ? Button.SHOULDER_1 : Button.SHOULDER_2)] ? Byte.MaxValue : 0);
+                }
+            // Output digital L2 / R2 in addition to analog L2 / R2
+            output.trigger_left = output.trigger_left_value > 0 ? output.trigger_left = true : output.trigger_left = false;
+            output.trigger_right = output.trigger_right_value > 0 ? output.trigger_right = true : output.trigger_right = false;
+            }
+
+            return output;
         }
 
     }
