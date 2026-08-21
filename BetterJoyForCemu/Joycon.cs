@@ -53,7 +53,6 @@ namespace BetterJoyForCemu {
             (isLeft ? ControllerKind.Left : ControllerKind.Right);
 
         public byte[] triggerVal = { 0, 0 }; // raw 0-255 analog L2/R2, DualSense only
-        bool isUSB = false;
 
         // 64 vars
         float maxX = 0.5f;
@@ -373,8 +372,6 @@ namespace BetterJoyForCemu {
         }
 
         public bool send = true;
-
-        public bool isLeft;
 
         private float[] stick = { 0, 0 };
         private float[] stick2 = { 0, 0 };

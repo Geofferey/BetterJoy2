@@ -78,6 +78,18 @@ namespace BetterJoyForCemu {
         public string path = String.Empty;
         public string serial_number;
 
+        // Handedness/orientation convention, not literal physical handedness for every device
+        // kind - Program.cs constructs a Pro controller with isLeft=true too (see Kind's default
+        // fallthrough), and single-unit devices in general default to true (matches the existing
+        // "primary/solo" convention). CalibrationState.FinishCalibration reads this directly to
+        // correct a real Joy-Con-side gravity-axis sign difference - see its own comment for why.
+        public bool isLeft;
+
+        // Set once at connect time for Joy-Con (placeholder-serial heuristic), re-derived every
+        // packet for DualSense based on observed report length - same field, two different "who
+        // updates it and when" contracts (see DOCS/CONTROLLERS-REFACTOR.md's known-issues list).
+        protected bool isUSB = false;
+
         public OutputControllerXbox360 out_xbox;
         public OutputControllerDualShock4 out_ds4;
 

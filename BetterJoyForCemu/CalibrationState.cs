@@ -17,7 +17,7 @@ namespace BetterJoyForCemu {
         // corrupting the result with a mix of unrelated controllers' readings. This is what the
         // old "exactly one controller connected" UI restriction was actually working around -
         // scoping admission to one specific controller makes that restriction unnecessary.
-        public static Joycon CalibratingController = null;
+        public static Controller CalibratingController = null;
 
         // Claims the shared calibration session for controller, clearing sample buffers as part
         // of the same critical section. Returns false if something else already holds it -
@@ -29,7 +29,7 @@ namespace BetterJoyForCemu {
         // CalibratingController were written directly with no check, which was invisible only
         // because exactly one human-driven calibration flow was ever active at a time - a
         // background watcher running independently per-controller makes that assumption false.
-        public static bool TryClaim(Joycon controller) {
+        public static bool TryClaim(Controller controller) {
             lock (samplesLock) {
                 if (Calibrating)
                     return false;
@@ -46,7 +46,7 @@ namespace BetterJoyForCemu {
         // window rather than blocking or failing the explicit user action. The displaced side
         // discovers this on its own next check (IsClaimedBy returns false) and aborts cleanly,
         // publishing nothing under its own serial.
-        public static void ForceClaim(Joycon controller) {
+        public static void ForceClaim(Controller controller) {
             lock (samplesLock) {
                 Calibrating = true;
                 CalibratingController = controller;
@@ -55,7 +55,7 @@ namespace BetterJoyForCemu {
             }
         }
 
-        public static bool IsClaimedBy(Joycon controller) {
+        public static bool IsClaimedBy(Controller controller) {
             lock (samplesLock) {
                 return Calibrating && CalibratingController == controller;
             }
@@ -64,7 +64,7 @@ namespace BetterJoyForCemu {
         // No-op if controller doesn't currently hold the claim - safe to call from an abort path
         // that isn't sure whether it still owns it (e.g. it may have already been preempted by
         // ForceClaim).
-        public static void Release(Joycon controller) {
+        public static void Release(Controller controller) {
             lock (samplesLock) {
                 if (CalibratingController == controller) {
                     Calibrating = false;
@@ -79,7 +79,7 @@ namespace BetterJoyForCemu {
         // MainForm/HeadlessJoyconHost whenever they show a prompt, cleared by whichever one
         // actually acts on it (mouse click or button press - see each host's confirm handler) so
         // a stray press after the prompt's already been dismissed does nothing.
-        public static Joycon PendingConfirmController = null;
+        public static Controller PendingConfirmController = null;
 
         public static List<int> XG = new List<int>(), YG = new List<int>(), ZG = new List<int>();
         public static List<int> XA = new List<int>(), YA = new List<int>(), ZA = new List<int>();
@@ -95,7 +95,7 @@ namespace BetterJoyForCemu {
         // CalibratingController as soon as the gyro phase ends, which would otherwise stop
         // stick sample admission before the stick phase even started.
         public static bool StickCalibrating = false;
-        public static Joycon StickCalibratingController = null;
+        public static Controller StickCalibratingController = null;
 
         public enum StickPhase { None, Center, Range }
         public static StickPhase CurrentStickPhase = StickPhase.None;
@@ -175,7 +175,7 @@ namespace BetterJoyForCemu {
         // the check and the appends happen under the same lock FinishCalibration uses to stop
         // admission and snapshot the lists, so a sample can never land in the narrow window
         // between "stop admitting" and "read for calculation."
-        public static void AddSample(Joycon source, List<int> accList, List<int> gyroList, int accValue, int gyroValue) {
+        public static void AddSample(Controller source, List<int> accList, List<int> gyroList, int accValue, int gyroValue) {
             lock (samplesLock) {
                 if (!Calibrating || source != CalibratingController)
                     return;
@@ -225,7 +225,7 @@ namespace BetterJoyForCemu {
         // AddSample above, just against the independent Stick* flags so this phase can keep
         // running after FinishCalibration has already cleared Calibrating/CalibratingController
         // for the gyro phase that preceded it.
-        public static void AddStickSample(Joycon source, bool secondary, ushort x, ushort y) {
+        public static void AddStickSample(Controller source, bool secondary, ushort x, ushort y) {
             lock (samplesLock) {
                 if (!StickCalibrating || source != StickCalibratingController)
                     return;
@@ -379,7 +379,7 @@ namespace BetterJoyForCemu {
         // instead of trusting every caller to have checked first, so a claim lost mid-window
         // (preempted by a different controller's manual calibration - see ForceClaim) can never
         // publish contaminated samples under the wrong serial number.
-        public static void FinishCalibration(Joycon controller) {
+        public static void FinishCalibration(Controller controller) {
             List<int> xg, yg, zg, xa, ya, za;
             lock (samplesLock) {
                 if (CalibratingController != controller)
