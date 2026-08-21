@@ -1,3 +1,5 @@
+using System;
+using System.Diagnostics;
 using System.Net.NetworkInformation;
 using BetterJoyForCemu.VirtualOutput;
 
@@ -9,12 +11,14 @@ namespace BetterJoyForCemu {
     // surfaces (PadId/auto-join, XInput mapping, gyro/IMU) that live substantially in what will
     // eventually move here.
     //
-    // This first content sub-step moves only pure data with no attached logic: nested type
-    // declarations (state_, Button) and simple fields with no property getter/setter, no
-    // constructor-time computation that reaches into not-yet-moved subsystems (mapping-profile
-    // engine, gyro pipeline, etc.), and no method bodies. Everything here is exactly as safe to
-    // read/write from Joycon as it was before the move - C# doesn't distinguish "declared in the
-    // base class" from "declared in the subclass" for field/property access from subclass code.
+    // Content moves in as either pure data (nested type declarations, simple fields with no
+    // property getter/setter, no constructor-time computation reaching into not-yet-moved
+    // subsystems) or pure/self-contained methods already written as shared helpers with no
+    // per-device branching (CenterSticks/CommitButtonState below) - never entangled state like
+    // the other/mapping-profile-engine/gyro-pipeline, which stays on Joycon until their own,
+    // deliberately later sub-steps. Everything here is exactly as safe to read/write/call from
+    // Joycon as it was before the move - C# doesn't distinguish "declared in the base class"
+    // from "declared in the subclass" for field/property/method access from subclass code.
     public abstract class Controller {
         public enum state_ : uint {
             NOT_ATTACHED,
@@ -81,6 +85,63 @@ namespace BetterJoyForCemu {
         protected bool[] buttons = new bool[20];
         protected bool[] down_ = new bool[20];
         protected long[] buttons_down_timestamp = new long[20];
+
+        // Last time any button's down/up edge changed - read by auto-power-off (HomeLongPowerOff-
+        // style idle checks) and gyro-mouse idle detection, both device-generic.
+        protected long inactivity = Stopwatch.GetTimestamp();
+
+        // Shared by ProcessButtonsAndStick (Joy-Con/Pro) and ParseDualSenseReport - diffs the
+        // freshly-populated buttons[] against down_[] (the pre-update snapshot the caller must
+        // already have taken under lock(down_), matching ProcessButtonsAndStick's own pattern)
+        // into buttons_up/buttons_down/buttons_down_timestamp, and updates inactivity. Report
+        // parsing itself is not shareable (the two devices' byte layouts are unrelated), just
+        // this bookkeeping tail.
+        protected void CommitButtonState() {
+            long timestamp = Stopwatch.GetTimestamp();
+
+            lock (buttons_up) {
+                lock (buttons_down) {
+                    bool changed = false;
+                    for (int i = 0; i < buttons.Length; ++i) {
+                        buttons_up[i] = (down_[i] & !buttons[i]);
+                        buttons_down[i] = (!down_[i] & buttons[i]);
+                        if (down_[i] != buttons[i])
+                            buttons_down_timestamp[i] = (buttons[i] ? timestamp : -1);
+                        if (buttons_up[i] || buttons_down[i])
+                            changed = true;
+                    }
+
+                    inactivity = (changed) ? timestamp : inactivity;
+                }
+            }
+        }
+
+        // Should really be called calculating stick data. Pure function of its parameters - no
+        // per-device branching, so it's shared as-is rather than duplicated (Joy-Con/Pro read
+        // stick_cal from SPI flash, SNES/N64 from App.config, DualSense from a hardcoded
+        // identity default - three different init strategies feeding this one consuming
+        // contract, per DOCS/CONTROLLERS-REFACTOR.md).
+        protected float[] CenterSticks(UInt16[] vals, ushort[] cal, ushort dz, float scaling_factor) {
+            ushort[] t = cal;
+
+            float[] s = { 0, 0 };
+            float dx = vals[0] - t[2], dy = vals[1] - t[3];
+            if (Math.Abs(dx * dx + dy * dy) < dz * dz)
+                return s;
+
+            s[0] = dx / (dx > 0 ? t[0] : t[4]);
+            s[1] = dy / (dy > 0 ? t[1] : t[5]);
+
+            if (scaling_factor != 1.0f) {
+                s[0] *= scaling_factor;
+                s[1] *= scaling_factor;
+
+                s[0] = Math.Max(Math.Min(s[0], 1.0f), -1.0f);
+                s[1] = Math.Max(Math.Min(s[1], 1.0f), -1.0f);
+            }
+
+            return s;
+        }
 
         // Monotonic creation order, assigned once in the constructor - used to decide which half
         // of a pair gets disconnected on join: whichever connected (and got its virtual

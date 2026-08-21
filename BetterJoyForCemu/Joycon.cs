@@ -398,8 +398,6 @@ namespace BetterJoyForCemu {
             return vigemButtons;
         }
 
-        private long inactivity = Stopwatch.GetTimestamp();
-
         public bool send = true;
 
         public enum DebugType : int {
@@ -3585,32 +3583,6 @@ namespace BetterJoyForCemu {
             return 0;
         }
 
-        // Shared by ProcessButtonsAndStick (Joy-Con/Pro) and ParseDualSenseReport - diffs the
-        // freshly-populated buttons[] against down_[] (the pre-update snapshot the caller must
-        // already have taken under lock(down_), matching ProcessButtonsAndStick's own pattern)
-        // into buttons_up/buttons_down/buttons_down_timestamp, and updates inactivity. Report
-        // parsing itself is not shareable (the two devices' byte layouts are unrelated), just
-        // this bookkeeping tail.
-        private void CommitButtonState() {
-            long timestamp = Stopwatch.GetTimestamp();
-
-            lock (buttons_up) {
-                lock (buttons_down) {
-                    bool changed = false;
-                    for (int i = 0; i < buttons.Length; ++i) {
-                        buttons_up[i] = (down_[i] & !buttons[i]);
-                        buttons_down[i] = (!down_[i] & buttons[i]);
-                        if (down_[i] != buttons[i])
-                            buttons_down_timestamp[i] = (buttons[i] ? timestamp : -1);
-                        if (buttons_up[i] || buttons_down[i])
-                            changed = true;
-                    }
-
-                    inactivity = (changed) ? timestamp : inactivity;
-                }
-            }
-        }
-
         // DualSense baseline report parsing - buttons/sticks/triggers only (no gyro/touchpad/
         // adaptive-trigger reads yet). Offsets and layout from the standard DualSense USB/BT HID
         // report; o is 1 on Bluetooth (a leading byte USB doesn't have), 0 on USB. Populates the
@@ -3836,29 +3808,6 @@ namespace BetterJoyForCemu {
             } else {
                 form.AppendTextBox("Poll cannot start.\r\n");
             }
-        }
-
-        // Should really be called calculating stick data
-        private float[] CenterSticks(UInt16[] vals, ushort[] cal, ushort dz, float scaling_factor) {
-            ushort[] t = cal;
-
-            float[] s = { 0, 0 };
-            float dx = vals[0] - t[2], dy = vals[1] - t[3];
-            if (Math.Abs(dx * dx + dy * dy) < dz * dz)
-                return s;
-
-            s[0] = dx / (dx > 0 ? t[0] : t[4]);
-            s[1] = dy / (dy > 0 ? t[1] : t[5]);
-
-            if (scaling_factor != 1.0f) {
-                s[0] *= scaling_factor;
-                s[1] *= scaling_factor;
-
-                s[0] = Math.Max(Math.Min(s[0], 1.0f), -1.0f);
-                s[1] = Math.Max(Math.Min(s[1], 1.0f), -1.0f);
-            }
-
-            return s;
         }
 
         private static short CastStickValue(float stick_value) {
