@@ -23,30 +23,30 @@ namespace BetterJoyForCemu {
         public bool is64 = false;
         public bool isDualSense = false;
 
-        // Capability properties - step 1 of DOCS/CONTROLLERS-REFACTOR.md's migration order.
-        // isPro is a SUPERSET flag (isPro = isPro || isSnes || is64 || isDualSense, set in the
-        // constructor below), so every existing "if (isPro)" check silently also matches SNES/
-        // N64/DualSense whether that's actually intended or not - the exact mechanism behind a
-        // real incident this session (a DualSense-scoped change leaked into Joy-Con's own code
-        // path via a shared isPro-gated method). These properties name what each call site is
-        // ACTUALLY testing for, so the intent is explicit instead of relying on isPro-superset
-        // trivia. Their default implementations below are deliberately literal, behavior-
-        // preserving aliases of today's existing flags for every current device type - this is a
-        // pure rename/naming pass, not a behavior change (SNES/N64 mathematically get the same
-        // HasDualSticks=true a raw "isPro" check already gave them, even though SNES genuinely
-        // has zero sticks - that real divergence is deferred to when Controller/subclasses exist
-        // and SnesController can correctly override this, not fixed here).
-        public bool SupportsPairing => !isPro;      // Joy-Con-only: can combine with another unit into one logical controller
-        public bool HasDualSticks => isPro;         // has two physical sticks/thumb-stick-click buttons on one unit
-        public bool HasGyro => !isDualSense;         // currently populates real gyr_g/acc_g data
-        public bool HasAnalogTriggers => isDualSense; // L2/R2 report a real analog value, not just a digital button bit
-        public bool UsesNintendoProtocol => !isDualSense; // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
+        // Capability properties - step 1 of DOCS/CONTROLLERS-REFACTOR.md's migration order,
+        // promoted to Controller (abstract) as part of step 4 so DualSenseController can answer
+        // them without any isPro/isSnes/isDualSense flags at all. isPro was a SUPERSET flag
+        // (isPro = isPro || isSnes || is64 || isDualSense, set in the constructor below), so
+        // every "if (isPro)" check silently also matched SNES/N64/DualSense whether that's
+        // actually intended or not - the exact mechanism behind a real incident this session (a
+        // DualSense-scoped change leaked into Joy-Con's own code path via a shared isPro-gated
+        // method). These properties name what each call site is ACTUALLY testing for. Joycon's
+        // overrides below are deliberately literal, behavior-preserving aliases of the original
+        // flags for every current Nintendo-family device type - this is a pure rename/naming
+        // pass, not a behavior change (SNES/N64 mathematically get the same HasDualSticks=true a
+        // raw "isPro" check already gave them, even though SNES genuinely has zero sticks - that
+        // real divergence is deferred to when SnesController exists, not fixed here).
+        public override bool SupportsPairing => !isPro;      // Joy-Con-only: can combine with another unit into one logical controller
+        public override bool HasDualSticks => isPro;         // has two physical sticks/thumb-stick-click buttons on one unit
+        public override bool HasGyro => !isDualSense;         // currently populates real gyr_g/acc_g data
+        public override bool HasAnalogTriggers => isDualSense; // L2/R2 report a real analog value, not just a digital button bit
+        public override bool UsesNintendoProtocol => !isDualSense; // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
 
         // Single source of truth for device-kind identity, replacing the same isDualSense-
         // before-isSnes-before-is64-before-isPro ordering dependency that used to be re-derived
         // independently (and correctly, but duplicated) in HeadlessJoyconHost.cs and
         // ControllerMappings.cs - see DOCS/CONTROLLERS-REFACTOR.md's settings/step-1 notes.
-        public ControllerKind Kind =>
+        public override ControllerKind Kind =>
             isDualSense ? ControllerKind.DualSense :
             isSnes ? ControllerKind.Snes :
             is64 ? ControllerKind.N64 :

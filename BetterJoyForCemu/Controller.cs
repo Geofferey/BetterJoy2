@@ -280,6 +280,22 @@ namespace BetterJoyForCemu {
             return s;
         }
 
+        // Capability contract every subclass must answer explicitly - see Joycon's overrides for
+        // the original isPro/isSnes/isDualSense-flag-derived logic this replaces, and
+        // DualSenseController's overrides (step 4) for how trivially these reduce to hardcoded
+        // constants once a device isn't sharing a class with others. Abstract, not a defaulted
+        // virtual, since there's no meaningful generic answer to any of these - every concrete
+        // controller type must decide.
+        public abstract bool SupportsPairing { get; }      // can combine with another unit into one logical controller
+        public abstract bool HasDualSticks { get; }        // has two physical sticks/thumb-stick-click buttons on one unit
+        public abstract bool HasGyro { get; }               // currently populates real gyr_g/acc_g data
+        public abstract bool HasAnalogTriggers { get; }     // triggers report a real analog value, not just a digital button bit
+        public abstract bool UsesNintendoProtocol { get; }  // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
+
+        // Single source of truth for device-kind identity - see ServiceControlProtocol.cs for
+        // the ControllerKind enum this returns (used by the remote-mode snapshot protocol).
+        public abstract ControllerKind Kind { get; }
+
         // Monotonic creation order, assigned once in the constructor - used to decide which half
         // of a pair gets disconnected on join: whichever connected (and got its virtual
         // controller created) FIRST is the one most likely to already be the controller a
