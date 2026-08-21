@@ -173,25 +173,56 @@ the explicit seeding requirement added there.
    verification section for DualSense specifically.
 7. DualSense trigger analog range (0-max, not snapping) is preserved on the
    XInput output.
-8. No DS4 output target is created for a DualSense (confirms the
+8. Quantitative stick range/deadzone check for Joy-Con/Pro/SNES/N64, not
+   just "produces the correct button" - `stick_cal`/`deadzone` has three
+   different init strategies feeding one consuming contract (`CenterSticks`,
+   see "Fields shared by all types but initialized differently per type"
+   above), and DualSense already gets an explicit range check (item 7) that
+   the Nintendo family doesn't; confirm full-range deflection and centered-
+   at-rest behavior numerically (or via `joy.cpl`'s axis readout), not just
+   qualitatively.
+9. No DS4 output target is created for a DualSense (confirms the
    out-of-scope decision above didn't get silently reversed).
 
 *Gyro / IMU:*
-9. Gyro-mouse movement direction and sensitivity are unchanged for a solo
-   Joy-Con, a joined pair, and a Pro Controller - all three have distinct
-   axis-selection code paths (`ExtractIMUValues`'s `isPro`/`isLeft`/solo-mode
-   branches) that must each still be reachable and correct.
-10. Gyro-to-stick mode (both left-stick and right-stick targets) still
+10. Gyro-mouse movement direction and sensitivity are unchanged for a solo
+    Joy-Con, a joined pair, and a Pro Controller - all three have distinct
+    axis-selection code paths (`ExtractIMUValues`'s `isPro`/`isLeft`/solo-mode
+    branches) that must each still be reachable and correct.
+11. Gyro-to-stick mode (both left-stick and right-stick targets) still
     produces correct axis mapping and deflection limits.
-11. Auto-calibration still triggers only on genuine stillness (trend
+12. Auto-calibration still triggers only on genuine stillness (trend
     detection), converges to a sane center, and does not fire for DualSense
     (`TryAutoCalibrate`'s guard) or contend across multiple connected
     controllers.
-12. Roll compensation still uses continuous accel-trust-gated tracking, not
+13. Roll compensation still uses continuous accel-trust-gated tracking, not
     sample-once-at-activation - re-read `DOCS/SMART-AUTO-CALIBRATION.md`
     and the roll-compensation history before changing anything here.
-13. Vertical (self-paired) orientation and horizontal orientation both still
+14. Vertical (self-paired) orientation and horizontal orientation both still
     produce correct gyro-mouse/gyro-stick output.
+
+*Settings migration (distinct failure mode from "gyro feels right" above -
+a pre-existing customized value silently reverting to default would pass
+every item 10-14 above on a fresh/default profile and still be a real
+regression):*
+15. Before running the settings-architecture migration, dump every existing
+    profile's resolved values for all newly-profileized keys
+    (`GyroMouseSensitivityX/Y`, `StickScalingFactor`/`2`, the full list
+    under "The sensitivity/behavior settings..." below) from
+    `controller_mappings.xml`. After migration, dump the same values again
+    and diff byte-for-byte - not "feels about right," an exact match for
+    every profile that existed before the migration ran.
+16. The eager whole-file backfill pass (see "Target design" below) actually
+    ran and populated every pre-existing profile, not just newly-created
+    ones - verify by inspecting `controller_mappings.xml` directly after
+    first launch on the new code, not just by testing runtime behavior.
+
+*Stress/races:*
+17. Rapid repeated connect/disconnect/reconnect of the same controller
+    (not just a single clean connect) - covers the documented
+    `mappingProfileId volatile` race between the join/split thread and a
+    controller's own poll thread (`Joycon.cs:108-110`), which a single-pass
+    functional test would not exercise.
 
 ## Current-state map (from direct investigation, not assumption)
 
@@ -367,6 +398,17 @@ algorithm" is easier to see clearly once DualSense's own gyro data actually
 exists to compare against Joy-Con's) rather than assumed to happen in the
 same pass.
 
+**Cheap regression net worth capturing before this extraction, given this
+pipeline has no tests today**: record a set of real sensor input -> output
+pairs (raw gyro/accel values in, gyro-mouse cursor delta or gyro-stick axis
+output out) from current Joy-Con/Pro behavior before touching any of this
+code, the same way `dualsense_raw_debug.log` captured real hardware bytes
+for the DualSense offset investigation this session. Diffing `GyroMath.cs`'s
+output against these recorded pairs after the extraction is a much stronger
+correctness signal than "moved the code, still compiles, feels right by
+hand" - directly serving the "get it right the first time" guiding
+principle above.
+
 ### Virtual controller lifecycle - PadId assignment/compaction/creation/destruction as its own module
 
 A third extraction, alongside `Controller` and `GyroMath.cs`: the PadId
@@ -395,6 +437,32 @@ the loser, destroy its virtual controller" logic stays firmly inside
 `JoyconController`/wherever Joy-Con pairing lives, and calls into the
 generic lifecycle module's primitives (create/destroy/reassign) rather than
 duplicating them or the generic module knowing anything about pairing.
+
+**This is harder than it sounds, verified against the real code, not just
+assumed clean.** `ReassignPadIds` (`Program.cs:211-240`) is flag-free but
+*not* actually pairing-agnostic today - it computes pairing-aware
+active/passive state inline (`bool isPair = jc.other != null && jc.other !=
+jc; ... active = jcHasOutput ? jc : jc.other; passive = ...`). Worse, the
+auto-join block's loser-destroy logic (`Program.cs:740-799`) doesn't call
+`AssignPadId`/`CreateOutputControllers` at all - it hand-rolls its own
+`out_xbox`/`out_ds4` `Disconnect()` inline, duplicating rather than reusing
+the primitives this new module is supposed to centralize. A naive verbatim
+move of today's method bodies into the new module would relocate exactly
+the pairing-shaped logic this section says must stay out of it.
+
+**Resolution: step 3 (see "Suggested migration approach" below) explicitly
+includes rewiring the auto-join block to call the new module's create/
+destroy/reassign primitives instead of duplicating them**, while the
+*decision* of which half is the loser stays wherever Joy-Con code currently
+lives - still the undifferentiated `Joycon` class at step 3, since
+`JoyconController` doesn't exist until step 5. This is a deliberately
+accepted interim state, not a contradiction: the module's primitives become
+pairing-ignorant at step 3 (satisfying the design goal below), but the
+*caller* of those primitives for the pairing-aware decision doesn't move to
+its own dedicated pairing-only class until step 5. Re-verify the full
+PadId/auto-join checklist at step 3 specifically because this touches the
+exact code three prior regressions (`fb3dca1`, `3d1c38a`, `156dcf3`) already
+happened in.
 
 **Design goal**: make compaction specifically an isolated, skippable step
 in this module - not inlined into `CleanUp`'s removal loop the way it is
@@ -475,7 +543,11 @@ device type's behavior. That means:
 2. `Program.j` becomes `ConcurrentList<Controller>` (or an interface if one
    still makes sense once the base class is designed) - a mechanical type
    change across the seven external files, not a logic change, per the
-   coupling map above.
+   coupling map above. This isn't optional or deferrable to "whenever" - C#
+   generics are invariant, so it's forced the moment a second concrete leaf
+   type needs to coexist in `j`, which is migration step 4 specifically
+   (see "Suggested migration approach" below) - the single largest
+   mechanical diff in this whole plan.
 3. Every capability a new device type might need (pairing, dual sticks,
    analog triggers, gyro, adaptive triggers, touchpad, lightbar) is a
    virtual property or method on `Controller` with a safe default, not a
@@ -601,9 +673,7 @@ matching their names.
 - **A reserved global-settings profile** (another sentinel ID, e.g.
   `"__global__"`) reuses the exact same storage/persistence/file-watcher/
   `Reload()` machinery `ControllerMappings` already has - not a fourth
-  config surface. This holds the app-wide keys listed above. The legacy
-  Settings UI (`MainForm.cs`'s `displayedConfigKeys` list) either goes away
-  or becomes a thin editor over this profile instead of raw `App.config`.
+  config surface. This holds the app-wide keys listed above.
 - **The sensitivity/behavior keys move to being genuine profile `OptionKey`s**
   (like `HomeLEDOn`/`SwapAB`/the `GyroStick*` deflection settings already
   are today) - each controller's own profile can override them, with the
@@ -616,19 +686,91 @@ matching their names.
   e.g. very early startup behavior) can reasonably stay there, but that
   should end up being a small, deliberately-justified remainder, not the
   default assumption for a new setting the way it is today.
-- **Non-negotiable migration-correctness requirement**: moving a
-  sensitivity/behavior key off `ConfigurationManager.AppSettings` must not
-  change what an existing Joy-Con/Pro/DualSense profile actually does the
-  moment this ships. Every profile that already exists in
-  `controller_mappings.xml` at migration time - not just new ones seeded
-  from `Default` afterward - needs the newly-profileized keys backfilled
-  from whatever the *current live global value* was, using the same
-  missing-key-backfill mechanism `SnapshotMissingProfileValues` already uses
-  for the `AppConfigBackedKeys` bridge today, not a fresh/reset default. A
-  user's gyro-mouse sensitivity, roll compensation, stick scaling, etc. must
-  read identically before and after this migration for every controller
-  they already have configured - see the matching constraint under
-  "What must not regress" above.
+- **The legacy Settings UI's actual removal mechanism, stated precisely.**
+  Verified: `MainForm.cs`'s `displayedConfigKeys` is built dynamically from
+  `ConfigurationManager.AppSettings.AllKeys` (`MainForm.cs:91`), not a
+  hardcoded list - simply changing what the *runtime* reads does not remove
+  a key from this UI, since it just reflects whatever's still physically
+  present in the deployed config file. The key must be physically removed
+  from `App.config`/`.exe.config` (once its runtime read is fully migrated
+  and the eager backfill below has run), or this UI must be repointed at
+  the new profile-based store instead of `AllKeys`. Pick one explicitly
+  when this is implemented - "either goes away or becomes a thin editor"
+  isn't a mechanism by itself.
+- **Reserved-profile UI rendering.** `IncludeDisconnectedProfiles`/
+  `DisconnectedDisplayName` (existing, generic machinery) will render the
+  `Default`/`__global__` sentinel profiles as ordinary "disconnected
+  controller" entries (e.g. literally `"default (disconnected)"`) if reused
+  naively for the Controller Profiles dropdown - these need to be
+  explicitly special-cased there, not just left to "a real design decision
+  to settle" as stated above; the failure mode if not special-cased is
+  concrete and already knowable now, not a design ambiguity to defer.
+- **Orphaned/stale profile cleanup is explicitly out of scope for this
+  migration.** `ProfileIdFor` already carries a comment documenting the
+  historical failure class that produces these (a device silently landing
+  in the wrong prefix's branch before an ordering fix, e.g. this session's
+  `pro:xxxxx` entry left over from an old DualSense mis-detection bug) -
+  `DeleteProfile` already exists and is manual-only via `Reassign.cs`'s
+  delete button. This migration does not add automatic pruning; orphans
+  remain harmless and user-deletable exactly as they are today. Revisit
+  only if it becomes an actual complaint, not preemptively here.
+- **Non-negotiable migration-correctness requirement, with a concrete
+  mechanism (not just an intention).** Moving a sensitivity/behavior key
+  off `ConfigurationManager.AppSettings` must not change what an existing
+  Joy-Con/Pro/DualSense profile actually does the moment this ships.
+  Verified there's no existing precedent for this in the codebase:
+  `ControllerMappings.Save()` writes `<controllerMappings version="2">`,
+  but `Reload()` never reads or branches on that attribute - no version-
+  gated migration pass exists anywhere today, and
+  `SnapshotMissingProfileValues` only backfills a specific profile's
+  specific key *lazily, on next write* - it does not proactively touch
+  every profile already on disk at load time. If `AppSettings` reads are
+  removed from the runtime path before some other mechanism guarantees
+  every existing profile already has the newly-profileized keys, an
+  existing user's customized `GyroMouseSensitivityX` (etc.) silently resets
+  to a hardcoded default the instant this ships - exactly the outcome this
+  requirement forbids. **Required mechanism**: on first load under the new
+  code (detected via the reserved `Default`/`__global__` profiles not yet
+  existing), run one eager, whole-file backfill pass over every profile
+  currently in `controller_mappings.xml`, applying today's
+  `SnapshotMissingProfileValues` semantics to all of them at once - not
+  lazily, not per-key-on-next-write - persist the result, and only then is
+  it safe to remove the `AppSettings` read from the runtime path. This
+  backfill pass, and verifying it ran correctly, is itself a concrete
+  implementation task for whichever step does this migration, not an
+  assumed side effect.
+
+### Suggested settings-migration steps
+
+Given equal risk-bearing to gyro correctness (see the "non-negotiable"
+requirement above), this gets the same step-by-step, checklist-gated
+treatment as the class-hierarchy work below, not a single big-bang change:
+
+1. Add the reserved `Default` and `__global__` profile plumbing to
+   `ControllerMappings.cs` - storage/read/write only, no runtime call sites
+   changed yet. Self-contained, doesn't touch `Joycon.cs`'s device branching
+   at all.
+2. Implement and run the eager whole-file backfill pass (see "Target
+   design" above) against a copy of a real `controller_mappings.xml` -
+   verify checklist items 15-16 before this ever touches a call site that
+   currently reads `ConfigurationManager.AppSettings`.
+3. Move the genuinely app-wide keys (`UseHidHide`, `IP`/`Port`,
+   `AutoAddControllers`, etc.) to reading from the `__global__` profile.
+   Lower risk than the sensitivity keys - not gyro/IMU-adjacent.
+4. Move the sensitivity/behavior keys (`GyroMouseSensitivityX/Y`,
+   `StickScalingFactor`/`2`, the `AutoCal*` family, etc.) to reading from
+   each controller's own profile via `Default`-seeded `OptionKey`s. This is
+   the step the gyro/IMU "must not regress" constraint applies to most
+   directly - run checklist items 10-16 in full here, not just at the end.
+5. Repoint or remove the legacy Settings UI (`MainForm.cs`'s
+   `displayedConfigKeys`/`AllKeys` mechanism) once its underlying keys have
+   actually been removed from the deployed config, per the mechanism
+   decided under "Target design" above.
+6. Physically remove the migrated keys from `App.config`/the deployed
+   `.exe.config`, and delete the now-dead `AppConfigBackedKeys`/
+   `LegacyValue`/`LegacyGyroActivationValue`/`LegacyOptionValue` bridge
+   code and the `ShowAsXInput`/`ShowAsDS4`/`GyroToJoyOrMouse` keys it
+   existed to serve.
 
 ### Relationship to the `Controller` class refactor above
 
@@ -636,11 +778,11 @@ These are two separable concerns (class hierarchy vs. settings storage) but
 they touch the same surface - every sensitivity read this section moves off
 `ConfigurationManager.AppSettings` is a read that would otherwise need to be
 re-homed again when `Controller`/`DualSenseController` are extracted.
-Sequencing worth considering once both plans are final: doing the
-Default-profile/global-settings-profile plumbing in `ControllerMappings.cs`
-first (self-contained, lower risk, doesn't touch `Joycon.cs`'s device
-branching at all) before or alongside migration step 1 below, so the
-capability-property pass and the settings-read migration happen together
+Sequencing worth considering once both plans are final: doing settings-
+migration steps 1-2 above first (self-contained, lower risk, doesn't touch
+`Joycon.cs`'s device branching at all) before or alongside class-hierarchy
+migration step 1 below, so the capability-property pass and the
+sensitivity-key read migration (settings-migration step 4) happen together
 per call site instead of touching the same lines twice.
 
 ## Suggested migration approach
@@ -652,8 +794,14 @@ incremental and independently testable, not a single large rewrite:
 1. Introduce the capability properties on the existing `Joycon` class first,
    *without* creating any new class - replace `isPro`/`isSnes`/`is64`/
    `isDualSense` checks at each call site with the matching capability
-   check. Verify the full checklist above after this step alone, since it
-   touches every `isPro`-gated method in the file.
+   check. **Scope includes the two external files with the same ordering-
+   dependent pattern**, not just `Joycon.cs`: `HeadlessJoyconHost.cs:820-826`
+   (`ControllerKind` derivation) and `ControllerMappings.ProfileIdFor`/
+   `ProfileFor` both already have `isDualSense`-checked-ahead-of-`isPro`
+   comments documenting this exact hazard - fold them into the same
+   capability-property pass rather than leaving them on the old flag
+   pattern. Verify the full checklist above after this step alone, since it
+   touches every `isPro`-gated method in the file plus these two.
 2. Extract `Controller` as a base class with `Joycon` (renamed or not) as
    its first/only subclass initially - a pure mechanical move of Tier 1
    content, zero behavior change. Verify again.
@@ -661,13 +809,38 @@ incremental and independently testable, not a single large rewrite:
    `ReassignPadIds`/`AssignPadId`/`CreateOutputControllers`) out of
    `Program.cs` - doesn't depend on DualSense specifics, only on the
    `Controller` base existing to operate over, so it can happen here rather
-   than waiting for step 4. The Joy-Con "loser" auto-join destroy logic
-   stays with Joy-Con pairing code, calling into this module's primitives
-   instead of duplicating them. Verify the PadId/auto-join checklist
-   thoroughly here - this is the module directly responsible for it.
+   than waiting for step 4. **Explicitly includes rewiring the auto-join
+   block's loser-destroy logic** (`Program.cs:740-799`, today hand-rolls its
+   own `out_xbox`/`out_ds4` disconnect instead of calling the primitives
+   this module centralizes) to call into the new module instead of
+   duplicating it - see "Virtual controller lifecycle" above for why this
+   is required, not optional, for the extraction to actually be clean. The
+   *decision* of which half is the loser stays wherever Joy-Con code
+   currently lives (still the undifferentiated `Joycon` class at this
+   point, since `JoyconController` doesn't exist until step 5 - an accepted
+   interim state). Verify the PadId/auto-join checklist thoroughly here -
+   this is the module directly responsible for it, and the exact code three
+   prior regressions (`fb3dca1`, `3d1c38a`, `156dcf3`) already happened in.
 4. Extract `DualSenseController`/`DualSense.cs` as a second subclass,
-   moving Tier 2 DualSense code out of the now-slimmer base. Verify again,
-   including the DualSense-specific checklist item.
+   moving Tier 2 DualSense code out of the now-slimmer base. **This is the
+   step where `Program.j` must change from `ConcurrentList<Joycon>` to
+   `ConcurrentList<Controller>`** - C# generic collections are invariant, so
+   this can't be deferred once a second concrete leaf type needs to coexist
+   in `j`; it forces every one of the seven coupling files' `Joycon`-typed
+   signatures/loops/lambdas to change in the same commit, making this the
+   single largest mechanical diff in the whole plan. **Also grep all seven
+   coupling files for `GetType() ==`/`GetType() !=` against `typeof(Joycon)`
+   before this step** - found so far: `MainForm.cs:557` (gates test-rumble-
+   on-click) and `MainForm.cs:594` (gates ALL left/right-click behavior on a
+   controller icon - opening Controller Profiles, join/split, orientation
+   double-click). These are exact-type checks, not `is Joycon` (which the
+   same file correctly uses elsewhere, lines 693/1148/1277) - invisible to
+   an `isPro`/`isDualSense` grep, and would silently make clicking a
+   DualSense icon do nothing the moment `DualSenseController` exists as a
+   real sibling type (no crash, just a dead click). Fix to `is`/pattern-
+   match as part of this step's scope. Verify the full checklist across
+   *every* device type here, not just the DualSense-specific item - this
+   step's blast radius is genuinely all seven files at once.
 5. Only then consider splitting Joy-Con/Pro/SNES/N64 apart into their own
    subclasses under `NintendoController` - lower priority, since that
    family isn't where new controller types are expected to land, and it's
