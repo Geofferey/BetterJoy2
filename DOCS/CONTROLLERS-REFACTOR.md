@@ -22,6 +22,31 @@ review before touching any code.
   abstractions (the capability properties, the `GyroMath.cs` split below)
   over clever ones, even where a cleverer approach might be marginally
   shorter.
+- **Treat close reading of this code during each step as a chance to catch
+  latent bugs, not just move code around.** This refactor already surfaced
+  two real ones just from the investigation that produced this plan (see
+  "Known issues found so far" below) - moving/reading code this closely is
+  a genuine opportunity to catch things that would otherwise sit
+  undiscovered until they cause a real problem later. The rule from
+  [[leave-ahrs-stick-alone]] still applies: notice and document a
+  suspicious behavior, don't silently fix it in the same pass unless it's
+  squarely inside what that step is already touching and the user has
+  confirmed it - especially anywhere near gyro/IMU. Add anything found to
+  the running list below so it isn't lost between sessions.
+
+## Known issues found so far (not yet fixed, not part of this plan's scope to fix)
+
+- `MapToDualShock4Input` has no `isDualSense` branch - DualSense triggers
+  are digital-only on DS4 output. **Not a bug to fix** - explicit product
+  decision, DualSense doesn't get DS4-output support at all (see "What
+  moves into `DualSense.cs`" below).
+- `connection` (transport byte, USB/BT) is set once in the constructor from
+  the *initial* `isUSB` value and never updated again, even though
+  DualSense's `isUSB` is corrected per-packet in `ReceiveRaw` after that -
+  they can silently disagree after a DualSense reconnects on a different
+  transport than it was first seen on. Real bug, independent of this
+  refactor; worth fixing when whichever step touches these fields (see
+  "Suggested migration approach" below), not before.
 
 ## Why this is needed
 
