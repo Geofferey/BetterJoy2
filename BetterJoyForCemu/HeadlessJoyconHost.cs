@@ -45,15 +45,15 @@ namespace BetterJoyForCemu {
             }
         }
 
-        public void AssignSlot(Joycon joycon) { BroadcastSnapshot(); }
+        public void AssignSlot(Controller controller) { BroadcastSnapshot(); }
         public void RefreshOrientationIcon(Joycon joycon) { BroadcastSnapshot(); }
         public void CollapseJoinedPair(Joycon left, Joycon right) { BroadcastSnapshot(); }
-        public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) { BroadcastSnapshot(); }
-        public void UpdateBatteryColor(Joycon joycon) { BroadcastSnapshot(); }
+        public void HandleJoyconDropped(Controller dropped, Joycon survivingPartner) { BroadcastSnapshot(); }
+        public void UpdateBatteryColor(Controller controller) { BroadcastSnapshot(); }
         public void RefreshControllerState() { BroadcastSnapshot(); }
 
-        public void NotifyLowBattery(Joycon joycon) {
-            AppendTextBox(String.Format("Controller {0} - low battery.", joycon.PadId));
+        public void NotifyLowBattery(Controller controller) {
+            AppendTextBox(String.Format("Controller {0} - low battery.", controller.PadId));
         }
 
         // Mirrors MainForm.JoinOrSplitJoycon (MainForm.cs) minus the button/icon updates, which
@@ -739,7 +739,7 @@ namespace BetterJoyForCemu {
         // completing the same wait a CalibrationReady pipe message would have is enough; the
         // async StartCalibration continuation does the rest, including pushing the next
         // CalibrationStep to whatever remote GUI is connected.
-        public void HandleCalibrationConfirm(Joycon joycon) {
+        public void HandleCalibrationConfirm(Controller controller) {
             CompleteCalibReady();
         }
 

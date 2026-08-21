@@ -554,8 +554,11 @@ namespace BetterJoyForCemu {
                     return;
                 }
 
-                if (button.Tag.GetType() == typeof(Joycon)) {
-                    Joycon v = (Joycon)button.Tag;
+                // is-check, not an exact-type check: SetRumble isn't on Controller yet (rumble_obj
+                // is still Joycon-only - see DOCS/CONTROLLERS-REFACTOR.md step 4's phased plan),
+                // so this correctly no-ops for a future non-Joycon controller instead of matching
+                // only literal Joycon instances and silently breaking for any Joycon subclass.
+                if (button.Tag is Joycon v) {
                     v.SetRumble(160.0f, 320.0f, 1.0f);
                     await Task.Delay(300);
                     v.SetRumble(160.0f, 320.0f, 0);
@@ -591,7 +594,12 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            if (button.Tag.GetType() != typeof(Joycon))
+            // is-check, not an exact-type check: opening Controller Profiles/calibrating applies
+            // to any controller kind, not just Joycon - an exact-type check here would silently
+            // make clicking a future non-Joycon controller's icon do nothing at all (no crash,
+            // just a dead click). HandlePossibleOrientationDoubleClick/ExecuteJoinOrSplit already
+            // narrow to "is Joycon" internally for the actually Joy-Con-specific join/split path.
+            if (!(button.Tag is Controller))
                 return;
 
             if (e.Button == MouseButtons.Right) {
@@ -817,24 +825,28 @@ namespace BetterJoyForCemu {
         // CheckForNewControllers) - unlike AssignJoyconToSlot below (used by callers already
         // running on the UI thread, like split/dropped-partner promotion), this is called from
         // the background scan thread, so it marshals onto the UI thread itself.
-        public void AssignSlot(Joycon joycon) {
+        public void AssignSlot(Controller controller) {
             Bitmap icon;
-            if (joycon.isDualSense) icon = Properties.Resources.dualsense;
-            else if (joycon.isSnes) icon = Properties.Resources.snes;
-            else if (joycon.is64) icon = Properties.Resources.ultra;
-            else if (joycon.isPro) icon = Properties.Resources.pro;
-            else icon = joycon.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+            switch (controller.Kind) {
+                case ControllerKind.DualSense: icon = Properties.Resources.dualsense; break;
+                case ControllerKind.Snes: icon = Properties.Resources.snes; break;
+                case ControllerKind.N64: icon = Properties.Resources.ultra; break;
+                case ControllerKind.Pro: icon = Properties.Resources.pro; break;
+                default:
+                    icon = controller.Kind == ControllerKind.Left ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
+                    break;
+            }
 
             SafeBeginInvoke(() => {
-                AssignJoyconToSlot(joycon, icon);
+                AssignJoyconToSlot(controller, icon);
             });
         }
 
-        // Finds an empty slot for a Joycon that doesn't currently have its own button - used
+        // Finds an empty slot for a controller that doesn't currently have its own button - used
         // when splitting a collapsed pair back apart, or when the hidden half of a pair
         // survives its partner disconnecting. Mirrors the per-slot wiring Program.cs does for
         // a fresh connection. Returns false if all 4 slots are occupied.
-        public bool AssignJoyconToSlot(Joycon jc, Bitmap icon) {
+        public bool AssignJoyconToSlot(Controller jc, Bitmap icon) {
             int index = con.FindIndex(b => b.Tag == null);
             if (index == -1)
                 return false;
@@ -846,7 +858,7 @@ namespace BetterJoyForCemu {
             // slot's default background - BatteryChanged() only reapplies it on the next
             // battery-level event, which may not come for a while.
             button.BackColor = jc.battery >= 0 ? Joycon.GetBatteryColor(jc.battery) : Color.FromArgb(0x00, SystemColors.Control);
-            SetConnectionTooltip(button, jc.isPro);
+            SetConnectionTooltip(button, !jc.SupportsPairing);
 
             Button locButton = loc[index];
             locButton.Tag = button;
@@ -857,7 +869,7 @@ namespace BetterJoyForCemu {
 
         // Called after Program.cs's CleanUp() detaches a dropped Joycon, to fix up whatever
         // slot(s) it and/or its (former) pair partner were occupying.
-        public void HandleJoyconDropped(Joycon dropped, Joycon survivingPartner) {
+        public void HandleJoyconDropped(Controller dropped, Joycon survivingPartner) {
             SafeBeginInvoke(() => {
                 Button droppedButton = con.Find(b => b.Tag == dropped);
 
@@ -893,18 +905,25 @@ namespace BetterJoyForCemu {
         // the caller (Joycon.cs) decides whether a notification is warranted (battery level,
         // not USB-powered); this just shows it. Not Invoke-wrapped, matching that prior
         // behavior - NotifyIcon operations aren't Control-handle-affine the way Buttons are.
-        public void NotifyLowBattery(Joycon joycon) {
-            string label = joycon.isDualSense ? "DualSense Controller" : (joycon.isSnes ? "SNES Controller" : (joycon.is64 ? "N64 Controller" : (joycon.isPro ? "Pro Controller" : (joycon.isLeft ? "Joycon Left" : "Joycon Right"))));
+        public void NotifyLowBattery(Controller controller) {
+            string label;
+            switch (controller.Kind) {
+                case ControllerKind.DualSense: label = "DualSense Controller"; break;
+                case ControllerKind.Snes: label = "SNES Controller"; break;
+                case ControllerKind.N64: label = "N64 Controller"; break;
+                case ControllerKind.Pro: label = "Pro Controller"; break;
+                default: label = controller.Kind == ControllerKind.Left ? "Joycon Left" : "Joycon Right"; break;
+            }
             notifyIcon.Visible = true;
-            notifyIcon.BalloonTipText = String.Format("Controller {0} ({1}) - low battery notification!", joycon.PadId, label);
+            notifyIcon.BalloonTipText = String.Format("Controller {0} ({1}) - low battery notification!", controller.PadId, label);
             notifyIcon.ShowBalloonTip(0);
         }
 
         // Not Invoke-wrapped, matching the prior inline behavior in Joycon.BatteryChanged().
-        public void UpdateBatteryColor(Joycon joycon) {
+        public void UpdateBatteryColor(Controller controller) {
             foreach (Button v in con) {
-                if (v.Tag == joycon) {
-                    v.BackColor = Joycon.GetBatteryColor(joycon.battery);
+                if (v.Tag == controller) {
+                    v.BackColor = Joycon.GetBatteryColor(controller.battery);
                 }
             }
         }
@@ -918,9 +937,9 @@ namespace BetterJoyForCemu {
         // against CurrentPromptTarget, not calibratingJoycon directly - a joined pair's second
         // Gyro step (and both stick steps) target the PARTNER Joycon, so a confirm press on that
         // physical half must still count, not just one on whichever half started calibration.
-        public void HandleCalibrationConfirm(Joycon joycon) {
+        public void HandleCalibrationConfirm(Controller controller) {
             this.Invoke(new MethodInvoker(delegate {
-                if (!isRemoteMode && calibrationInProgress && joycon == CurrentPromptTarget())
+                if (!isRemoteMode && calibrationInProgress && controller == CurrentPromptTarget())
                     OnCalibButtonClicked();
             }));
         }
