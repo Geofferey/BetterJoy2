@@ -99,8 +99,19 @@ namespace BetterJoyForCemu {
         // stay in Joycon.cs, not promoted here. state_.DROPPED still needs to be set on power-off
         // (HOME-long-press, inactivity timeout) so the connection actually tears down - see the
         // override below.
+        // Real Bluetooth-level power-off - BT only, matching that command's own documented scope:
+        // a wired USB connection has no power-off analog, so attempting it there would be a no-op
+        // at best. Previously this just set state_.DROPPED unconditionally with no real hardware
+        // effect at all (neither transport) - harmless-looking, but BetterJoy would immediately
+        // rediscover the still-physically-connected controller on the next scan and reconnect it,
+        // producing a rapid disconnect/reconnect loop on every HOME-long-press or inactivity
+        // timeout (confirmed via debug.log: repeated "Connect: new controller added" for the same
+        // DualSense roughly every PowerOffInactivity-minutes interval, with zero "Dropped."/"went
+        // silent"/"Retiring duplicate" lines - the tell that state was being dropped silently,
+        // outside every path that normally logs a drop).
         public override void PowerOff() {
-            if (state > state_.DROPPED) {
+            if (state > state_.DROPPED && !isUSB) {
+                BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 state = state_.DROPPED;
             }
         }
