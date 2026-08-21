@@ -20,7 +20,7 @@ namespace BetterJoyForCemu {
         public bool allowCalibration = Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]);
         public List<Button> con, loc;
         private bool calibrationInProgress = false;
-        private Joycon calibratingJoycon;
+        private Controller calibratingJoycon;
         private Timer countDown;
         private int count;
         private Timer clickTimer;
@@ -554,11 +554,9 @@ namespace BetterJoyForCemu {
                     return;
                 }
 
-                // is-check, not an exact-type check: SetRumble isn't on Controller yet (rumble_obj
-                // is still Joycon-only - see DOCS/CONTROLLERS-REFACTOR.md step 4's phased plan),
-                // so this correctly no-ops for a future non-Joycon controller instead of matching
-                // only literal Joycon instances and silently breaking for any Joycon subclass.
-                if (button.Tag is Joycon v) {
+                // is-check, not an exact-type check: SetRumble is on Controller (generic), so this
+                // works for any controller kind, not just Joycon.
+                if (button.Tag is Controller v) {
                     v.SetRumble(160.0f, 320.0f, 1.0f);
                     await Task.Delay(300);
                     v.SetRumble(160.0f, 320.0f, 0);
@@ -1146,7 +1144,7 @@ namespace BetterJoyForCemu {
         // or only whichever half happened to be clicked would ever actually get recalibrated.
         private struct CalibStep {
             public CalibStepKind Kind;
-            public Joycon Target;
+            public Controller Target;
             public bool Secondary;
         }
         private List<CalibStep> calibSteps;
@@ -1172,7 +1170,7 @@ namespace BetterJoyForCemu {
             // and polling can no longer contaminate the buffers. That's what the old "exactly
             // one controller connected" restriction here was actually working around.
             Button button = sender as Button;
-            calibratingJoycon = button?.Tag as Joycon;
+            calibratingJoycon = button?.Tag as Controller;
             if (calibratingJoycon == null) {
                 this.console.Text = "Please connect a controller.";
                 RestoreCalibrateIcon();
@@ -1184,13 +1182,13 @@ namespace BetterJoyForCemu {
             calibSteps = new List<CalibStep>();
 
             bool isPair = calibratingJoycon.other != null && calibratingJoycon.other != calibratingJoycon;
-            if (calibratingJoycon.isDualSense) {
+            if (!calibratingJoycon.HasGyro) {
                 // No gyro support yet (ExtractIMUValues/CalibrationState.AddSample are never
-                // reached for a DualSense - see TryAutoCalibrate's own isDualSense guard) - stick
+                // reached for a DualSense - see TryAutoCalibrate's own !HasGyro guard) - stick
                 // centering only for now.
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });
-            } else if (calibratingJoycon.isPro) {
+            } else if (calibratingJoycon.HasDualSticks) {
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });
@@ -1202,8 +1200,8 @@ namespace BetterJoyForCemu {
                 // happened to be clicked would ever get its IMU calibrated - the partner's gyro/
                 // accelerometer calibration would silently stay whatever it was before (or the
                 // uncalibrated default), every single time this pair is calibrated.
-                Joycon leftJc = calibratingJoycon.isLeft ? calibratingJoycon : calibratingJoycon.other;
-                Joycon rightJc = calibratingJoycon.isLeft ? calibratingJoycon.other : calibratingJoycon;
+                Controller leftJc = calibratingJoycon.isLeft ? calibratingJoycon : calibratingJoycon.other;
+                Controller rightJc = calibratingJoycon.isLeft ? calibratingJoycon.other : calibratingJoycon;
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = leftJc });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = rightJc });
                 calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = leftJc, Secondary = false });
@@ -1245,7 +1243,7 @@ namespace BetterJoyForCemu {
         // The controller a prompt is currently showing for - every step kind's own Target,
         // including Gyro (a joined pair's two gyro steps target two different physical Joycon
         // objects, same as its two stick steps - see CalibStep).
-        private Joycon CurrentPromptTarget() {
+        private Controller CurrentPromptTarget() {
             return calibSteps[calibStepIndex].Target;
         }
 
@@ -1301,8 +1299,8 @@ namespace BetterJoyForCemu {
             string preferredProfileId = null;
             Button sourceButton = sender as Button;
             if (sourceButton != null) {
-                if (!isRemoteMode && sourceButton.Tag is Joycon)
-                    preferredProfileId = ControllerMappings.ProfileIdFor((Joycon)sourceButton.Tag);
+                if (!isRemoteMode && sourceButton.Tag is Controller)
+                    preferredProfileId = ControllerMappings.ProfileIdFor((Controller)sourceButton.Tag);
                 else if (isRemoteMode && sourceButton.Tag is int) {
                     int padId = (int)sourceButton.Tag;
                     ControllerRecord record = lastControllerSnapshot.FirstOrDefault(r => r.PadId == padId);
@@ -1385,7 +1383,7 @@ namespace BetterJoyForCemu {
             // the collection window (the controller could legitimately be dropped mid-
             // calibration) must not leave calibrationInProgress/the icon/the dialog stuck, so the
             // try/catch below is a hard requirement, not just tidiness.
-            Joycon gyroTarget = calibSteps[calibStepIndex].Target;
+            Controller gyroTarget = calibSteps[calibStepIndex].Target;
             try {
                 CalibrationState.FinishCalibration(gyroTarget);
                 gyroTarget.getActiveData();

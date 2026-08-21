@@ -766,7 +766,7 @@ namespace BetterJoyForCemu {
         // acting on it directly. System.Timers.Timer, not a WinForms Timer - this process has no
         // message pump for a WM_TIMER-based timer to ever fire on.
         private System.Timers.Timer buttonCapturePoll;
-        private readonly Dictionary<Joycon, bool[]> buttonCapturePrev = new Dictionary<Joycon, bool[]>();
+        private readonly Dictionary<Controller, bool[]> buttonCapturePrev = new Dictionary<Controller, bool[]>();
 
         private void StartButtonCapture() {
             if (buttonCapturePoll != null)
@@ -791,13 +791,7 @@ namespace BetterJoyForCemu {
                 return;
 
             int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
-            // GetButton's buttons/buttons_down/buttons_up arrays are still Joycon-only state
-            // (not yet promoted to Controller) - every live controller really is a Joycon until
-            // Phase J, so this filter changes nothing today; revisit once DualSenseController
-            // exists as its own type.
-            foreach (Controller jcBase in Program.mgr.j) {
-                if (!(jcBase is Joycon jc))
-                    continue;
+            foreach (Controller jc in Program.mgr.j) {
                 // See the identical skip in Reassign.cs's JoyPoll_Tick - a joined pair's two
                 // halves cross-reference each other's raw buttons, so polling both independently
                 // reports one physical press as two (e.g. "DPAD_DOWN+B" for a single B press).

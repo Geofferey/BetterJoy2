@@ -430,7 +430,11 @@ namespace BetterJoyForCemu {
                     // Remote-mode commands (TestRumble/JoinOrSplit/StartCalibration) resolve a
                     // controller by PadId alone, so a collision could route a command to the
                     // wrong physical controller, not just misrender a GUI slot.
-                    j.Add(new Joycon(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), isPro, isSnes, is64, thirdParty != null, isDualSense));
+                    if (isDualSense) {
+                        j.Add(new DualSenseController(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId()));
+                    } else {
+                        j.Add(new Joycon(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), isPro, isSnes, is64, thirdParty != null));
+                    }
                     DumpState("Connect: new controller added, pad=" + j.Last().PadId.ToString(CultureInfo.InvariantCulture));
                     ResolveStalePadIdCollisions();
                     DumpState("Connect: after ResolveStalePadIdCollisions");
@@ -498,12 +502,12 @@ namespace BetterJoyForCemu {
                         // same physical DualSense, since real hardware testing found they don't
                         // currently match. Gated behind DualSenseDebugLogging (see
                         // LogDualSenseRawDump) - file-only, never the GUI panel.
-                        (j.Last() as Joycon)?.LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                        (j.Last() as DualSenseController)?.LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
                             "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")",
                             BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     }
                     j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
-                    (j[j.Count - 1] as Joycon)?.InvalidateMappingProfileCache();
+                    j[j.Count - 1].InvalidateMappingProfileCache();
                 }
 
                 ptr = enumerate.next;

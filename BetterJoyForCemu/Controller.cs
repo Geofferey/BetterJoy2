@@ -13,6 +13,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using BetterJoyForCemu.VirtualOutput;
+using Nefarius.ViGEm.Client.Targets.DualShock4;
+using Nefarius.ViGEm.Client.Targets.Xbox360;
 
 namespace BetterJoyForCemu {
     // Base class for every physical controller type BetterJoy talks to - see
@@ -175,6 +177,37 @@ namespace BetterJoyForCemu {
         public void SetRumble(float low_freq, float high_freq, float amp) {
             if (state <= state_.ATTACHED) return;
             rumble_obj.set_vals(low_freq, high_freq, amp);
+        }
+
+        // Nintendo HD-rumble's frequency-split encoding is Joy-Con-only (GetData()'s actual math),
+        // but every controller kind's simple amplitude-based rumble reads through the same
+        // queue/SetRumble contract - see SendQueuedRumbleIfAny's per-subclass overrides. Meaningless
+        // to a device whose rumble ignores frequency (DualSense just reads back the amplitude), but
+        // harmless to have seeded regardless.
+        protected int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
+        protected int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
+
+        // ViGEmBus feedback (rumble commanded by a game through the virtual controller) - generic
+        // across every device kind, since it just forwards into the same SetRumble/rumble_obj queue
+        // every subclass's own SendQueuedRumbleIfAny already reads from. A joined pair's passive
+        // half also gets the rumble (other != this), matching the active half physically being felt
+        // as one unit by the player. DS4-output feedback is included for completeness even though
+        // DualSenseController never gets a DS4 output target by design (see DOCS/
+        // CONTROLLERS-REFACTOR.md's Tier-3 note) - harmless no-op for anything that never wires it.
+        public void ReceiveRumble(Xbox360FeedbackReceivedEventArgs e) {
+            DebugPrint("Rumble data Recived: XInput", DebugType.RUMBLE);
+            SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
+
+            if (other != null && other != this)
+                other.SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
+        }
+
+        public void Ds4_FeedbackReceived(DualShock4FeedbackReceivedEventArgs e) {
+            DebugPrint("Rumble data Recived: DS4", DebugType.RUMBLE);
+            SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
+
+            if (other != null && other != this)
+                other.SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
         }
 
         public PhysicalAddress PadMacAddress = new PhysicalAddress(new byte[] { 01, 02, 03, 04, 05, 06 });
@@ -424,19 +457,36 @@ namespace BetterJoyForCemu {
 
         // Every report's raw HID read + parse + downstream processing - no shared default
         // possible (every device's report format is unrelated), so this is the one truly abstract
-        // hook. See Joycon.ReceiveRaw for the Nintendo-family/DualSense dual implementation
-        // (still one method there until DualSenseController exists as its own subclass).
+        // hook. See Joycon.ReceiveRaw (Nintendo family) and DualSenseController.ReceiveRaw.
         protected abstract int ReceiveRaw();
 
-        // No-op by default; Joycon overrides this to send whatever HD-rumble/DualSense-rumble
-        // data is queued in rumble_obj - kept as a hook since rumble_obj/SendRumble/
-        // SendDualSenseRumble aren't promoted to Controller yet.
+        // No-op by default; Joycon overrides this to send whatever HD-rumble data is queued in
+        // rumble_obj (DualSenseController overrides it too, for its own simpler dual-motor rumble)
+        // - kept as a hook since the actual encoding/wire format is device-specific.
         protected virtual void SendQueuedRumbleIfAny() { }
 
-        // No-op by default; Joycon overrides this with the generic MAC-based duplicate-connection
-        // dedup (plus, today, DualSense's own BT-auto-disconnect tail spliced into the same
-        // method - see DOCS/CONTROLLERS-REFACTOR.md's Tier-3 "danger zone" note on this method).
-        protected virtual void RetireDuplicateConnections() { }
+        // Generic MAC-based duplicate-connection dedup, shared by every device type - if another
+        // already-connected entry has the same PadMacAddress as this one, it's the same physical
+        // controller reachable twice (e.g. wireless + wired at once) and gets dropped. Was
+        // previously a no-op-by-default hook with this exact logic duplicated into Joycon's
+        // override, DualSense's Bluetooth-auto-disconnect tail spliced directly into the middle of
+        // it - see DOCS/CONTROLLERS-REFACTOR.md's Tier-3 "danger zone" note on this method, and
+        // OnDuplicateRetired below for where that tail lives now.
+        protected virtual void RetireDuplicateConnections() {
+            foreach (Controller other in Program.mgr.j) {
+                if (other != this && other.state != state_.DROPPED && other.PadMacAddress.Equals(PadMacAddress)) {
+                    other.state = state_.DROPPED;
+                    form.AppendTextBox("Retiring duplicate connection for the same controller.\r\n");
+                    OnDuplicateRetired(other);
+                }
+            }
+        }
+
+        // No-op by default; DualSenseController overrides this to attempt a Bluetooth-level
+        // disconnect of the stale entry once USB has taken over for the same physical controller -
+        // see DualSense.cs's OnDuplicateRetired. Called from RetireDuplicateConnections right after
+        // a duplicate is marked DROPPED.
+        protected virtual void OnDuplicateRetired(Controller other) { }
 
         // No-op by default; Joycon overrides this with the actual Nintendo power-off subcommand
         // sequence (SetHCIState/Subcommand) - kept as a hook since those are Nintendo-protocol-
@@ -471,6 +521,19 @@ namespace BetterJoyForCemu {
         protected bool[] down_ = new bool[20];
         protected long[] buttons_down_timestamp = new long[20];
 
+        // Public read accessors for the arrays above - used by Reassign.cs/HeadlessJoyconHost.cs's
+        // button-mapping auto-detect (press a button to bind it) for any connected controller, not
+        // just Joy-Con family. Trivial wrappers, generic since the backing arrays are.
+        public bool GetButtonDown(Button b) {
+            return buttons_down[(int)b];
+        }
+        public bool GetButton(Button b) {
+            return buttons[(int)b];
+        }
+        public bool GetButtonUp(Button b) {
+            return buttons_up[(int)b];
+        }
+
         // Last time any button's down/up edge changed - read by auto-power-off (HomeLongPowerOff-
         // style idle checks) and gyro-mouse idle detection, both device-generic.
         protected long inactivity = Stopwatch.GetTimestamp();
@@ -482,6 +545,23 @@ namespace BetterJoyForCemu {
         // interim state until NintendoController exists as this property's natural typed home
         // (see DOCS/CONTROLLERS-REFACTOR.md step 5).
         protected volatile string mappingProfileId;
+
+        // Program.cs's MAC resolution (DualSense's feature-report read, Joy-Con's BT-address
+        // parse in Attach()) runs slightly after this object starts existing - if anything reads a
+        // mapping profile bind before that lands, mappingProfileId's lazy cache would otherwise
+        // lock onto the placeholder MAC's fallback identity for the rest of the connection. Call
+        // this right after PadMacAddress is actually assigned the real value, exactly like the
+        // "other" (join/split) setter already does for that case. Deliberately NOT hooked into
+        // PadMacAddress's own assignment generically (e.g. via a property) - Joy-Con's own
+        // Attach() also reassigns PadMacAddress internally (its BT-address parse), and
+        // invalidating on every such write broke Joy-Con auto-join (two Joycons showing joined in
+        // the UI but each keeping its own virtual controller instead of the loser's being torn
+        // down) in a way never fully root-caused; narrowing this to an explicit call at the one
+        // call site that actually needs it avoids touching that path at all.
+        public void InvalidateMappingProfileCache() {
+            mappingProfileId = null;
+        }
+
         private Joycon _other = null;
 
         // Pairing contract: null = solo, == this = self-paired ("vertical"), == <other instance>
@@ -717,9 +797,8 @@ namespace BetterJoyForCemu {
             return value;
         }
 
-        // No-op by default; Joycon overrides this with a TEMPORARY DualSense-specific diagnostic
-        // dump (see the override) - kept as a hook since isDualSense/LogDualSenseRawDump aren't
-        // promoted to Controller.
+        // No-op by default; DualSenseController overrides this with a TEMPORARY diagnostic dump
+        // (see DualSense.cs) - kept as a hook since LogDualSenseRawDump is DualSense-only.
         protected virtual void OnMappingValueResolved(string key, string value) { }
 
         protected bool swapAB => ProfileBoolOption("SwapAB");

@@ -34,7 +34,7 @@ namespace BetterJoyForCemu {
         private readonly ServiceControlClient serviceClient;
         private Timer joyPoll;
         private Timer controllerRefreshTimer;
-        private readonly Dictionary<Joycon, bool[]> joyPrevButtons = new Dictionary<Joycon, bool[]>();
+        private readonly Dictionary<Controller, bool[]> joyPrevButtons = new Dictionary<Controller, bool[]>();
         private readonly List<ControllerProfileInfo> remoteProfiles = new List<ControllerProfileInfo>();
         private readonly string preferredProfileId;
         private ComboBox controllerSelector;
@@ -1575,12 +1575,7 @@ namespace BetterJoyForCemu {
                 return;
 
             int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
-            // GetButton's buttons[] array is still Joycon-only state (not yet promoted to
-            // Controller) - every live controller really is a Joycon until Phase J, so this
-            // filter changes nothing today; revisit once DualSenseController exists.
-            foreach (Controller jcBase in Program.mgr.j) {
-                if (!(jcBase is Joycon jc))
-                    continue;
+            foreach (Controller jc in Program.mgr.j) {
                 // A joined pair's two halves each cross-reference the other's raw buttons into
                 // their own buttons[] array (see Joycon.DoThingsWithButtons, the "other != null"
                 // block) so that EITHER side alone already has a complete, correctly-labeled view

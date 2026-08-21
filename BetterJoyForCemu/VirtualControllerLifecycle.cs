@@ -300,22 +300,16 @@ namespace BetterJoyForCemu {
             if ((useXbox || useDs4) && !Program.EnsureVigemClient())
                 return;
 
-            // ReceiveRumble/Ds4_FeedbackReceived aren't promoted to Controller yet (step 4's
-            // rumble_obj/SetRumble promotion is a later phase) - is-check rather than a hard
-            // dependency, so this stays correct (rumble just isn't wired up) for a future
-            // non-Joycon controller until that phase lands.
-            Joycon rumbleJc = jc as Joycon;
-
             if (useXbox && jc.out_xbox == null) {
                 jc.out_xbox = new VirtualOutput.OutputControllerXbox360();
-                if (rumbleJc != null && Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
-                    jc.out_xbox.FeedbackReceived += rumbleJc.ReceiveRumble;
+                if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                    jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
                 jc.out_xbox.Connect();
             }
             if (useDs4 && jc.out_ds4 == null) {
                 jc.out_ds4 = new VirtualOutput.OutputControllerDualShock4();
-                if (rumbleJc != null && Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
-                    jc.out_ds4.FeedbackReceived += rumbleJc.Ds4_FeedbackReceived;
+                if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                    jc.out_ds4.FeedbackReceived += jc.Ds4_FeedbackReceived;
                 jc.out_ds4.Connect();
             }
         }

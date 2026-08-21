@@ -1,17 +1,10 @@
 ﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
-using System.Numerics;
-using System.Text;
-using System.Threading;
 using System.Windows.Forms;
-using BetterJoyForCemu.VirtualOutput;
 using Nefarius.ViGEm.Client.Targets.DualShock4;
 using Nefarius.ViGEm.Client.Targets.Xbox360;
 
@@ -20,40 +13,35 @@ namespace BetterJoyForCemu {
         public bool isPro = false;
         public bool isSnes = false;
         public bool is64 = false;
-        public bool isDualSense = false;
 
         // Capability properties - step 1 of DOCS/CONTROLLERS-REFACTOR.md's migration order,
-        // promoted to Controller (abstract) as part of step 4 so DualSenseController can answer
-        // them without any isPro/isSnes/isDualSense flags at all. isPro was a SUPERSET flag
-        // (isPro = isPro || isSnes || is64 || isDualSense, set in the constructor below), so
-        // every "if (isPro)" check silently also matched SNES/N64/DualSense whether that's
-        // actually intended or not - the exact mechanism behind a real incident this session (a
-        // DualSense-scoped change leaked into Joy-Con's own code path via a shared isPro-gated
-        // method). These properties name what each call site is ACTUALLY testing for. Joycon's
-        // overrides below are deliberately literal, behavior-preserving aliases of the original
-        // flags for every current Nintendo-family device type - this is a pure rename/naming
-        // pass, not a behavior change (SNES/N64 mathematically get the same HasDualSticks=true a
-        // raw "isPro" check already gave them, even though SNES genuinely has zero sticks - that
-        // real divergence is deferred to when SnesController exists, not fixed here).
-        public override bool SupportsPairing => !isPro;      // Joy-Con-only: can combine with another unit into one logical controller
-        public override bool HasDualSticks => isPro;         // has two physical sticks/thumb-stick-click buttons on one unit
-        public override bool HasGyro => !isDualSense;         // currently populates real gyr_g/acc_g data
-        public override bool HasAnalogTriggers => isDualSense; // L2/R2 report a real analog value, not just a digital button bit
-        public override bool UsesNintendoProtocol => !isDualSense; // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
+        // promoted to Controller (abstract) as part of step 4 so DualSenseController (now a real
+        // sibling class, step 4 Phase J) can answer them without any Joy-Con-family flags at all.
+        // isPro was a SUPERSET flag (isPro = isPro || isSnes || is64, plus isDualSense before
+        // Phase J - set in the constructor below), so every "if (isPro)" check silently also
+        // matched SNES/N64/DualSense whether that's actually intended or not - the exact mechanism
+        // behind a real incident this session (a DualSense-scoped change leaked into Joy-Con's own
+        // code path via a shared isPro-gated method). These properties name what each call site is
+        // ACTUALLY testing for. Joycon's overrides below are deliberately literal, behavior-
+        // preserving aliases of the original flags for every current Nintendo-family device type -
+        // this is a pure rename/naming pass, not a behavior change (SNES/N64 mathematically get
+        // the same HasDualSticks=true a raw "isPro" check already gave them, even though SNES
+        // genuinely has zero sticks - that real divergence is deferred to when SnesController
+        // exists, not fixed here).
+        public override bool SupportsPairing => !isPro;  // Joy-Con-only: can combine with another unit into one logical controller
+        public override bool HasDualSticks => isPro;     // has two physical sticks/thumb-stick-click buttons on one unit
+        public override bool HasGyro => true;             // currently populates real gyr_g/acc_g data
+        public override bool HasAnalogTriggers => false;  // L2/R2 report a real analog value, not just a digital button bit
+        public override bool UsesNintendoProtocol => true; // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
 
-        // Single source of truth for device-kind identity, replacing the same isDualSense-
-        // before-isSnes-before-is64-before-isPro ordering dependency that used to be re-derived
-        // independently (and correctly, but duplicated) in HeadlessJoyconHost.cs and
-        // ControllerMappings.cs - see DOCS/CONTROLLERS-REFACTOR.md's settings/step-1 notes.
+        // Single source of truth for device-kind identity - see DOCS/CONTROLLERS-REFACTOR.md's
+        // settings/step-1 notes. DualSense no longer appears here at all as of step 4 Phase J -
+        // DualSenseController.Kind answers for itself.
         public override ControllerKind Kind =>
-            isDualSense ? ControllerKind.DualSense :
             isSnes ? ControllerKind.Snes :
             is64 ? ControllerKind.N64 :
             isPro ? ControllerKind.Pro :
             (isLeft ? ControllerKind.Left : ControllerKind.Right);
-
-        public byte[] triggerVal = { 0, 0 }; // raw 0-255 analog L2/R2, DualSense only
-        protected override byte[] TriggerVal => triggerVal;
 
         // 64 vars
         float maxX = 0.5f;
@@ -102,25 +90,6 @@ namespace BetterJoyForCemu {
 
         private byte global_count = 0;
 
-        // Program.cs's DualSense feature-report/serial MAC resolution runs slightly after this
-        // object starts existing - if anything reads a mapping profile bind before that lands,
-        // mappingProfileId's lazy cache would otherwise lock onto the placeholder MAC's fallback
-        // identity (a "path-" encoded one) for the rest of the connection. Call this right after
-        // PadMacAddress is actually assigned the real value, exactly like the "other" (join/split)
-        // setter already does for that case. Deliberately NOT hooked into PadMacAddress's own
-        // assignment generically (e.g. via a property) - Joy-Con's own Attach() also reassigns
-        // PadMacAddress internally (its BT-address parse), and invalidating on every such write
-        // broke Joy-Con auto-join (two Joycons showing joined in the UI but each keeping its own
-        // virtual controller instead of the loser's being torn down) in a way never fully root-
-        // caused; narrowing this to an explicit call at the one call site that actually needs it
-        // avoids touching that path at all.
-        public void InvalidateMappingProfileCache() {
-            mappingProfileId = null;
-        }
-
-        int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
-        int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
-
         public byte LED { get; private set; } = 0x0;
         public override void SetLEDByPlayerNum(int id) {
             if (!UsesNintendoProtocol)
@@ -156,7 +125,7 @@ namespace BetterJoyForCemu {
         // every physical press doubles into a second "press" mirrored from the virtual pad.
         public bool thirdParty = false;
 
-        public Joycon(IntPtr handle_, bool imu, bool localize, float alpha, bool left, string path, string serialNum, int id = 0, bool isPro = false, bool isSnes = false, bool is64 = false, bool thirdParty = false, bool isDualSense = false) {
+        public Joycon(IntPtr handle_, bool imu, bool localize, float alpha, bool left, string path, string serialNum, int id = 0, bool isPro = false, bool isSnes = false, bool is64 = false, bool thirdParty = false) {
             serial_number = serialNum;
             activeData = new float[6];
             handle = handle_;
@@ -170,16 +139,10 @@ namespace BetterJoyForCemu {
 
             PadId = id;
             LED = (byte)(0x1 << PadId);
-            this.isPro = isPro || isSnes || is64 || isDualSense;
+            this.isPro = isPro || isSnes || is64;
             this.isSnes = isSnes;
             this.is64 = is64;
-            this.isDualSense = isDualSense;
-            // The placeholder-serial heuristic below is Joy-Con-only (USB Joy-Cons report this
-            // fixed dummy serial until Attach's handshake learns the real MAC) - a DualSense's
-            // real serial never matches it, but leaving isUSB unconditional here would still
-            // read false correctly by coincidence. Made explicit anyway since real transport is
-            // decided per-read from actual report length in ReceiveRaw, not this field.
-            isUSB = UsesNintendoProtocol && serialNum == "000000000001";
+            isUSB = serialNum == "000000000001";
             this.thirdParty = thirdParty;
 
             this.path = path;
@@ -197,72 +160,11 @@ namespace BetterJoyForCemu {
         }
 
 
-        public void ReceiveRumble(Xbox360FeedbackReceivedEventArgs e) {
-            DebugPrint("Rumble data Recived: XInput", DebugType.RUMBLE);
-            SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
-
-            if (other != null && other != this)
-                other.SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
-        }
-
-        public void Ds4_FeedbackReceived(DualShock4FeedbackReceivedEventArgs e) {
-            DebugPrint("Rumble data Recived: DS4", DebugType.RUMBLE);
-            SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
-
-            if (other != null && other != this)
-                other.SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
-        }
-
-        public bool GetButtonDown(Button b) {
-            return buttons_down[(int)b];
-        }
-        public bool GetButton(Button b) {
-            return buttons[(int)b];
-        }
-        public bool GetButtonUp(Button b) {
-            return buttons_up[(int)b];
-        }
-        // No shared shell worth extracting - past the state_.ATTACHED transition, this is
-        // entirely one device-specific branch or the other (DualSense's early return vs.
-        // Nintendo's whole USB/BT handshake + SPI calibration dump + subcommand sequence). See
-        // Controller.Attach's abstract declaration.
+        // See Controller.Attach's abstract declaration. DualSense's own Attach() (a much simpler
+        // early-return, no SPI/subcommand protocol at all) lives on DualSenseController now - see
+        // DualSense.cs.
         public override int Attach() {
             state = state_.ATTACHED;
-
-            if (!UsesNintendoProtocol) {
-                // None of what follows applies - the USB handshake bytes, SPI calibration dump,
-                // home-light/player-LED writes, and IMU/rumble/input-mode subcommands are all
-                // either meaningless to a DualSense or (the Subcommand-based ones) block for up
-                // to ~1s each waiting for a reply that will never come, since a DualSense doesn't
-                // speak this protocol at all. No enable-full-report-mode handshake is known to be
-                // required for baseline button/stick/trigger reads; if the first real test shows
-                // all-zero/empty reports over Bluetooth, that's the first thing to investigate.
-                HIDapi.hid_set_nonblocking(handle, 1);
-
-                // DualSense has no SPI factory calibration to read (unlike Joy-Con's
-                // dump_calibration_data, entirely skipped here), so stick_cal/stick2_cal/deadzone
-                // would otherwise be left at their class defaults ({0,0,0,0,0,0}/0) - CenterSticks
-                // would divide by that zero the moment it's used. Seed an identity calibration
-                // matching the DualSense's real raw domain (bytes 0-255, center 128) so stick
-                // output is correct out of the box, then let any stored user recalibration
-                // (CalibrationState, via the same wizard Joy-Con uses) overlay on top exactly the
-                // way it already does for Joy-Con.
-                stick_cal[0] = 127; stick_cal[1] = 127;   // max above center (X, Y)
-                stick_cal[2] = 128; stick_cal[3] = 128;   // center (X, Y)
-                stick_cal[4] = 128; stick_cal[5] = 128;   // min below center (X, Y)
-                stick2_cal[0] = 127; stick2_cal[1] = 127;
-                stick2_cal[2] = 128; stick2_cal[3] = 128;
-                stick2_cal[4] = 128; stick2_cal[5] = 128;
-                // A few raw units of headroom over the idle jitter observed on real hardware
-                // (~127-133 out of 0-255 at rest) so an uncalibrated DualSense doesn't bleed tiny
-                // phantom stick movement before the user ever runs the wizard.
-                deadzone = 8;
-                deadzone2 = 8;
-                getActiveStickData();
-
-                form.AppendTextBox("DualSense attached (baseline mode).\r\n");
-                return 0;
-            }
 
             // Make sure command is received
             HIDapi.hid_set_nonblocking(handle, 0);
@@ -391,54 +293,10 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Called once this controller (Joycon, Pro, SNES, or N64 - all share this class) has
-        // actually confirmed itself alive (see retiredDuplicates in Poll()). Attach() resolves
-        // the real per-unit MAC address (for a USB connection this is only known once the USB
-        // handshake completes - the HID enumeration serial number USB reports is just a shared
-        // placeholder, not the real MAC). If another already-connected entry turns out to be
-        // this same physical controller over a different transport (e.g. it was connected
-        // wirelessly and has now been plugged in via USB), retire that stale entry now rather
-        // than waiting for its own poll thread to notice the connection went silent - that
-        // window otherwise leaves both the old and new entries live at once, each driving their
-        // own virtual output device (double presses/duplicate input in games).
-        protected override void RetireDuplicateConnections() {
-            // TEMPORARY diagnostic: suspected cross-controller contamination when a DualSense and
-            // a Joy-Con are connected together - log every comparison this makes so the real
-            // PadId/PadMacAddress values are visible instead of guessed at.
-            LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
-                "RetireDuplicateConnections: this pad={0} dualSense={1} mac={2}",
-                PadId, isDualSense, PadMacAddress));
-            foreach (Controller other in Program.mgr.j) {
-                if (other != this) {
-                    LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
-                        "  vs pad={0} dualSense={1} mac={2} state={3} equalMac={4}",
-                        other.PadId, (other as Joycon)?.isDualSense, other.PadMacAddress, other.state,
-                        other.PadMacAddress.Equals(PadMacAddress)));
-                }
-                if (other != this && other.state != state_.DROPPED && other.PadMacAddress.Equals(PadMacAddress)) {
-                    other.state = state_.DROPPED;
-                    form.AppendTextBox("Retiring duplicate connection for the same controller.\r\n");
-                    LogDualSenseRawDump("  ^ RETIRED as duplicate");
-
-                    // Marking the stale entry DROPPED only stops BetterJoy from using it - the
-                    // underlying OS-level Bluetooth HID connection is still alive and gets
-                    // rediscovered (and re-retired) on every subsequent scan, churning a new
-                    // virtual controller each time. For a DualSense specifically there's a real
-                    // fix: tell the Bluetooth radio itself to drop that connection, the same way
-                    // DS4Windows's DisconnectBT does (IOCTL_BTH_DISCONNECT_DEVICE), once USB has
-                    // taken over for the same physical controller.
-                    if (isDualSense && (other as Joycon)?.isDualSense == true && isUSB && !other.isUSB) {
-                        // Blue lightbar confirmation is handled unconditionally on the first
-                        // confirmed-USB read in ReceiveRaw (sentUsbActiveLightbar) - covers this
-                        // case too, not just fresh/no-prior-BT USB connects.
-                        bool disconnected = BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
-                        form.AppendTextBox(disconnected
-                            ? "Disconnected DualSense's Bluetooth link now that USB has taken over.\r\n"
-                            : "Could not disconnect DualSense's Bluetooth link - it may keep reappearing.\r\n");
-                    }
-                }
-            }
-        }
+        // RetireDuplicateConnections' generic MAC-based dedup now lives directly on Controller
+        // (step 4 Phase J) - Joycon no longer needs its own override at all, since the
+        // DualSense-only Bluetooth-auto-disconnect tail that used to be spliced into this method
+        // moved to DualSenseController.OnDuplicateRetired.
 
         public void SetFilterCoeff(float a) {
             filterweight = a;
@@ -446,13 +304,8 @@ namespace BetterJoyForCemu {
 
         // Called by Controller.Detach() while the connection had progressed past NO_JOYCONS, right
         // after the shared hid_set_nonblocking call - Nintendo-only "let the controller talk to
-        // Bluetooth again" handshake, meaningless (and untested) on DualSense. Gated on isUSB,
-        // matching Detach()'s pre-existing behavior exactly - NOTE: isUSB is set true for a USB-
-        // connected DualSense too (see its own ReceiveRaw branch), so this could in principle
-        // fire for one; that's a latent bug that predates this move (not introduced by it -
-        // flagged, not fixed here, since fixing it is a real behavior change and this step is a
-        // pure extraction). UsesNintendoProtocol would be the correct gate instead of isUSB, once
-        // that's worth revisiting.
+        // Bluetooth again" handshake. DualSenseController doesn't override this hook at all (as of
+        // step 4 Phase J), so it's now genuinely Nintendo-only in practice, not just in name.
         protected override void OnDetachingWhileAttached() {
             // Subcommand(0x40, new byte[] { 0x0 }, 1); // disable IMU sensor
             //Subcommand(0x48, new byte[] { 0x0 }, 1); // Would turn off rumble?
@@ -479,136 +332,8 @@ namespace BetterJoyForCemu {
         private int duplicateTimestampCount = 0;
         private const int MaxConsecutiveDuplicateTimestamps = 3;
 
-        private const int DualSenseMaxReportLen = 78; // Bluetooth report length; USB (64) fits the same buffer
-        private long lastDualSenseRawDumpTimestamp = 0;
-        private bool sentUsbActiveLightbar = false;
-
-        private static readonly ConcurrentQueue<string> dualSenseRawDumpQueue = new ConcurrentQueue<string>();
-        private static int dualSenseRawDumpWriterStarted;
-
-        private readonly Dictionary<string, long> lastMappingValueDumpTimestamp = new Dictionary<string, long>();
-
-        // TEMPORARY diagnostic: user reports a DualSense still acting on click/gyro-mouse binds
-        // after disabling them in the profile UI - log the actual resolved profile ID and value
-        // (per key, own throttle each) so this can be confirmed against controller_mappings.xml
-        // directly instead of guessed at.
-        protected override void OnMappingValueResolved(string key, string value) {
-            if (isDualSense && (key == "left_click" || key == "right_click" || key == "active_gyro_mouse")) {
-                long nowTicks = Stopwatch.GetTimestamp();
-                long last;
-                if (!lastMappingValueDumpTimestamp.TryGetValue(key, out last) ||
-                    (nowTicks - last) / (double)Stopwatch.Frequency >= 1.0) {
-                    lastMappingValueDumpTimestamp[key] = nowTicks;
-                    LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
-                        "MappingValue: profileId={0} key={1} value={2}", mappingProfileId, key, value));
-                }
-            }
-        }
-
-        // Same async queue + background-writer pattern as autocal_debug.log, so this can't block
-        // a controller's own Poll thread on file I/O. Gated behind DualSenseDebugLogging (default
-        // off) - this writes continuously while a DualSense is connected, so it shouldn't run
-        // unconditionally for every user, only when actually troubleshooting something.
-        internal void LogDualSenseRawDump(string message) {
-            if (!Boolean.Parse(ConfigurationManager.AppSettings["DualSenseDebugLogging"]))
-                return;
-
-            if (Interlocked.CompareExchange(ref dualSenseRawDumpWriterStarted, 1, 0) == 0) {
-                new Thread(DualSenseRawDumpWriterLoop) {
-                    IsBackground = true,
-                    Name = "DualSenseRawDumpWriter"
-                }.Start();
-            }
-            dualSenseRawDumpQueue.Enqueue(string.Format(CultureInfo.InvariantCulture,
-                "{0:HH:mm:ss.fff} [{1}] {2}\r\n", DateTime.Now, serial_number, message));
-        }
-
-        private static void DualSenseRawDumpWriterLoop() {
-            string logPath = Path.Combine(AppPaths.DataDir, "dualsense_raw_debug.log");
-            while (true) {
-                Thread.Sleep(250);
-                if (dualSenseRawDumpQueue.IsEmpty)
-                    continue;
-
-                var batch = new StringBuilder();
-                while (dualSenseRawDumpQueue.TryDequeue(out string line))
-                    batch.Append(line);
-
-                try {
-                    File.AppendAllText(logPath, batch.ToString());
-                } catch {
-                    // Diagnostic only: never let an unavailable log path affect controller I/O.
-                }
-            }
-        }
-
         protected override int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
-
-            if (isDualSense) {
-                byte[] dsBuf = new byte[DualSenseMaxReportLen];
-                int dsRet = HIDapi.hid_read_timeout(handle, dsBuf, new UIntPtr((uint)DualSenseMaxReportLen), 5);
-
-                // Actual report length distinguishes USB (64 bytes) from Bluetooth (78 bytes) per
-                // read - no separate transport query needed, and more reliable than the Joy-Con-
-                // only placeholder-serial heuristic isUSB otherwise depends on.
-                if (dsRet == 64 || dsRet == 78) {
-                    isUSB = dsRet == 64;
-                    if (isUSB && !sentUsbActiveLightbar) {
-                        // Fires once per connection, on the first confirmed-USB read - covers
-                        // every USB-connect scenario (fresh plug-in, reconnect, with or without a
-                        // prior Bluetooth link), not just the "just force-disconnected a stale BT
-                        // link" case RetireDuplicateConnections handles separately.
-                        sentUsbActiveLightbar = true;
-                        SendDualSenseLightbar(0, 0, 255);
-                    }
-                    // hid_read_timeout does NOT strip the leading report-ID byte for either
-                    // transport - byte 0 is a constant 0x01 (USB) or 0x31 (BT) report ID. USB has
-                    // no further padding, so real data starts at byte 1. BT has one more padding/
-                    // tag byte after the report ID before real data starts at byte 2. Confirmed two
-                    // independent ways: (1) decoding a real idle BT capture at offset 2 gives sane
-                    // values (sticks dead-center, triggers at 0, button byte reading the DualSense's
-                    // documented dpad-neutral encoding 0x08) while offset 1 does not; (2)
-                    // DS4Windows's own DualSenseDevice.cs (a shipped Windows implementation) uses
-                    // reportOffset = BT ? 1 : 0 relative to a buffer that, like ours, still includes
-                    // the report-ID byte - i.e. absolute offset 2 (BT) / 1 (USB), matching (1).
-                    int reportOffset = isUSB ? 1 : 2;
-
-                    // TEMPORARY diagnostic: the offsets guessed from a secondhand reference are
-                    // demonstrably wrong (confirmed on real hardware - trigger/button bytes don't
-                    // line up), so dump real bytes to a file instead of guessing a third time -
-                    // the on-screen console has not been a reliable way to actually see this.
-                    // Throttled to ~4/sec so it's readable while still catching real changes as
-                    // controls are pressed one at a time. Remove once ParseDualSenseReport's
-                    // offsets are confirmed correct against real data.
-                    long nowTicks = Stopwatch.GetTimestamp();
-                    if ((nowTicks - lastDualSenseRawDumpTimestamp) / (double)Stopwatch.Frequency >= 0.25) {
-                        lastDualSenseRawDumpTimestamp = nowTicks;
-                        var hex = new StringBuilder();
-                        for (int i = 0; i < dsRet; i++)
-                            hex.Append(dsBuf[i].ToString("X2")).Append(' ');
-                        LogDualSenseRawDump("DS raw[" + dsRet + "]: " + hex.ToString());
-                    }
-
-                    ParseDualSenseReport(dsBuf, reportOffset);
-                    DoThingsWithButtons();
-                    if (out_xbox != null) {
-                        try { out_xbox.UpdateInput(MapToXbox360Input(this)); } catch (Exception) { }
-                    }
-                    return dsRet;
-                }
-
-                // An unexpected length means the report stream is no longer what this parser
-                // expects - possibly a transient glitch, but also possibly a connection that's
-                // genuinely gone bad (confirmed on real hardware: report framing can shift after
-                // something puts the controller in a bad state). Treating this as harmless
-                // previously meant such a connection could never reach DROPPED and would sit in
-                // joy.cpl as a stale, frozen "connected" entry forever - count it as a real error
-                // instead so a truly broken connection gets cleaned up like any other.
-                if (dsRet > 0)
-                    return -1;
-                return dsRet; // 0 = timeout, <0 = read error - Poll()'s state machine already handles both
-            }
 
             byte[] raw_buf = new byte[report_len];
             bool captureImuDiagnostics = GyroMouseDebugLogging || GyroStickDebugLogging;
@@ -688,26 +413,12 @@ namespace BetterJoyForCemu {
 
 
         // Called from Controller.Poll()'s shared shell whenever rumble_obj's queue has data -
-        // rumble_obj/SendRumble/SendDualSenseRumble aren't promoted to Controller yet, so this
-        // stays a hook rather than shared logic.
+        // SendRumble's actual Nintendo HD-rumble encoding isn't promoted to Controller, so this
+        // stays a hook rather than shared logic. DualSense's own simpler dual-motor rumble lives
+        // on DualSenseController.SendQueuedRumbleIfAny now (step 4 Phase J).
         protected override void SendQueuedRumbleIfAny() {
             if (rumble_obj.queue.Count > 0) {
-                if (!UsesNintendoProtocol) {
-                    // DualSense's simple dual-motor rumble has no equivalent to the low/high-
-                    // frequency split Rumble.GetData() encodes for Joy-Con's HD rumble - just
-                    // take the queued amplitude directly and drive both motors the same. Was
-                    // disabled after real hardware went into continuous, non-stopping rumble
-                    // the first time this ran - root cause found: outputReport[2] (USB) /
-                    // [3] (BT) is a required feature-flags byte (0x55: mic LED, audio mute,
-                    // touchpad strips, player lights, motor power) that was left at 0x00 by
-                    // omission, not an intentional "leave alone" zero. Re-enabled with that
-                    // byte now set.
-                    float amp = rumble_obj.queue.Dequeue()[2];
-                    byte motor = (byte)(Math.Max(0f, Math.Min(1f, amp)) * 255f);
-                    SendDualSenseRumble(motor, motor);
-                } else {
-                    SendRumble(rumble_obj.GetData());
-                }
+                SendRumble(rumble_obj.GetData());
             }
         }
 
@@ -823,115 +534,6 @@ namespace BetterJoyForCemu {
             }
 
             return 0;
-        }
-
-        // DualSense baseline report parsing - buttons/sticks/triggers only (no gyro/touchpad/
-        // adaptive-trigger reads yet). Offsets and layout from the standard DualSense USB/BT HID
-        // report; o is 1 on Bluetooth (a leading byte USB doesn't have), 0 on USB. Populates the
-        // exact same buttons[]/stick[]/stick2[]/triggerVal[] fields Joy-Con parsing does, so every
-        // downstream consumer (MapToXbox360Input, profiles, UI) needs no DualSense-specific code
-        // beyond the analog-trigger branch in MapToXbox360Input.
-        private void ParseDualSenseReport(byte[] r, int o) {
-            // Offsets below are from a direct hardware capture (raw hex dump, dualsense_raw_debug.log),
-            // not a secondhand reference - both references checked (DS4Windows, a community wire-
-            // format doc) agreed with each other on field order but disagreed with real hardware,
-            // not just by a constant byte shift: the actual order is sticks, buttons1, buttons2,
-            // a free-running sequence counter, THEN L2/R2 analog - references had triggers before
-            // the counter and buttons after. Confirmed from real data: byte 4 reads a constant
-            // 0x08 at rest (dpad nibble 8 = neutral, matching the real PS dpad convention, face-
-            // button nibble 0 = nothing pressed); byte 5 toggles exactly 0x04/0x08 in sync with
-            // L2/R2's digital end-of-travel click; byte 6 free-runs 0x00-0x3C regardless of input
-            // (the counter); bytes 7/8 ramp with L2/R2 squeeze depth precisely when byte 5's
-            // matching click bit is set. o is the genuine Bluetooth-vs-USB protocol byte (1/0).
-            //
-            // Raw 0-255, center ~128, run through the same CenterSticks/CalibrationState pipeline
-            // Joy-Con uses (stick_cal/stick2_cal seeded with an identity default in Attach() since
-            // there's no SPI factory data to read) - a DualSense can now be recalibrated with the
-            // existing double-click wizard exactly like a Pro controller's sticks, just skipping
-            // the gyro step (see MainForm.StartCalibrate's isDualSense branch). AddStickSample is
-            // a no-op unless this controller is the one currently claimed by that wizard. Y is
-            // inverted after CenterSticks (not before, unlike the old fixed linear map) since
-            // CenterSticks' raw subtraction/division doesn't know about BetterJoy's own "up is
-            // positive" stick convention - only the sign needs flipping, not the calibration math.
-            UInt16[] stickRaw = { r[0 + o], r[1 + o] };
-            CalibrationState.AddStickSample(this, false, stickRaw[0], stickRaw[1]);
-            float[] stickResult = CenterSticks(stickRaw, stick_cal, deadzone,
-                float.Parse(ConfigurationManager.AppSettings["StickScalingFactor"]));
-            stick[0] = stickResult[0];
-            stick[1] = -stickResult[1];
-
-            UInt16[] stick2Raw = { r[2 + o], r[3 + o] };
-            CalibrationState.AddStickSample(this, true, stick2Raw[0], stick2Raw[1]);
-            float[] stick2Result = CenterSticks(stick2Raw, stick2_cal, deadzone2,
-                float.Parse(ConfigurationManager.AppSettings["StickScalingFactor2"]));
-            stick2[0] = stick2Result[0];
-            stick2[1] = -stick2Result[1];
-
-            // USB and BT reports use the identical field order once o has skipped each
-            // transport's own report-ID(+padding) prefix (see the o assignment in ReceiveRaw) -
-            // no further per-transport swap needed here. Order after the sticks: L2, R2, a free-
-            // running sequence/status counter (field index 6, skipped), then the two button bytes.
-            // Cross-checked against DS4Windows's DualSenseDevice.cs (inputReport[5/6+ro] for
-            // triggers, [8/9+ro] for the button bytes) and against a real idle BT capture, which
-            // only decodes to sane values (dead-center sticks, zeroed triggers, neutral dpad) at
-            // these positions.
-            int triggerFieldBase = 4;
-            int buttonFieldBase = 7;
-
-            triggerVal[0] = r[triggerFieldBase + o];
-            triggerVal[1] = r[triggerFieldBase + 1 + o];
-
-            lock (buttons) {
-                lock (down_) {
-                    for (int i = 0; i < buttons.Length; ++i)
-                        down_[i] = buttons[i];
-                }
-                bool[] b = new bool[20];
-
-                byte btn1 = r[buttonFieldBase + o];
-                b[(int)Button.X] = (btn1 & 0x80) != 0; // Triangle
-                b[(int)Button.A] = (btn1 & 0x40) != 0; // Circle
-                b[(int)Button.B] = (btn1 & 0x20) != 0; // Cross
-                b[(int)Button.Y] = (btn1 & 0x10) != 0; // Square
-
-                int dpad = btn1 & 0x0F;
-                b[(int)Button.DPAD_UP] = dpad == 0 || dpad == 1 || dpad == 7;
-                b[(int)Button.DPAD_RIGHT] = dpad == 1 || dpad == 2 || dpad == 3;
-                b[(int)Button.DPAD_DOWN] = dpad == 3 || dpad == 4 || dpad == 5;
-                b[(int)Button.DPAD_LEFT] = dpad == 5 || dpad == 6 || dpad == 7;
-
-                byte btn2 = r[buttonFieldBase + 1 + o];
-                b[(int)Button.STICK2] = (btn2 & 0x80) != 0;      // R3
-                b[(int)Button.STICK] = (btn2 & 0x40) != 0;       // L3
-                b[(int)Button.PLUS] = (btn2 & 0x20) != 0;        // Options
-                b[(int)Button.MINUS] = (btn2 & 0x10) != 0;       // Share
-                b[(int)Button.SHOULDER2_2] = (btn2 & 0x08) != 0; // R2 (digital click)
-                b[(int)Button.SHOULDER_2] = (btn2 & 0x04) != 0;  // L2 (digital click)
-                b[(int)Button.SHOULDER2_1] = (btn2 & 0x02) != 0; // R1
-                b[(int)Button.SHOULDER_1] = (btn2 & 0x01) != 0;  // L1
-
-                // byte 6 is the sequence counter (skipped). PS button confirmed via
-                // DS4Windows's DualSenseDevice.cs (inputReport[10+ro], bit 0).
-                byte btn3 = r[9 + o];
-                b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
-                // Touchpad click/mute/paddles intentionally unmapped this milestone (out of
-                // scope); SL/SR have no DualSense equivalent, left false.
-
-                buttons = b;
-                CommitButtonState();
-            }
-
-            // Battery offset (52+o) confirmed via DS4Windows's DualSenseDevice.cs
-            // (inputReport[53+ro], same absolute position once o's own transport skip is
-            // accounted for). Low nibble is a coarse 0-8 level (bit 5 = full charge, forced to 8);
-            // halved to match GetBatteryColor's existing 0-4 scale, the same way Joy-Con's own
-            // coarser battery nibble already does.
-            byte batteryByte = r[52 + o];
-            int rawLevel = (batteryByte & 0x20) != 0 ? 8 : (batteryByte & 0x0F);
-            int newBattery = battery;
-            battery = Math.Min(4, rawLevel / 2);
-            if (newBattery != battery)
-                BatteryChanged();
         }
 
         // Get Gyro/Accel data
@@ -1052,101 +654,6 @@ namespace BetterJoyForCemu {
             HIDapi.hid_write(handle, buf_, new UIntPtr(report_len));
         }
 
-        // Standard IEEE 802.3 CRC32 (polynomial 0xEDB88320, the same one zlib/most CRC32
-        // libraries use) - DualSense's Bluetooth output reports are silently ignored by the
-        // controller unless this checksum is present and correct; USB output needs none.
-        private static readonly uint[] crc32Table = BuildCrc32Table();
-
-        private static uint[] BuildCrc32Table() {
-            var table = new uint[256];
-            for (uint i = 0; i < 256; i++) {
-                uint c = i;
-                for (int k = 0; k < 8; k++)
-                    c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
-                table[i] = c;
-            }
-            return table;
-        }
-
-        // seed is a virtual leading byte folded into the running CRC state before data - the
-        // real DualSense Bluetooth output checksum is computed as if a 0xA2 byte preceded the
-        // actual report, without that byte itself being part of the transmitted buffer.
-        private static uint Crc32(byte seed, byte[] data, int length) {
-            uint crc = 0xFFFFFFFF;
-            crc = crc32Table[(crc ^ seed) & 0xFF] ^ (crc >> 8);
-            for (int i = 0; i < length; i++)
-                crc = crc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-            return crc ^ 0xFFFFFFFF;
-        }
-
-        // DualSense baseline rumble - both motors driven by the same single amplitude value
-        // dequeued from rumble_obj (see the Poll() call site), since DualSense's simple dual-
-        // motor rumble has no equivalent to Joy-Con's HD-rumble low/high-frequency split
-        // Rumble.GetData() encodes. Report layout (motor byte offsets, enable-rumble flags,
-        // Bluetooth CRC32-with-0xA2-seed) from DS4Windows's DualSense output-report code.
-        private void SendDualSenseRumble(byte leftMotor, byte rightMotor) {
-            bool bt = !isUSB;
-            int len = bt ? DualSenseMaxReportLen : 64;
-            byte[] buf = new byte[len];
-            if (bt) {
-                buf[0] = 0x31;
-                buf[1] = 0x02;
-                buf[2] = 0x0F; // enable rumble
-                // Required feature-flags byte (mic LED, audio mute, touchpad strips, player
-                // lights, motor power) - NOT safe to leave at 0x00 (confirmed on real hardware:
-                // omitting this the first time caused continuous, non-stopping rumble).
-                buf[3] = 0x55;
-                buf[4] = rightMotor;
-                buf[5] = leftMotor;
-                uint crc = Crc32(0xA2, buf, len - 4);
-                buf[len - 4] = (byte)crc;
-                buf[len - 3] = (byte)(crc >> 8);
-                buf[len - 2] = (byte)(crc >> 16);
-                buf[len - 1] = (byte)(crc >> 24);
-            } else {
-                buf[0] = 0x02;
-                buf[1] = 0x0F; // enable rumble
-                buf[2] = 0x55; // required feature-flags byte - see the BT branch's comment
-                buf[3] = rightMotor;
-                buf[4] = leftMotor;
-            }
-            HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
-        }
-
-        // Sets the DualSense's lightbar to a solid color via an output report - used to give a
-        // visible confirmation that the controller is now active on USB right after its stale
-        // Bluetooth link gets disconnected (see RetireDuplicateConnections). Layout matches
-        // SendDualSenseRumble; rumble flags are left at "not in use" since this report isn't
-        // rumble-related. RGB offsets (45/46/47 USB, 46/47/48 BT) and the fact that no separate
-        // "enable lightbar" bit is needed beyond the same 0x55 feature-flags byte the rumble
-        // report already sets - both confirmed via DS4Windows's DualSenseDevice.cs.
-        private void SendDualSenseLightbar(byte red, byte green, byte blue) {
-            bool bt = !isUSB;
-            int len = bt ? DualSenseMaxReportLen : 64;
-            byte[] buf = new byte[len];
-            if (bt) {
-                buf[0] = 0x31;
-                buf[1] = 0x02;
-                buf[2] = 0x0C; // rumble motors not in use for this report
-                buf[3] = 0x55;
-                buf[46] = red;
-                buf[47] = green;
-                buf[48] = blue;
-                uint crc = Crc32(0xA2, buf, len - 4);
-                buf[len - 4] = (byte)crc;
-                buf[len - 3] = (byte)(crc >> 8);
-                buf[len - 2] = (byte)(crc >> 16);
-                buf[len - 1] = (byte)(crc >> 24);
-            } else {
-                buf[0] = 0x02;
-                buf[1] = 0x0C; // rumble motors not in use for this report
-                buf[2] = 0x55;
-                buf[45] = red;
-                buf[46] = green;
-                buf[47] = blue;
-            }
-            HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
-        }
 
         private byte[] Subcommand(byte sc, byte[] buf, uint len, bool print = true) {
             byte[] buf_ = new byte[report_len];
