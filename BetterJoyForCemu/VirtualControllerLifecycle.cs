@@ -20,6 +20,14 @@ namespace BetterJoyForCemu {
     // not here). Still a partial class of JoyconManager, not a separate class - these methods
     // read/write j and form directly, same as everything else in Program.cs, just physically
     // relocated.
+    //
+    // Single-instance parameters (NextAvailablePadId's exclude, AssignPadId/CreateOutputControllers
+    // /DestroyOutputControllers/ReassignSplitOffJoycon's jc) are Controller-typed as of step 4
+    // Phase D - they just receive an already-resolved reference, so widening them doesn't depend
+    // on j's own element type. The loop variables that iterate j directly (CleanUp/ReassignPadIds/
+    // ResolveStalePadIdCollisions/DumpState/NextAvailablePadId's own loop) stay Joycon-typed for
+    // now - j itself is still ConcurrentList<Joycon> until step 4's atomic-flip phase, and C#
+    // generics are invariant, so a foreach variable bound to j can't be widened ahead of j itself.
     public partial class JoyconManager {
         // Smallest PadId not currently in use by a connected controller - see the call site for
         // why j.Count itself isn't safe to use directly. exclude lets a caller ask "what's free
@@ -27,7 +35,7 @@ namespace BetterJoyForCemu {
         // PadId counting against itself - see ReassignSplitOffJoycon, whose caller unlinks
         // .other before calling in, which would otherwise flip it from "passive, ignored" to
         // "solo, counted as using its own stale value" for this computation alone.
-        int NextAvailablePadId(Joycon exclude = null) {
+        int NextAvailablePadId(Controller exclude = null) {
             var used = new HashSet<int>();
             foreach (Joycon v in j) {
                 if (v == exclude)
@@ -183,7 +191,7 @@ namespace BetterJoyForCemu {
             DebugLog.Write(sb.ToString());
         }
 
-        void AssignPadId(Joycon jc, int newPadId) {
+        void AssignPadId(Controller jc, int newPadId) {
             if (jc.PadId == newPadId)
                 return;
 
@@ -203,7 +211,7 @@ namespace BetterJoyForCemu {
         // different controller may already have claimed that same number. Give it a fresh,
         // guaranteed-free identity instead of assuming the old one is still safe to reuse. A
         // no-op (via AssignPadId's own check) if nothing actually claimed it in the meantime.
-        public void ReassignSplitOffJoycon(Joycon jc) {
+        public void ReassignSplitOffJoycon(Controller jc) {
             AssignPadId(jc, NextAvailablePadId(jc));
         }
 
@@ -262,7 +270,7 @@ namespace BetterJoyForCemu {
         // CreateOutputControllers/AssignPadId's existing pattern, which is exactly the kind of
         // duplication that makes a clean lifecycle-module extraction impossible. Deliberately
         // pairing-ignorant - it destroys whatever it's given, it doesn't decide who's a "loser".
-        public void DestroyOutputControllers(Joycon jc) {
+        public void DestroyOutputControllers(Controller jc) {
             if (jc.out_xbox != null) {
                 try { jc.out_xbox.Disconnect(); } catch { }
                 jc.out_xbox = null;
@@ -276,7 +284,7 @@ namespace BetterJoyForCemu {
         // Shared by attach, profile changes, AssignPadId, and survivor restoration. Reconciles
         // both directions: changing a profile from Xbox to DS4/Disabled removes the old target,
         // while enabling an output creates and connects the requested target.
-        void CreateOutputControllers(Joycon jc) {
+        void CreateOutputControllers(Controller jc) {
             string useAs = ControllerMappings.OptionValue(
                 ControllerMappings.ProfileIdFor(jc), "UseAs");
             bool useXbox = useAs == ControllerMappings.UseAsXbox360;
@@ -294,16 +302,22 @@ namespace BetterJoyForCemu {
             if ((useXbox || useDs4) && !Program.EnsureVigemClient())
                 return;
 
+            // ReceiveRumble/Ds4_FeedbackReceived aren't promoted to Controller yet (step 4's
+            // rumble_obj/SetRumble promotion is a later phase) - is-check rather than a hard
+            // dependency, so this stays correct (rumble just isn't wired up) for a future
+            // non-Joycon controller until that phase lands.
+            Joycon rumbleJc = jc as Joycon;
+
             if (useXbox && jc.out_xbox == null) {
                 jc.out_xbox = new VirtualOutput.OutputControllerXbox360();
-                if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
-                    jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
+                if (rumbleJc != null && Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                    jc.out_xbox.FeedbackReceived += rumbleJc.ReceiveRumble;
                 jc.out_xbox.Connect();
             }
             if (useDs4 && jc.out_ds4 == null) {
                 jc.out_ds4 = new VirtualOutput.OutputControllerDualShock4();
-                if (Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
-                    jc.out_ds4.FeedbackReceived += jc.Ds4_FeedbackReceived;
+                if (rumbleJc != null && Boolean.Parse(ConfigurationManager.AppSettings["EnableRumble"]))
+                    jc.out_ds4.FeedbackReceived += rumbleJc.Ds4_FeedbackReceived;
                 jc.out_ds4.Connect();
             }
         }
