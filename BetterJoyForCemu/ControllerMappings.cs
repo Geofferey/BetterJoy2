@@ -340,23 +340,31 @@ namespace BetterJoyForCemu {
             }
         }
 
-        public static string ProfileIdFor(Joycon joycon) {
-            if (joycon == null)
+        public static string ProfileIdFor(Controller controller) {
+            if (controller == null)
                 return null;
 
-            string ownId = DeviceId(joycon);
-            // joycon.Kind is the single source of truth for this ordering (DualSense before
-            // Snes/N64/Pro) - see Joycon.cs's Kind property. Previously re-derived inline here via
-            // isSnes/is64/isDualSense/isPro directly, which needed its own comment explaining why
-            // isDualSense had to be checked ahead of isPro (isDualSense implies isPro, see the
+            string ownId = DeviceId(controller);
+            // controller.Kind is the single source of truth for this ordering (DualSense before
+            // Snes/N64/Pro) - see Controller.cs's Kind property. Previously re-derived inline here
+            // via isSnes/is64/isDualSense/isPro directly, which needed its own comment explaining
+            // why isDualSense had to be checked ahead of isPro (isDualSense implies isPro, see the
             // Joycon constructor's "single-unit controller" convention) - now impossible to get
             // wrong since there's only one place this ordering is expressed.
-            switch (joycon.Kind) {
+            switch (controller.Kind) {
                 case ControllerKind.Snes: return "snes:" + ownId;
                 case ControllerKind.N64: return "n64:" + ownId;
                 case ControllerKind.DualSense: return "dualsense:" + ownId;
                 case ControllerKind.Pro: return "pro:" + ownId;
             }
+
+            // Past this point only Joy-Con Left/Right kinds remain - the only pairing-capable
+            // topology today (see Controller.other's comment). The is-check is redundant given
+            // Kind's fallthrough already narrows to Joy-Con in practice, but keeps this correct
+            // if a future non-Joycon device somehow reaches here instead of an early return above.
+            if (!(controller is Joycon joycon))
+                return ownId;
+
             if (joycon.other == joycon)
                 return (joycon.isLeft ? "vertical-left:" : "vertical-right:") + ownId;
             if (joycon.other == null)
@@ -367,15 +375,15 @@ namespace BetterJoyForCemu {
             return "pair:" + DeviceId(left) + "+" + DeviceId(right);
         }
 
-        public static ControllerProfileInfo ProfileFor(Joycon joycon) {
-            if (joycon == null)
+        public static ControllerProfileInfo ProfileFor(Controller controller) {
+            if (controller == null)
                 return null;
 
-            if (joycon.other != null && joycon.other != joycon) {
-                Joycon left = joycon.isLeft ? joycon : joycon.other;
-                Joycon right = joycon.isLeft ? joycon.other : joycon;
+            if (controller is Joycon pairJoycon && pairJoycon.other != null && pairJoycon.other != pairJoycon) {
+                Joycon left = pairJoycon.isLeft ? pairJoycon : pairJoycon.other;
+                Joycon right = pairJoycon.isLeft ? pairJoycon.other : pairJoycon;
                 return new ControllerProfileInfo {
-                    ProfileId = ProfileIdFor(joycon),
+                    ProfileId = ProfileIdFor(controller),
                     DisplayName = "Joy-Con Pair (L " + DeviceSuffix(left) + " / R " + DeviceSuffix(right) + ")",
                     ConnectionSequence = Math.Max(left.virtualControllerSequence, right.virtualControllerSequence),
                     IsConnected = true,
@@ -383,37 +391,45 @@ namespace BetterJoyForCemu {
             }
 
             string type;
-            switch (joycon.Kind) {
+            switch (controller.Kind) {
                 case ControllerKind.Snes: type = "SNES Controller"; break;
                 case ControllerKind.N64: type = "N64 Controller"; break;
                 case ControllerKind.DualSense: type = "DualSense Controller"; break;
                 case ControllerKind.Pro: type = "Pro Controller"; break;
                 default:
-                    if (joycon.other == joycon)
-                        type = joycon.isLeft ? "Left Joy-Con (vertical)" : "Right Joy-Con (vertical)";
+                    // Unreachable for any Kind except Left/Right today (see ProfileIdFor's same
+                    // narrowing), which is always a Joycon - the is-check is defensive, not load-
+                    // bearing, same reasoning as ProfileIdFor above.
+                    Joycon soloJoycon = controller as Joycon;
+                    if (soloJoycon != null && soloJoycon.other == soloJoycon)
+                        type = soloJoycon.isLeft ? "Left Joy-Con (vertical)" : "Right Joy-Con (vertical)";
+                    else if (soloJoycon != null)
+                        type = soloJoycon.isLeft ? "Left Joy-Con (solo)" : "Right Joy-Con (solo)";
                     else
-                        type = joycon.isLeft ? "Left Joy-Con (solo)" : "Right Joy-Con (solo)";
+                        type = "Controller";
                     break;
             }
 
             return new ControllerProfileInfo {
-                ProfileId = ProfileIdFor(joycon),
-                DisplayName = type + " (" + DeviceSuffix(joycon) + ")",
-                ConnectionSequence = joycon.virtualControllerSequence,
+                ProfileId = ProfileIdFor(controller),
+                DisplayName = type + " (" + DeviceSuffix(controller) + ")",
+                ConnectionSequence = controller.virtualControllerSequence,
                 IsConnected = true,
             };
         }
 
-        public static List<ControllerProfileInfo> ConnectedProfiles(IEnumerable<Joycon> joycons) {
+        public static List<ControllerProfileInfo> ConnectedProfiles(IEnumerable<Controller> controllers) {
             var result = new Dictionary<string, ControllerProfileInfo>(StringComparer.Ordinal);
-            if (joycons == null)
+            if (controllers == null)
                 return new List<ControllerProfileInfo>();
 
-            foreach (Joycon joycon in joycons) {
-                if (joycon == null || (joycon.other != null && joycon.other != joycon && !joycon.isLeft))
+            foreach (Controller controller in controllers) {
+                if (controller == null)
+                    continue;
+                if (controller is Joycon joycon && joycon.other != null && joycon.other != joycon && !joycon.isLeft)
                     continue;
 
-                ControllerProfileInfo info = ProfileFor(joycon);
+                ControllerProfileInfo info = ProfileFor(controller);
                 if (info != null)
                     result[info.ProfileId] = info;
             }
@@ -532,12 +548,12 @@ namespace BetterJoyForCemu {
             return clone;
         }
 
-        private static string DeviceId(Joycon joycon) {
-            string mac = AddressString(joycon.PadMacAddress);
+        private static string DeviceId(Controller controller) {
+            string mac = AddressString(controller.PadMacAddress);
             if (IsUsableMac(mac))
                 return mac.ToLowerInvariant();
 
-            string serial = (joycon.serial_number ?? String.Empty).Trim();
+            string serial = (controller.serial_number ?? String.Empty).Trim();
             if (IsUsableMac(serial.ToUpperInvariant()))
                 return serial.ToLowerInvariant();
             if (serial.Length > 0 && serial != "000000000001")
@@ -546,18 +562,18 @@ namespace BetterJoyForCemu {
             // Some third-party/USB devices expose no unique serial. The HID path is the best
             // available identity in that case; it is deliberately namespaced so it can never
             // collide with a real MAC or serial-backed controller.
-            return "path-" + EncodeIdentity(joycon.path ?? String.Empty);
+            return "path-" + EncodeIdentity(controller.path ?? String.Empty);
         }
 
-        private static string DeviceSuffix(Joycon joycon) {
-            string mac = AddressString(joycon.PadMacAddress);
+        private static string DeviceSuffix(Controller controller) {
+            string mac = AddressString(controller.PadMacAddress);
             if (IsUsableMac(mac))
                 return mac.Substring(Math.Max(0, mac.Length - 6)).ToUpperInvariant();
 
-            string serial = (joycon.serial_number ?? String.Empty).Trim();
+            string serial = (controller.serial_number ?? String.Empty).Trim();
             if (serial.Length > 0 && serial != "000000000001")
                 return serial.Substring(Math.Max(0, serial.Length - 6));
-            return "Pad " + (joycon.PadId + 1);
+            return "Pad " + (controller.PadId + 1);
         }
 
         private static string DisconnectedDisplayName(string profileId) {

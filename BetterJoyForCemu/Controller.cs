@@ -70,6 +70,13 @@ namespace BetterJoyForCemu {
         public ulong Timestamp = 0;
         public int packetCounter = 0;
 
+        // Device identity - every controller type has an OS-assigned HID path and (usually) a
+        // real serial number, used by ControllerMappings' DeviceId/DeviceSuffix to derive a
+        // stable profile identity independent of PadMacAddress (which isn't known until Attach()
+        // completes for some device types).
+        public string path = String.Empty;
+        public string serial_number;
+
         public OutputControllerXbox360 out_xbox;
         public OutputControllerDualShock4 out_ds4;
 

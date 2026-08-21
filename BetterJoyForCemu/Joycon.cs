@@ -17,7 +17,6 @@ using Nefarius.ViGEm.Client.Targets.Xbox360;
 
 namespace BetterJoyForCemu {
     public class Joycon : Controller {
-        public string path = String.Empty;
         public bool isPro = false;
         public bool isSnes = false;
         public bool is64 = false;
@@ -560,8 +559,6 @@ namespace BetterJoyForCemu {
 
             SetPlayerLED(LED);
         }
-
-        public string serial_number;
 
         // True for anything BetterJoy attached because it matched the 3rd-party-controller
         // allowlist (Program.thirdPartyCons - see CheckForNewControllers), rather than being a
