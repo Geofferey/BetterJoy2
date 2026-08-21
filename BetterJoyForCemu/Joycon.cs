@@ -415,11 +415,6 @@ namespace BetterJoyForCemu {
         public DebugType debug_type = (DebugType)int.Parse(ConfigurationManager.AppSettings["DebugType"]);
         //public DebugType debug_type = DebugType.NONE; //Keep this for manual debugging during development.
         public bool isLeft;
-        private bool[] buttons_down = new bool[20];
-        private bool[] buttons_up = new bool[20];
-        private bool[] buttons = new bool[20];
-        private bool[] down_ = new bool[20];
-        private long[] buttons_down_timestamp = new long[20];
 
         private float[] stick = { 0, 0 };
         private float[] stick2 = { 0, 0 };

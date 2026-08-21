@@ -68,6 +68,20 @@ namespace BetterJoyForCemu {
         public OutputControllerXbox360 out_xbox;
         public OutputControllerDualShock4 out_ds4;
 
+        // The canonical per-report button state every subclass's report parser populates (see
+        // the Button enum above) - protected, not public, since nothing outside a Controller
+        // subclass's own report-parsing/mapping code reads these directly today (verified: no
+        // external file referenced them before this move either, they were private on Joycon).
+        // down_ is the pre-update snapshot CommitButtonState diffs the freshly-parsed buttons[]
+        // against to derive buttons_down/buttons_up (rising/falling edges), and
+        // buttons_down_timestamp records when each button last went down, for press-and-hold/
+        // double-click detection.
+        protected bool[] buttons_down = new bool[20];
+        protected bool[] buttons_up = new bool[20];
+        protected bool[] buttons = new bool[20];
+        protected bool[] down_ = new bool[20];
+        protected long[] buttons_down_timestamp = new long[20];
+
         // Monotonic creation order, assigned once in the constructor - used to decide which half
         // of a pair gets disconnected on join: whichever connected (and got its virtual
         // controller created) FIRST is the one most likely to already be the controller a
