@@ -188,6 +188,7 @@
     <Compile Include="ServiceControlProtocol.cs" />
     <Compile Include="SessionLauncher.cs" />
     <Compile Include="UpdServer.cs" />
+    <Compile Include="VirtualControllerLifecycle.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="! Install the drivers in the Drivers folder">
