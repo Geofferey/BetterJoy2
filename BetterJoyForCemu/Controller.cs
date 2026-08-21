@@ -73,6 +73,12 @@ namespace BetterJoyForCemu {
         public OutputControllerXbox360 out_xbox;
         public OutputControllerDualShock4 out_ds4;
 
+        // Raw HID handle every subclass's Attach/Poll/Detach/report-parsing code reads/writes -
+        // device-agnostic (every controller type talks over one), even though what gets written
+        // through it is not.
+        protected IntPtr handle;
+        protected bool stop_polling = true;
+
         // The canonical per-report button state every subclass's report parser populates (see
         // the Button enum above) - protected, not public, since nothing outside a Controller
         // subclass's own report-parsing/mapping code reads these directly today (verified: no
@@ -156,6 +162,37 @@ namespace BetterJoyForCemu {
         public void RequestLEDUpdate(int playerNum) {
             Interlocked.Exchange(ref pendingLedPlayerNum, playerNum);
         }
+
+        // Device-agnostic disconnect shell: stop the poll loop, tear down whatever virtual
+        // output exists, and release the HID handle. OnDetachingWhileAttached is the one point a
+        // subclass gets to send its own "give the connection back" bytes before the handle
+        // closes (see Joycon's override) - everything else here is identical for every device
+        // type.
+        public void Detach(bool close = false) {
+            stop_polling = true;
+
+            if (out_xbox != null) {
+                out_xbox.Disconnect();
+            }
+
+            if (out_ds4 != null) {
+                out_ds4.Disconnect();
+            }
+
+            if (state > state_.NO_JOYCONS) {
+                HIDapi.hid_set_nonblocking(handle, 0);
+                OnDetachingWhileAttached();
+            }
+            if (close || state > state_.DROPPED) {
+                HIDapi.hid_close(handle);
+            }
+            state = state_.NOT_ATTACHED;
+        }
+
+        // No-op by default; Joycon overrides this for Nintendo's USB-only "let the controller
+        // talk to Bluetooth again" handshake. See the override for a note on isUSB's DualSense
+        // edge case, preserved as-is rather than fixed by this move.
+        protected virtual void OnDetachingWhileAttached() { }
 
         // Shared by ProcessButtonsAndStick (Joy-Con/Pro) and ParseDualSenseReport - diffs the
         // freshly-populated buttons[] against down_[] (the pre-update snapshot the caller must

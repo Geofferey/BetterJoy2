@@ -392,8 +392,6 @@ namespace BetterJoyForCemu {
         private float[] stick = { 0, 0 };
         private float[] stick2 = { 0, 0 };
 
-        private IntPtr handle;
-
         byte[] default_buf = { 0x0, 0x1, 0x40, 0x40, 0x0, 0x1, 0x40, 0x40 };
 
         private byte[] stick_raw = { 0, 0, 0 };
@@ -405,8 +403,6 @@ namespace BetterJoyForCemu {
         private UInt16[] stick2_cal = { 0, 0, 0, 0, 0, 0 };
         private UInt16 deadzone2;
         private UInt16[] stick2_precal = { 0, 0 };
-
-        private bool stop_polling = true;
         private bool imu_enabled = false;
         private Int16[] acc_r = { 0, 0, 0 };
         private Int16[] acc_neutral = { 0, 0, 0 };
@@ -920,35 +916,26 @@ namespace BetterJoyForCemu {
             filterweight = a;
         }
 
-        public void Detach(bool close = false) {
-            stop_polling = true;
+        // Called by Controller.Detach() while the connection had progressed past NO_JOYCONS, right
+        // after the shared hid_set_nonblocking call - Nintendo-only "let the controller talk to
+        // Bluetooth again" handshake, meaningless (and untested) on DualSense. Gated on isUSB,
+        // matching Detach()'s pre-existing behavior exactly - NOTE: isUSB is set true for a USB-
+        // connected DualSense too (see its own ReceiveRaw branch), so this could in principle
+        // fire for one; that's a latent bug that predates this move (not introduced by it -
+        // flagged, not fixed here, since fixing it is a real behavior change and this step is a
+        // pure extraction). UsesNintendoProtocol would be the correct gate instead of isUSB, once
+        // that's worth revisiting.
+        protected override void OnDetachingWhileAttached() {
+            // Subcommand(0x40, new byte[] { 0x0 }, 1); // disable IMU sensor
+            //Subcommand(0x48, new byte[] { 0x0 }, 1); // Would turn off rumble?
 
-            if (out_xbox != null) {
-                out_xbox.Disconnect();
+            if (isUSB) {
+                byte[] a = Enumerable.Repeat((byte)0, 64).ToArray();
+                a[0] = 0x80; a[1] = 0x5; // Allow device to talk to BT again
+                HIDapi.hid_write(handle, a, new UIntPtr(2));
+                a[0] = 0x80; a[1] = 0x6; // Allow device to talk to BT again
+                HIDapi.hid_write(handle, a, new UIntPtr(2));
             }
-
-            if (out_ds4 != null) {
-                out_ds4.Disconnect();
-            }
-
-            if (state > state_.NO_JOYCONS) {
-                HIDapi.hid_set_nonblocking(handle, 0);
-
-                // Subcommand(0x40, new byte[] { 0x0 }, 1); // disable IMU sensor
-                //Subcommand(0x48, new byte[] { 0x0 }, 1); // Would turn off rumble?
-
-                if (isUSB) {
-                    byte[] a = Enumerable.Repeat((byte)0, 64).ToArray();
-                    a[0] = 0x80; a[1] = 0x5; // Allow device to talk to BT again
-                    HIDapi.hid_write(handle, a, new UIntPtr(2));
-                    a[0] = 0x80; a[1] = 0x6; // Allow device to talk to BT again
-                    HIDapi.hid_write(handle, a, new UIntPtr(2));
-                }
-            }
-            if (close || state > state_.DROPPED) {
-                HIDapi.hid_close(handle);
-            }
-            state = state_.NOT_ATTACHED;
         }
 
         private byte ts_en;

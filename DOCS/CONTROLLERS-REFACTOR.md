@@ -47,6 +47,16 @@ review before touching any code.
   transport than it was first seen on. Real bug, independent of this
   refactor; worth fixing when whichever step touches these fields (see
   "Suggested migration approach" below), not before.
+- `Detach()`'s Nintendo-only "let the controller talk to Bluetooth again"
+  handshake (the `0x80,0x05`/`0x80,0x06` output report) is gated on
+  `isUSB`, not on `UsesNintendoProtocol` - and `isUSB` is `true` for a
+  USB-connected DualSense too (see its own `ReceiveRaw` branch). A
+  DualSense detached while connected over USB would get sent these
+  Nintendo-specific bytes. Found while extracting `Detach()`'s shared
+  shell into `Controller` (step 2); preserved as-is rather than fixed,
+  since fixing it is a real behavior change, not a mechanical move -
+  worth fixing with a one-line gate change (`UsesNintendoProtocol` instead
+  of `isUSB`) whenever DualSense-over-USB detach is actually exercised.
 
 ## Why this is needed
 
