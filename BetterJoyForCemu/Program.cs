@@ -111,11 +111,28 @@ namespace BetterJoyForCemu {
         }
 
         // Smallest PadId not currently in use by a connected controller - see the call site for
-        // why j.Count itself isn't safe to use directly.
-        int NextAvailablePadId() {
+        // why j.Count itself isn't safe to use directly. exclude lets a caller ask "what's free
+        // for this specific controller" without that controller's own (about-to-be-replaced)
+        // PadId counting against itself - see ReassignSplitOffJoycon, whose caller unlinks
+        // .other before calling in, which would otherwise flip it from "passive, ignored" to
+        // "solo, counted as using its own stale value" for this computation alone.
+        int NextAvailablePadId(Joycon exclude = null) {
             var used = new HashSet<int>();
-            foreach (Joycon v in j)
+            foreach (Joycon v in j) {
+                if (v == exclude)
+                    continue;
+
+                // A joined pair's passive half doesn't occupy a visible LED/player slot on its
+                // own - its physical LED just mirrors its active partner's (see ReassignPadIds).
+                // Its PadId field is deliberately left untouched while paired, parked until it
+                // splits back off (see ReassignSplitOffJoycon), so it must not count as "in use"
+                // here - otherwise a genuinely new controller gets skipped past a slot nothing
+                // visible is actually occupying.
+                bool isPassiveHalf = v.other != null && v.other != v && v.out_xbox == null && v.out_ds4 == null;
+                if (isPassiveHalf)
+                    continue;
                 used.Add(v.PadId);
+            }
 
             int id = 0;
             while (used.Contains(id))
@@ -239,11 +256,29 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Full dump of every controller's PadId/pairing/output state - see DebugLog (off by
+        // default, gated behind the DebugLogging AppSetting). Called at every PadId-affecting
+        // decision point (connect, join, split, rank compaction) so player-slot/LED bugs can be
+        // diagnosed from debug.log instead of guessed at.
+        void DumpState(string tag) {
+            var sb = new StringBuilder(tag).Append(':');
+            foreach (Joycon v in j) {
+                sb.AppendFormat(CultureInfo.InvariantCulture,
+                    " [pad={0} other={1} hasXbox={2} hasDs4={3}]",
+                    v.PadId,
+                    v.other == null ? "null" : (v.other == v ? "self" : v.other.PadId.ToString(CultureInfo.InvariantCulture)),
+                    v.out_xbox != null, v.out_ds4 != null);
+            }
+            DebugLog.Write(sb.ToString());
+        }
+
         void AssignPadId(Joycon jc, int newPadId) {
             if (jc.PadId == newPadId)
                 return;
 
+            DebugLog.Write(string.Format(CultureInfo.InvariantCulture, "AssignPadId: pad {0} -> {1}", jc.PadId, newPadId));
             jc.PadId = newPadId;
+            ResolveStalePadIdCollisions();
             jc.RequestLEDUpdate(newPadId);
 
             if (jc.out_xbox != null) {
@@ -255,6 +290,64 @@ namespace BetterJoyForCemu {
                 jc.out_ds4 = null;
             }
             CreateOutputControllers(jc);
+        }
+
+        // Called right after a Joycon splits off from a pair (see JoinOrSplitJoycon's split
+        // branch in MainForm.cs/HeadlessJoyconHost.cs) - its PadId was deliberately left
+        // untouched while it was the passive half (see ReassignPadIds's comment on why), and
+        // NextAvailablePadId stopped counting it as "in use" the moment it went passive, so a
+        // different controller may already have claimed that same number. Give it a fresh,
+        // guaranteed-free identity instead of assuming the old one is still safe to reuse. A
+        // no-op (via AssignPadId's own check) if nothing actually claimed it in the meantime.
+        public void ReassignSplitOffJoycon(Joycon jc) {
+            AssignPadId(jc, NextAvailablePadId(jc));
+        }
+
+        // NextAvailablePadId deliberately skips a joined pair's passive half when computing
+        // what's free (it has no virtual controller and doesn't occupy a visible LED slot), so
+        // whenever something claims a "next available" number, that number may already be held
+        // by a passive half that's still parked on it. Both then share one PadId, which breaks
+        // anything that assumes PadId uniquely identifies a controller: BuildSnapshot/
+        // RenderSnapshot's pair de-duplication (a colliding record gets mistaken for the pair's
+        // already-rendered passive half and silently dropped from the UI - the colliding
+        // controller works fine, it just never appears) and remote-mode command routing by PadId.
+        // Called after every real PadId change (see AssignPadId) - loops because resolving one
+        // collision can, in principle, land on a different pair's stale value in turn.
+        //
+        // Deliberately bookkeeping-only: unlike AssignPadId, this must NOT call RequestLEDUpdate
+        // or touch out_xbox/out_ds4 - the passive half being moved has no virtual controller to
+        // recreate, and its physical LED is intentionally left showing its active partner's
+        // shared rank (see ReassignPadIds), not its own PadId. Only the in-memory identity moves;
+        // nothing observable to the user changes. Two passive halves sharing a stale number is
+        // left alone - neither is ever treated as "in use", so it can't cause this symptom.
+        void ResolveStalePadIdCollisions() {
+            bool changed = true;
+            while (changed) {
+                changed = false;
+                foreach (Joycon v in j) {
+                    bool isPassiveHalf = v.other != null && v.other != v && v.out_xbox == null && v.out_ds4 == null;
+                    if (!isPassiveHalf)
+                        continue;
+
+                    foreach (Joycon other in j) {
+                        if (other == v || other.PadId != v.PadId)
+                            continue;
+                        bool otherIsPassiveHalf = other.other != null && other.other != other && other.out_xbox == null && other.out_ds4 == null;
+                        if (otherIsPassiveHalf)
+                            continue;
+
+                        int freed = v.PadId;
+                        v.PadId = NextAvailablePadId();
+                        DebugLog.Write(string.Format(CultureInfo.InvariantCulture,
+                            "ResolveStalePadIdCollisions: passive half moved pad {0} -> {1} (collided with pad={2} hasXbox={3} hasDs4={4})",
+                            freed, v.PadId, other.PadId, other.out_xbox != null, other.out_ds4 != null));
+                        changed = true;
+                        break;
+                    }
+                    if (changed)
+                        break;
+                }
+            }
         }
 
         // Shared by attach, profile changes, AssignPadId, and survivor restoration. Reconciles
@@ -621,6 +714,9 @@ namespace BetterJoyForCemu {
                     // controller by PadId alone, so a collision could route a command to the
                     // wrong physical controller, not just misrender a GUI slot.
                     j.Add(new Joycon(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), isPro, isSnes, is64, thirdParty != null, isDualSense));
+                    DumpState("Connect: new controller added, pad=" + j.Last().PadId.ToString(CultureInfo.InvariantCulture));
+                    ResolveStalePadIdCollisions();
+                    DumpState("Connect: after ResolveStalePadIdCollisions");
 
                     foundNew = true;
                     j.Last().form = form;
@@ -681,15 +777,13 @@ namespace BetterJoyForCemu {
                         }
                     }
                     if (isDualSense) {
-                        // TEMPORARY diagnostic: comparing the resolved MAC across USB vs
-                        // Bluetooth connections of the same physical DualSense, since real
-                        // hardware testing found they don't currently match. Logged to file
-                        // (not just the GUI panel) so it's directly readable afterward.
-                        string macMsg = string.Format(CultureInfo.InvariantCulture,
+                        // Comparing the resolved MAC across USB vs Bluetooth connections of the
+                        // same physical DualSense, since real hardware testing found they don't
+                        // currently match. Gated behind DualSenseDebugLogging (see
+                        // LogDualSenseRawDump) - file-only, never the GUI panel.
+                        j.Last().LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
                             "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")",
-                            BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number);
-                        form.AppendTextBox(macMsg + "\r\n");
-                        j.Last().LogDualSenseRawDump(macMsg);
+                            BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     }
                     j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
                     j[j.Count - 1].InvalidateMappingProfileCache();
@@ -775,6 +869,7 @@ namespace BetterJoyForCemu {
                         Joycon left = temp.isLeft ? temp : v;
                         Joycon right = temp.isLeft ? v : temp;
                         form.CollapseJoinedPair(left, right);
+                        DumpState("AutoJoin: paired");
 
                         temp = null;    // repeat
                     }
@@ -797,6 +892,7 @@ namespace BetterJoyForCemu {
                 }
 
                 ApplyControllerProfileOptions();
+                DumpState("AutoJoin: end of pass");
             }
         }
 

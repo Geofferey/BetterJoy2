@@ -481,11 +481,13 @@ namespace BetterJoyForCemu {
                 SetEmptySlotTooltip(b);
             }
 
-            var handled = new HashSet<int>();
+            // BuildSnapshot (HeadlessJoyconHost.cs) sends exactly one record per virtual
+            // controller - a joined pair's passive half is never included, so records maps 1:1
+            // onto slots with no de-duplication needed here.
             int slotIndex = 0;
 
             foreach (ControllerRecord record in records) {
-                if (handled.Contains(record.PadId) || slotIndex >= con.Count)
+                if (slotIndex >= con.Count)
                     continue;
 
                 Button button = con[slotIndex];
@@ -494,7 +496,6 @@ namespace BetterJoyForCemu {
                 if (isPair) {
                     button.BackgroundImage = ComposeJoinedIcon(button.Width, button.Height);
                     SetConnectionTooltip(button, false);
-                    handled.Add((byte)record.OtherPadId);
                 } else {
                     button.BackgroundImage = IconFor(record);
                     SetConnectionTooltip(button, record.Kind == ControllerKind.Pro || record.Kind == ControllerKind.DualSense);
@@ -511,7 +512,6 @@ namespace BetterJoyForCemu {
                 locButton.Click -= locBtnClickAsync;
                 locButton.Click += locBtnClickAsync;
 
-                handled.Add(record.PadId);
                 slotIndex++;
             }
         }
@@ -993,6 +993,12 @@ namespace BetterJoyForCemu {
                 Joycon partner = v.other;
                 bool wasRealPair = partner != v;
 
+                // Whichever half doesn't currently drive a virtual controller was the passive
+                // side of the pair - see ReassignSplitOffJoycon (Program.cs) for why it needs a
+                // fresh PadId now that it's standalone again.
+                Joycon passiveHalf = v.out_xbox == null && v.out_ds4 == null ? v
+                    : partner.out_xbox == null && partner.out_ds4 == null ? partner : null;
+
                 Button button = con.Find(b => b.Tag == v);
                 if (button != null) {
                     button.BackgroundImage = v.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
@@ -1001,6 +1007,10 @@ namespace BetterJoyForCemu {
 
                 v.other.other = null;
                 v.other = null;
+
+                if (passiveHalf != null)
+                    Program.mgr.ReassignSplitOffJoycon(passiveHalf);
+
                 Program.mgr.ApplyControllerProfileOptions();
 
                 if (wasRealPair) {

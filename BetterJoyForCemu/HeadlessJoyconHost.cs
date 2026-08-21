@@ -3,9 +3,11 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -87,8 +89,19 @@ namespace BetterJoyForCemu {
                     }
                 }
             } else if (v.other != null && v.SupportsPairing) {
-                v.other.other = null;
+                Joycon partner = v.other;
+
+                // Whichever half doesn't currently drive a virtual controller was the passive
+                // side of the pair - see ReassignSplitOffJoycon (Program.cs) for why it needs a
+                // fresh PadId now that it's standalone again.
+                Joycon passiveHalf = v.out_xbox == null && v.out_ds4 == null ? v
+                    : partner.out_xbox == null && partner.out_ds4 == null ? partner : null;
+
+                partner.other = null;
                 v.other = null;
+
+                if (passiveHalf != null)
+                    Program.mgr.ReassignSplitOffJoycon(passiveHalf);
             }
 
             Program.mgr.ApplyControllerProfileOptions();
@@ -818,6 +831,17 @@ namespace BetterJoyForCemu {
                 return records;
 
             foreach (Joycon jc in Program.mgr.j) {
+                // A joined pair's passive half isn't a virtual controller - it has no out_xbox/
+                // out_ds4 of its own, its LED just mirrors its active partner's (see
+                // ReassignPadIds), and its PadId is stale/unstable while parked (see
+                // NextAvailablePadId). Rendering is keyed off actual virtual controllers, not
+                // physical Joycons - one record per pair, not two - so skip it here rather than
+                // emitting a record that could numerically collide with an unrelated one and get
+                // de-duplicated away.
+                bool isPassiveHalf = jc.other != null && jc.other != jc && jc.out_xbox == null && jc.out_ds4 == null;
+                if (isPassiveHalf)
+                    continue;
+
                 ControllerKind kind = jc.Kind;
 
                 sbyte otherPadId = (jc.other != null && jc.other != jc) ? (sbyte)jc.other.PadId : (sbyte)-1;
@@ -834,6 +858,17 @@ namespace BetterJoyForCemu {
                     IsVertical = jc.other == jc,
                 });
             }
+
+            // See DebugLog (off by default, gated behind the DebugLogging AppSetting) - this is
+            // the exact list RenderSnapshot (MainForm.cs) renders slots from, in this order, so
+            // it's the ground truth for diagnosing "a connected controller isn't shown" bugs.
+            var sb = new StringBuilder("BuildSnapshot:");
+            foreach (ControllerRecord r in records) {
+                sb.AppendFormat(CultureInfo.InvariantCulture, " [pad={0} other={1} kind={2}]",
+                    r.PadId, r.OtherPadId, r.Kind);
+            }
+            DebugLog.Write(sb.ToString());
+
             return records;
         }
 

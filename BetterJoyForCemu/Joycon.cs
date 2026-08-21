@@ -415,39 +415,6 @@ namespace BetterJoyForCemu {
         public DebugType debug_type = (DebugType)int.Parse(ConfigurationManager.AppSettings["DebugType"]);
         //public DebugType debug_type = DebugType.NONE; //Keep this for manual debugging during development.
         public bool isLeft;
-        public enum state_ : uint {
-            NOT_ATTACHED,
-            DROPPED,
-            NO_JOYCONS,
-            ATTACHED,
-            INPUT_MODE_0x30,
-            IMU_DATA_OK,
-        };
-        public state_ state;
-        public enum Button : int {
-            DPAD_DOWN = 0,
-            DPAD_RIGHT = 1,
-            DPAD_LEFT = 2,
-            DPAD_UP = 3,
-            SL = 4,
-            SR = 5,
-            MINUS = 6,
-            HOME = 7,
-            PLUS = 8,
-            CAPTURE = 9,
-            STICK = 10,
-            SHOULDER_1 = 11,
-            SHOULDER_2 = 12,
-
-            // For pro controller
-            B = 13,
-            A = 14,
-            Y = 15,
-            X = 16,
-            STICK2 = 17,
-            SHOULDER2_1 = 18,
-            SHOULDER2_2 = 19,
-        };
         private bool[] buttons_down = new bool[20];
         private bool[] buttons_up = new bool[20];
         private bool[] buttons = new bool[20];
@@ -588,16 +555,6 @@ namespace BetterJoyForCemu {
 
         private byte global_count = 0;
 
-        // For UdpServer
-        public int PadId = 0;
-        public int battery = -1;
-        public int model = 2;
-        public int constate = 2;
-        public int connection = 3;
-
-        public PhysicalAddress PadMacAddress = new PhysicalAddress(new byte[] { 01, 02, 03, 04, 05, 06 });
-        public ulong Timestamp = 0;
-
         // Program.cs's DualSense feature-report/serial MAC resolution runs slightly after this
         // object starts existing - if anything reads a mapping profile bind before that lands,
         // mappingProfileId's lazy cache would otherwise lock onto the placeholder MAC's fallback
@@ -613,22 +570,6 @@ namespace BetterJoyForCemu {
         public void InvalidateMappingProfileCache() {
             mappingProfileId = null;
         }
-        public int packetCounter = 0;
-
-        public OutputControllerXbox360 out_xbox;
-        public OutputControllerDualShock4 out_ds4;
-
-        // Monotonic creation order, assigned once in the constructor - used to decide which half
-        // of a pair gets disconnected on join: whichever connected (and got its virtual
-        // controller created) FIRST is the one most likely to already be the controller a
-        // running game has locked onto, so joining always disconnects the newer one and keeps
-        // the older one active, regardless of which physical Joycon you click to initiate the
-        // join or which one a scan pass happens to enumerate first. Confirmed by testing:
-        // disconnecting/suppressing the wrong half left
-        // a game's already-locked-on slot silent while input went to a different slot it wasn't
-        // watching.
-        private static long nextVirtualControllerSequence = 0;
-        public readonly long virtualControllerSequence = System.Threading.Interlocked.Increment(ref nextVirtualControllerSequence);
 
         int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
         int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
