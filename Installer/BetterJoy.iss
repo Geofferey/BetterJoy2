@@ -39,7 +39,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "vigembus"; Description: "Install the ViGEmBus driver (required for XInput/DS4 output)"; GroupDescription: "Drivers:"; Flags: checkedonce
 Name: "hidhide"; Description: "Install the HidHide driver (hides controllers from other programs, e.g. Steam)"; GroupDescription: "Drivers:"; Flags: unchecked
 Name: "fakerinput"; Description: "Install FakerInput virtual mouse (works in elevated apps, UAC, and before login in service mode)"; GroupDescription: "Drivers:"; Flags: unchecked
-Name: "service"; Description: "Run BetterJoy as a Windows Service (starts before login)"; GroupDescription: "Advanced:"; Flags: unchecked
 
 [Files]
 ; Everything from the Release build, except runtime-generated state that shouldn't ship pre-populated
@@ -72,7 +71,6 @@ Type: filesandordirs; Name: "{app}"
 var
   HidHideExitCode: Integer;
   FakerInputExitCode: Integer;
-  WasServiceRunningBeforeUpgrade: Boolean;
 
 // Real service-status polling via the SCM API - sc.exe stop only requests the stop and returns
 // as soon as the SCM acknowledges the request, not once the service has actually finished
@@ -164,39 +162,36 @@ end;
 // quoted) exe path followed by " -service" - the outer quotes let the command-line parser
 // treat the whole thing as one token for sc.exe, the escaped inner quotes are what sc.exe
 // itself then records as the actual service binary path.
-// Fresh install/re-selecting the task always (re)creates the service from scratch. An upgrade
-// that *doesn't* have the task selected but had the service running before StopExistingService
-// touched it just gets restarted as-is - it already exists, so there's nothing to (re)create,
-// only to bring back to how it was found. A service that was already stopped (or never
-// installed) before this run is left alone either way, respecting whatever the user had.
+// MainForm has no local-ownership fallback anymore (see clever-wiggling-rocket.md) - the GUI is
+// non-functional without the service running, so unlike the optional driver tasks above this
+// always runs, no checkbox to skip it. `sc create` on an already-existing service (a plain
+// upgrade) just fails harmlessly; the calls after it still bring the service to the desired
+// state regardless. The failure action registers automatic recovery (see BetterJoyService.OnStop
+// - a crash otherwise leaves the GUI permanently unable to reconnect until someone notices and
+// restarts it by hand): 3 restart attempts a second apart, and resetperiod resets the failure
+// count after a full day with no further crashes rather than accumulating forever.
 procedure InstallService;
 var
   ResultCode: Integer;
   Params: String;
 begin
-  if WizardIsTaskSelected('service') then begin
-    Params := 'create BetterJoy binPath= "\"' + ExpandConstant('{app}\{#MyAppExeName}') + '\" -service" start= auto DisplayName= "BetterJoy"';
-    Exec(ExpandConstant('{sys}\sc.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec(ExpandConstant('{sys}\sc.exe'), 'description BetterJoy "Nintendo Switch controller service"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec(ExpandConstant('{sys}\sc.exe'), 'start BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end else if WasServiceRunningBeforeUpgrade then begin
-    Exec(ExpandConstant('{sys}\sc.exe'), 'start BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
+  Params := 'create BetterJoy binPath= "\"' + ExpandConstant('{app}\{#MyAppExeName}') + '\" -service" start= auto DisplayName= "BetterJoy"';
+  Exec(ExpandConstant('{sys}\sc.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\sc.exe'), 'description BetterJoy "Nintendo Switch controller service"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\sc.exe'), 'failure BetterJoy reset= 86400 actions= restart/1000/restart/1000/restart/1000', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\sc.exe'), 'start BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 // Before files are copied: an existing installed service still running keeps
 // BetterJoyForCemu.exe/its DLLs locked, which fails the file-copy step outright rather than a
-// clean upgrade. Records whether it was actually running first, so InstallService can restore
-// that afterward regardless of whether the "service" task happens to be selected this run -
-// otherwise an upgrade where that box isn't re-checked would silently leave a previously-
-// running service stopped. Does nothing if the service was never installed or wasn't running.
+// clean upgrade. InstallService always restarts the service afterward regardless of how this
+// left it, so there's nothing to remember here beyond "was it running" for the exit-early check.
 procedure StopExistingService;
 var
   ResultCode: Integer;
   Attempts: Integer;
 begin
-  WasServiceRunningBeforeUpgrade := (GetServiceState('BetterJoy') = SERVICE_RUNNING);
-  if not WasServiceRunningBeforeUpgrade then
+  if GetServiceState('BetterJoy') <> SERVICE_RUNNING then
     exit;
 
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop BetterJoy', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
