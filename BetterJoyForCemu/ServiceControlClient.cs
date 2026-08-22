@@ -17,6 +17,7 @@ namespace BetterJoyForCemu {
         public event Action<int> CalibrationFailed;
         public event Action<CalibrationStepInfo> CalibrationStep;
         public event Action<ButtonTransitionInfo> ButtonTransition;
+        public event Action<LowBatteryInfo> LowBattery;
         public event Action Disconnected;
 
         private NamedPipeClientStream pipe;
@@ -67,6 +68,9 @@ namespace BetterJoyForCemu {
                             break;
                         case ControlMessageType.ButtonTransition:
                             ButtonTransition?.Invoke(ServiceControlIpc.ReadButtonTransition(reader));
+                            break;
+                        case ControlMessageType.LowBattery:
+                            LowBattery?.Invoke(ServiceControlIpc.ReadLowBattery(reader));
                             break;
                     }
                 }

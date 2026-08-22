@@ -403,6 +403,17 @@ namespace BetterJoyForCemu {
                 AppendTextBox("Lost connection to the BetterJoy service.\r\n");
                 CloseRemoteCalibDialog("Lost connection to the service.");
             }));
+
+            // Not Invoke-wrapped, matching the prior inline behavior in the local
+            // NotifyLowBattery this replaces - NotifyIcon operations aren't Control-handle-affine
+            // the way Buttons are, so the fire-and-forget ServiceControlClient read thread can
+            // call this directly.
+            serviceClient.LowBattery += info => {
+                notifyIcon.Visible = true;
+                notifyIcon.BalloonTipText = String.Format("Controller {0} ({1}) - low battery notification!",
+                    info.PadId, ControllerKindLabel(info.Kind));
+                notifyIcon.ShowBalloonTip(0);
+            };
         }
 
         private int remoteCalibPadId;
@@ -741,9 +752,9 @@ namespace BetterJoyForCemu {
 
         public void HandleJoyconDropped(Controller dropped, Joycon survivingPartner) { }
 
-        // See ControllerKindLabel below, used to reconstruct this same message once a low-
-        // battery event is pushed over the service protocol instead (clever-wiggling-rocket.md
-        // Phase 3) - not wired up yet, so this is a no-op for now.
+        // Never invoked in this process - MainForm has no live Controller to call this with (see
+        // the comment above). The actual balloon is now shown from WireServiceClientEvents'
+        // LowBattery handler, fed over the service protocol instead (see ControllerKindLabel).
         public void NotifyLowBattery(Controller controller) { }
 
         public void UpdateBatteryColor(Controller controller) { }

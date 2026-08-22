@@ -54,6 +54,7 @@ namespace BetterJoyForCemu {
 
         public void NotifyLowBattery(Controller controller) {
             AppendTextBox(String.Format("Controller {0} - low battery.", controller.PadId));
+            SendControlMessage(w => ServiceControlIpc.WriteLowBattery(w, (byte)controller.PadId, controller.Kind));
         }
 
         // Mirrors MainForm.JoinOrSplitJoycon (MainForm.cs) minus the button/icon updates, which

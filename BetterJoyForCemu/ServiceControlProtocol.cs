@@ -16,6 +16,7 @@ namespace BetterJoyForCemu {
         CalibrationFailed = 4,
         CalibrationStep = 5,
         ButtonTransition = 6, // a connected controller's button just went down/up - see Reassign
+        LowBattery = 7, // a connected controller just crossed the low-battery threshold
 
         // GUI -> service
         RequestSnapshot = 10,
@@ -115,6 +116,15 @@ namespace BetterJoyForCemu {
         public bool IsDown;
     }
 
+    // Pushed from Controller.BatteryChanged (via HeadlessJoyconHost.NotifyLowBattery) whenever a
+    // connected, non-USB controller's battery drops to its lowest reported level - Kind is
+    // carried alongside PadId since the GUI needs it to reconstruct the same kind-labeled balloon
+    // text the old local-mode NotifyLowBattery used to show directly.
+    public struct LowBatteryInfo {
+        public byte PadId;
+        public ControllerKind Kind;
+    }
+
     public static class ServiceControlIpc {
         // Fixed and well-known (unlike the per-session input-helper pipe) - the GUI needs to
         // find this without being told a name, since it isn't the one that launched the service.
@@ -184,6 +194,20 @@ namespace BetterJoyForCemu {
                 ProfileId = reader.ReadString(),
                 ButtonIndex = reader.ReadByte(),
                 IsDown = reader.ReadBoolean(),
+            };
+        }
+
+        public static void WriteLowBattery(BinaryWriter writer, byte padId, ControllerKind kind) {
+            writer.Write((byte)ControlMessageType.LowBattery);
+            writer.Write(padId);
+            writer.Write((byte)kind);
+            writer.Flush();
+        }
+
+        public static LowBatteryInfo ReadLowBattery(BinaryReader reader) {
+            return new LowBatteryInfo {
+                PadId = reader.ReadByte(),
+                Kind = (ControllerKind)reader.ReadByte(),
             };
         }
     }
