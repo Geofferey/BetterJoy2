@@ -153,18 +153,13 @@ namespace BetterJoyForCemu {
         }
 
         private void MainForm_Load(object sender, EventArgs e) {
-            // Deferring hardware ownership to a running service is NOT conditional on config
-            // sync being opted into - those are separate concerns (one prevents two processes
-            // fighting over the same physical device and creating a duplicate virtual
-            // controller; the other just controls whether settings changes here reach the
-            // service). Gating this on AppPaths.ServiceModeEnabled meant a GUI that never had
-            // "Sync Config with Service" clicked would always run its own pipeline even with the
-            // service already running - exactly the duplicate-controller bug this exists to fix.
-            bool serviceReportedRunning = IsBetterJoyServiceRunning();
-            if (serviceReportedRunning) {
-                serviceClient = new ServiceControlClient();
-                isRemoteMode = TryConnectWithRetries(serviceClient);
-            }
+            // BetterJoy always runs as the Windows Service now - this window is a pure status/
+            // control client, never a controller owner itself. Try connecting first (no SCM
+            // pre-check gating it - a service that's genuinely up answers regardless of what the
+            // SCM reports at this exact instant), and only consult IsBetterJoyServiceRunning()
+            // afterward, purely to shape the error message if that connection attempt failed.
+            serviceClient = new ServiceControlClient();
+            isRemoteMode = TryConnectWithRetries(serviceClient);
 
             if (isRemoteMode) {
                 WireServiceClientEvents();
@@ -187,21 +182,27 @@ namespace BetterJoyForCemu {
                     AppendTextBox("Config isn't synced with the service yet - settings/remap changes made here won't reach it until you use \"Sync Config with Service\".\r\n");
 
                 serviceClient.RequestSnapshot();
-            } else if (serviceReportedRunning) {
-                // The SCM says the service is Running, but its control pipe never answered
-                // after retries - an ambiguous state (AV/firewall interference, pipe instance
+            } else if (IsBetterJoyServiceRunning()) {
+                // The SCM says the service is Running, but its control pipe never answered after
+                // retries - an ambiguous state (AV/firewall interference, pipe instance
                 // exhaustion, some transient error), not evidence the service is actually down.
-                // Falling back to a local pipeline here would risk exactly the duplicate-
-                // controller conflict this whole mode exists to prevent, so refuse instead:
-                // no local pipeline, no remote status - just wait for a restart of either side.
-                AppendTextBox("The BetterJoy service appears to be running, but its status connection couldn't be reached. Not starting local controller support, to avoid conflicting with it - restart BetterJoy (or the service) to retry.\r\n");
+                // There's no local fallback to fall back to anymore, so this is a dead end until
+                // one side restarts.
+                AppendTextBox("The BetterJoy service appears to be running, but its status connection couldn't be reached. Restart BetterJoy (or the service) to retry.\r\n");
                 MessageBox.Show(
-                    "The BetterJoy service appears to be running, but this window couldn't reach its status connection. " +
-                    "To avoid creating a duplicate virtual controller, this window will not take over the controllers itself.\r\n\r\n" +
+                    "The BetterJoy service appears to be running, but this window couldn't reach its status connection.\r\n\r\n" +
                     "Restart BetterJoy (or the service) to retry.",
                     "BetterJoy");
             } else {
-                Program.Start();
+                // Not installed, or installed but not running - either way, there is no local
+                // pipeline to fall back to anymore. The installer sets the service to start
+                // automatically; this is the "something's wrong with that" path, not the normal
+                // first-run path.
+                AppendTextBox("The BetterJoy service isn't running - this window has nothing to show or control until it is. Start the BetterJoy service (or reinstall BetterJoy) and reopen this window.\r\n");
+                MessageBox.Show(
+                    "The BetterJoy service isn't running, so this window has nothing to show or control.\r\n\r\n" +
+                    "Start the BetterJoy service (via Services.msc, or by reinstalling BetterJoy), then reopen this window.",
+                    "BetterJoy");
             }
 
             console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
@@ -346,13 +347,17 @@ namespace BetterJoyForCemu {
             desktopInput.Scroll(up);
         }
 
+        // Only ever consulted after a direct pipe-connect attempt has already failed, to decide
+        // which error message to show - "not installed/not running, go start it" vs. "reported
+        // Running but unreachable, something's interfering." There is no local fallback either
+        // answer leads to; BetterJoy always runs as the service now.
         private static bool IsBetterJoyServiceRunning() {
             try {
                 using (var sc = new ServiceController("BetterJoy")) {
                     return sc.Status == ServiceControllerStatus.Running;
                 }
             } catch {
-                return false; // not installed, access denied, etc. - fall back to running locally
+                return false; // not installed, access denied, etc.
             }
         }
 
