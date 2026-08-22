@@ -619,8 +619,7 @@ namespace BetterJoyForCemu {
 
         public void OnApplicationQuit() {
             foreach (Controller v in j) {
-                if (!Program.suppressAutoPowerOffOnExit && ControllerMappings.BoolOption(
-                    ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
+                if (ControllerMappings.BoolOption(ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
                     v.PowerOff();
 
                 v.Detach();
@@ -655,7 +654,6 @@ namespace BetterJoyForCemu {
         private static readonly HttpClient client = new HttpClient();
 
         public static JoyconManager mgr;
-        public static bool suppressAutoPowerOffOnExit;
 
         static IJoyconHost form;
 

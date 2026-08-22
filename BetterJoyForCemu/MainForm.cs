@@ -19,10 +19,6 @@ namespace BetterJoyForCemu {
     public partial class MainForm : Form, IJoyconHost {
         public bool allowCalibration = Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]);
         public List<Button> con, loc;
-        private bool calibrationInProgress = false;
-        private Controller calibratingJoycon;
-        private Timer countDown;
-        private int count;
         private Timer clickTimer;
         private Timer rightClickTimer;
         private readonly DesktopInputBackend desktopInput;
@@ -241,52 +237,22 @@ namespace BetterJoyForCemu {
         }
 
         // Single exit path, guarded against being entered twice (Close() re-enters via
-        // MainForm_FormClosing, and Program.Stop()'s cleanup - disposing hooks, stopping the UDP
-        // server, disconnecting Joycons - isn't safe to run twice). Termination itself must not
-        // be skippable by a cleanup failure, so it happens in a finally rather than after Stop().
+        // MainForm_FormClosing). MainForm never owns the controllers itself - the service keeps
+        // running independently of this window closing, and the pipe closes with the process -
+        // so there's nothing of ours to tear down beyond the desktop-input backend.
         private void ExitApplication() {
             if (isExiting) return;
             isExiting = true;
 
             notifyIcon.Visible = false; // remove the tray icon immediately so no further tray messages can reach it
 
-            try {
-                // In remote mode Program.Start() was never called - mgr/server are still null,
-                // so there's nothing of ours to tear down here; the service keeps running
-                // independently of this window closing, and the pipe closes with the process.
-                if (!isRemoteMode)
-                    Program.Stop();
-            } catch { } finally {
-                desktopInput.Dispose();
-                Environment.Exit(0);
-            }
+            desktopInput.Dispose();
+            Environment.Exit(0);
         }
 
         private void linkLabel1_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e) {
             donationLink.LinkVisited = true;
             System.Diagnostics.Process.Start("http://paypal.me/DavidKhachaturov/5");
-        }
-
-        // AssignSlot/CollapseJoinedPair/HandleJoyconDropped are called from the scan thread
-        // while it holds JoyconManager's scanLock (see Program.cs) - a synchronous this.Invoke
-        // here would block the scan thread until the UI thread services it, but the UI thread's
-        // own shutdown path (ExitApplication -> Program.Stop -> StopScanning) blocks trying to
-        // ACQUIRE that same scanLock. If both happen at once, neither side can proceed: the UI
-        // thread can't pump messages to service the Invoke while it's stuck in a plain lock
-        // statement, and the scan thread can't release scanLock until Invoke returns - a
-        // deadlock that meant closing the GUI could hang indefinitely instead of exiting.
-        // BeginInvoke doesn't block the caller, breaking that cycle; the null/IsDisposed guards
-        // handle the queued callback finally running after the form has already closed.
-        private void SafeBeginInvoke(Action action) {
-            if (IsDisposed)
-                return;
-            try {
-                BeginInvoke(action);
-            } catch (ObjectDisposedException) {
-                // form closed between the check above and this call - nothing to update
-            } catch (InvalidOperationException) {
-                // handle not created / thread has no message loop - also fine to skip
-            }
         }
 
         public void AppendTextBox(string value) { // https://stackoverflow.com/questions/519233/writing-to-a-textbox-from-another-thread
@@ -544,28 +510,16 @@ namespace BetterJoyForCemu {
             console.Text = "Requesting calibration from service...";
             serviceClient.StartCalibration(padId);
             // calibrateIconButton keeps flashing until CalibrationComplete/Failed arrives (see
-            // WireServiceClientEvents) - not cleared immediately here, unlike local mode.
+            // WireServiceClientEvents) - not cleared immediately here.
         }
 
-        public async void locBtnClickAsync(object sender, EventArgs e) {
+        public void locBtnClickAsync(object sender, EventArgs e) {
             Button bb = sender as Button;
 
             if (bb.Tag.GetType() == typeof(Button)) {
                 Button button = bb.Tag as Button;
-
-                if (isRemoteMode) {
-                    if (button.Tag is int)
-                        serviceClient.TestRumble((int)button.Tag);
-                    return;
-                }
-
-                // is-check, not an exact-type check: SetRumble is on Controller (generic), so this
-                // works for any controller kind, not just Joycon.
-                if (button.Tag is Controller v) {
-                    v.SetRumble(160.0f, 320.0f, 1.0f);
-                    await Task.Delay(300);
-                    v.SetRumble(160.0f, 320.0f, 0);
-                }
+                if (button.Tag is int)
+                    serviceClient.TestRumble((int)button.Tag);
             }
         }
 
@@ -581,28 +535,7 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            if (isRemoteMode) {
-                if (!(button.Tag is int))
-                    return;
-
-                if (e.Button == MouseButtons.Right) {
-                    HandlePossibleOrientationDoubleClick(button);
-                } else if (e.Button == MouseButtons.Left) {
-                    if (allowCalibration) {
-                        HandlePossibleDoubleClick(button);
-                    } else {
-                        btn_reassign_open_Click(sender, e);
-                    }
-                }
-                return;
-            }
-
-            // is-check, not an exact-type check: opening Controller Profiles/calibrating applies
-            // to any controller kind, not just Joycon - an exact-type check here would silently
-            // make clicking a future non-Joycon controller's icon do nothing at all (no crash,
-            // just a dead click). HandlePossibleOrientationDoubleClick/ExecuteJoinOrSplit already
-            // narrow to "is Joycon" internally for the actually Joy-Con-specific join/split path.
-            if (!(button.Tag is Controller))
+            if (!(button.Tag is int))
                 return;
 
             if (e.Button == MouseButtons.Right) {
@@ -623,18 +556,16 @@ namespace BetterJoyForCemu {
         // before committing to it - a plain WinForms DoubleClick event isn't usable here since
         // it fires in addition to, not instead of, the Click for the first press. While waiting,
         // and for the whole calibration process if a double click is confirmed, the button
-        // flashes the calibrate icon - restored by StartCalibrate/CalcData once calibration
-        // either fails to start or actually finishes (see RestoreCalibrateIcon call sites).
+        // flashes the calibrate icon - restored by StartRemoteCalibrate/OnRemoteCalibButtonClicked
+        // once calibration either fails to start or actually finishes (see RestoreCalibrateIcon
+        // call sites).
         private Button calibrateIconButton = null;
         private Image calibrateIconOriginalImage = null;
 
         private void HandlePossibleDoubleClick(Button button) {
             if (clickTimer.Enabled && calibrateIconButton == button) {
                 clickTimer.Stop();
-                if (isRemoteMode)
-                    StartRemoteCalibrate(button);
-                else
-                    StartCalibrate(button, EventArgs.Empty);
+                StartRemoteCalibrate(button);
             } else {
                 clickTimer.Stop();
                 RestoreCalibrateIcon();
@@ -694,15 +625,11 @@ namespace BetterJoyForCemu {
         }
 
         private void ExecuteJoinOrSplit(Button button, bool forceSelfPair) {
-            if (isRemoteMode) {
-                if (button.Tag is int padId) {
-                    if (forceSelfPair)
-                        serviceClient.ForceSelfPair(padId);
-                    else
-                        serviceClient.JoinOrSplit(padId);
-                }
-            } else if (button.Tag is Joycon joycon) {
-                JoinOrSplitJoycon(joycon, forceSelfPair);
+            if (button.Tag is int padId) {
+                if (forceSelfPair)
+                    serviceClient.ForceSelfPair(padId);
+                else
+                    serviceClient.JoinOrSplit(padId);
             }
         }
 
@@ -802,242 +729,41 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Collapses a newly-joined Joycon pair from their two separate slots into one: the
-        // left half's slot becomes the "primary" showing a composite icon for the pair, and
-        // the right half's slot is freed back to fully empty (available for a new controller),
-        // since the pair now acts as a single virtual controller and doesn't need two slots to
-        // show that.
-        public void CollapseJoinedPair(Joycon left, Joycon right) {
-            SafeBeginInvoke(() => {
-                Button primaryButton = con.Find(b => b.Tag == left);
-                Button secondaryButton = con.Find(b => b.Tag == right);
-                if (primaryButton == null || secondaryButton == null)
-                    return;
+        // Retired along with local controller ownership: MainForm never holds a live Controller
+        // reference anymore (Program.mgr is always null in this process - see MainForm_Load),
+        // so these IJoyconHost members are structurally required but never actually invoked.
+        // Kept as literal no-ops (matching RefreshControllerState's existing pattern) rather than
+        // removed, since MainForm still implements IJoyconHost for now - dropping the interface
+        // entirely is a separate follow-up commit once the rest of this is verified stable.
+        public void CollapseJoinedPair(Joycon left, Joycon right) { }
 
-                primaryButton.BackgroundImage = ComposeJoinedIcon(primaryButton.Width, primaryButton.Height);
-                SetConnectionTooltip(primaryButton, false);
+        public void AssignSlot(Controller controller) { }
 
-                secondaryButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
-                secondaryButton.Tag = null;
-                secondaryButton.BackgroundImage = Properties.Resources.cross;
-                SetEmptySlotTooltip(secondaryButton);
-            });
-        }
+        public void HandleJoyconDropped(Controller dropped, Joycon survivingPartner) { }
 
-        // IJoyconHost entry point for a brand new connection (Program.cs's
-        // CheckForNewControllers) - unlike AssignJoyconToSlot below (used by callers already
-        // running on the UI thread, like split/dropped-partner promotion), this is called from
-        // the background scan thread, so it marshals onto the UI thread itself.
-        public void AssignSlot(Controller controller) {
-            Bitmap icon;
-            switch (controller.Kind) {
-                case ControllerKind.DualSense: icon = Properties.Resources.dualsense; break;
-                case ControllerKind.Snes: icon = Properties.Resources.snes; break;
-                case ControllerKind.N64: icon = Properties.Resources.ultra; break;
-                case ControllerKind.Pro: icon = Properties.Resources.pro; break;
-                default:
-                    icon = controller.Kind == ControllerKind.Left ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                    break;
-            }
+        // See ControllerKindLabel below, used to reconstruct this same message once a low-
+        // battery event is pushed over the service protocol instead (clever-wiggling-rocket.md
+        // Phase 3) - not wired up yet, so this is a no-op for now.
+        public void NotifyLowBattery(Controller controller) { }
 
-            SafeBeginInvoke(() => {
-                AssignJoyconToSlot(controller, icon);
-            });
-        }
+        public void UpdateBatteryColor(Controller controller) { }
 
-        // Finds an empty slot for a controller that doesn't currently have its own button - used
-        // when splitting a collapsed pair back apart, or when the hidden half of a pair
-        // survives its partner disconnecting. Mirrors the per-slot wiring Program.cs does for
-        // a fresh connection. Returns false if all 4 slots are occupied.
-        public bool AssignJoyconToSlot(Controller jc, Bitmap icon) {
-            int index = con.FindIndex(b => b.Tag == null);
-            if (index == -1)
-                return false;
+        public void HandleCalibrationConfirm(Controller controller) { }
 
-            Button button = con[index];
-            button.Tag = jc;
-            button.BackgroundImage = icon;
-            // Carry over the already-known battery color rather than leaving the freed
-            // slot's default background - BatteryChanged() only reapplies it on the next
-            // battery-level event, which may not come for a while.
-            button.BackColor = jc.battery >= 0 ? Joycon.GetBatteryColor(jc.battery) : Color.FromArgb(0x00, SystemColors.Control);
-            SetConnectionTooltip(button, !jc.SupportsPairing);
+        public void RefreshOrientationIcon(Joycon v) { }
 
-            Button locButton = loc[index];
-            locButton.Tag = button;
-            locButton.Click += new EventHandler(locBtnClickAsync);
+        public void JoinOrSplitJoycon(Joycon v, bool forceSelfPair = false) { }
 
-            return true;
-        }
-
-        // Called after Program.cs's CleanUp() detaches a dropped Joycon, to fix up whatever
-        // slot(s) it and/or its (former) pair partner were occupying.
-        public void HandleJoyconDropped(Controller dropped, Joycon survivingPartner) {
-            SafeBeginInvoke(() => {
-                Button droppedButton = con.Find(b => b.Tag == dropped);
-
-                if (droppedButton != null) {
-                    // dropped was showing on its own slot - solo, Pro, or the primary half of a
-                    // collapsed pair. Free that slot...
-                    droppedButton.BackColor = Color.FromArgb(0x00, SystemColors.Control);
-                    droppedButton.Tag = null;
-                    droppedButton.BackgroundImage = Properties.Resources.cross;
-                    SetEmptySlotTooltip(droppedButton);
-
-                    // ...and if it was the primary half of a pair, the hidden secondary half
-                    // needs a slot of its own now, since it was never given one.
-                    if (survivingPartner != null) {
-                        Bitmap soloIcon = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                        if (!AssignJoyconToSlot(survivingPartner, soloIcon))
-                            AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
-                    }
-                } else if (survivingPartner != null) {
-                    // dropped was the hidden secondary half of a collapsed pair - its partner
-                    // (the still-connected primary) just needs to revert from the composite icon
-                    // back to its own solo icon.
-                    Button survivorButton = con.Find(b => b.Tag == survivingPartner);
-                    if (survivorButton != null) {
-                        survivorButton.BackgroundImage = survivingPartner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                        SetConnectionTooltip(survivorButton, false);
-                    }
-                }
-            });
-        }
-
-        // Matches the low-battery balloon tip previously inlined in Joycon.BatteryChanged() -
-        // the caller (Joycon.cs) decides whether a notification is warranted (battery level,
-        // not USB-powered); this just shows it. Not Invoke-wrapped, matching that prior
-        // behavior - NotifyIcon operations aren't Control-handle-affine the way Buttons are.
-        public void NotifyLowBattery(Controller controller) {
-            string label;
-            switch (controller.Kind) {
-                case ControllerKind.DualSense: label = "DualSense Controller"; break;
-                case ControllerKind.Snes: label = "SNES Controller"; break;
-                case ControllerKind.N64: label = "N64 Controller"; break;
-                case ControllerKind.Pro: label = "Pro Controller"; break;
-                default: label = controller.Kind == ControllerKind.Left ? "Joycon Left" : "Joycon Right"; break;
-            }
-            notifyIcon.Visible = true;
-            notifyIcon.BalloonTipText = String.Format("Controller {0} ({1}) - low battery notification!", controller.PadId, label);
-            notifyIcon.ShowBalloonTip(0);
-        }
-
-        // Not Invoke-wrapped, matching the prior inline behavior in Joycon.BatteryChanged().
-        public void UpdateBatteryColor(Controller controller) {
-            foreach (Button v in con) {
-                if (v.Tag == controller) {
-                    v.BackColor = Joycon.GetBatteryColor(controller.battery);
-                }
-            }
-        }
-
-        // Called from the calibrating controller's own Poll thread (see Joycon.
-        // DoThingsWithButtons) - PendingConfirmController already guarantees this only fires
-        // while joycon is actually the one a prompt is showing for, but isRemoteMode/
-        // CurrentPromptTarget are double-checked since this is a live Joycon reference that only
-        // exists at all in local mode (remote mode has none - see HandleCalibrationConfirm on
-        // HeadlessJoyconHost instead, which is what actually receives this call there). Compares
-        // against CurrentPromptTarget, not calibratingJoycon directly - a joined pair's second
-        // Gyro step (and both stick steps) target the PARTNER Joycon, so a confirm press on that
-        // physical half must still count, not just one on whichever half started calibration.
-        public void HandleCalibrationConfirm(Controller controller) {
-            this.Invoke(new MethodInvoker(delegate {
-                if (!isRemoteMode && calibrationInProgress && controller == CurrentPromptTarget())
-                    OnCalibButtonClicked();
-            }));
-        }
-
-        // Solo (other == null) vs self-paired/"vertical" (other == v) icon for a Joycon that
-        // currently occupies its own slot - not the composite two-half icon a real joined pair
-        // uses (see ComposeJoinedIcon/CollapseJoinedPair), which is a different slot layout
-        // entirely. Used by JoinOrSplitJoycon's self-pair path above and by Program.cs's
-        // DefaultOrientation auto-self-pair on connect, so both keep the slot icon in sync with
-        // whichever orientation the Joycon actually ends up in.
-        public void RefreshOrientationIcon(Joycon v) {
-            if (v.isPro || v.isSnes || v.is64)
-                return;
-
-            Button button = con.Find(b => b.Tag == v);
-            if (button == null)
-                return;
-
-            button.BackgroundImage = v.other == v
-                ? (v.isLeft ? Properties.Resources.jc_left : Properties.Resources.jc_right)
-                : (v.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s);
-        }
-
-        public void JoinOrSplitJoycon(Joycon v, bool forceSelfPair = false) {
-            if (v.other == null && !v.isPro) { // needs connecting to other joycon (so messy omg)
-                bool succ = false;
-
-                // forceSelfPair (double right-click) skips the partner search below entirely -
-                // an explicit override, so it applies even with other Joycons connected, not just
-                // when this is the only one (Program.mgr.j.Count == 1 is still the ordinary,
-                // unambiguous case where a single right-click self-pairs on its own).
-                if (forceSelfPair || Program.mgr.j.Count == 1) { // when want to have a single joycon in vertical mode
-                    v.other = v; // hacky; implement check in Joycon.cs to account for this
-                    succ = true;
-                } else {
-                    foreach (Controller jcBase in Program.mgr.j) {
-                        if (!(jcBase is Joycon jc))
-                            continue;
-                        if (!jc.isPro && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
-                            v.other = jc;
-                            jc.other = v;
-
-                            // Disconnect whichever controller was created later - see Joycon.
-                            // virtualControllerSequence - not just whichever you happened to
-                            // click. The older one is the one most likely already locked onto by
-                            // a running game, so it's left completely untouched; the newer one is
-                            // safe to actually disconnect (matching a real unplug - clean, no
-                            // leftover state) and recreate later from each solo profile. The loser
-                            // DECISION stays here (pairing-specific, Joy-Con-only); the destroy
-                            // itself goes through the same pairing-ignorant primitive Program.cs
-                            // uses, not a duplicate - see DestroyOutputControllers.
-                            Joycon loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
-                            Program.mgr.DestroyOutputControllers(loser);
-
-                            CollapseJoinedPair(v.isLeft ? v : jc, v.isLeft ? jc : v);
-
-                            succ = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (succ && v.other == v) // self-pair (single joycon vertical mode) only -
-                    RefreshOrientationIcon(v); // a real pair is already handled above
-                if (succ)
-                    Program.mgr.ApplyControllerProfileOptions();
-            } else if (v.other != null && !v.isPro) { // needs disconnecting from other joycon
-                Joycon partner = v.other;
-                bool wasRealPair = partner != v;
-
-                // Whichever half doesn't currently drive a virtual controller was the passive
-                // side of the pair - see ReassignSplitOffJoycon (Program.cs) for why it needs a
-                // fresh PadId now that it's standalone again.
-                Joycon passiveHalf = v.out_xbox == null && v.out_ds4 == null ? v
-                    : partner.out_xbox == null && partner.out_ds4 == null ? partner : null;
-
-                Button button = con.Find(b => b.Tag == v);
-                if (button != null) {
-                    button.BackgroundImage = v.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                    SetConnectionTooltip(button, false);
-                }
-
-                v.other.other = null;
-                v.other = null;
-
-                if (passiveHalf != null)
-                    Program.mgr.ReassignSplitOffJoycon(passiveHalf);
-
-                Program.mgr.ApplyControllerProfileOptions();
-
-                if (wasRealPair) {
-                    Bitmap soloIcon = partner.isLeft ? Properties.Resources.jc_left_s : Properties.Resources.jc_right_s;
-                    if (!AssignJoyconToSlot(partner, soloIcon))
-                        AppendTextBox("No free slot to show the split-off Joycon - reconnect it or free a slot.\r\n");
-                }
+        // Extracted from the old local NotifyLowBattery's balloon-tip text, kept for Phase 3 to
+        // reuse once a low-battery event is actually pushed to this window over the service
+        // protocol - not called from anywhere yet.
+        private static string ControllerKindLabel(ControllerKind kind) {
+            switch (kind) {
+                case ControllerKind.DualSense: return "DualSense Controller";
+                case ControllerKind.Snes: return "SNES Controller";
+                case ControllerKind.N64: return "N64 Controller";
+                case ControllerKind.Pro: return "Pro Controller";
+                default: return kind == ControllerKind.Left ? "Joycon Left" : "Joycon Right";
             }
         }
 
@@ -1069,7 +795,6 @@ namespace BetterJoyForCemu {
                 AppendTextBox("Error writing app settings.\r\n");
             }
 
-            Program.suppressAutoPowerOffOnExit = true;
             Application.Restart();
             Environment.Exit(0);
         }
@@ -1137,342 +862,27 @@ namespace BetterJoyForCemu {
                 Trace.WriteLine(String.Format("rw {0}, column {1}, {2}, {3}", coord.Row, coord.Column, sender.GetType(), KeyCtl));
             }
         }
-        // The ordered set of steps a calibration run walks through, shown one at a time in
-        // calibDialog - built per-run in StartCalibrate from the specific controller involved,
-        // since a plain Joycon only ever has one physical stick to offer a step for, while a
-        // Pro controller offers both.
-        private enum CalibStepKind { Gyro, LeftStick, RightStick }
-        // Target/Secondary: a Pro controller's two sticks live on ONE Joycon object
-        // (distinguished by Secondary), but a joined pair's two sticks - and, just as much, its
-        // two IMUs - live on TWO SEPARATE Joycon objects. Target is set for every step kind,
-        // including Gyro, so each needs its own calibration pass against that specific instance,
-        // or only whichever half happened to be clicked would ever actually get recalibrated.
-        private struct CalibStep {
-            public CalibStepKind Kind;
-            public Controller Target;
-            public bool Secondary;
-        }
-        private List<CalibStep> calibSteps;
-        private int calibStepIndex;
-
-        // Gyro is a fixed countdown (see CalibrationDialog) - the other two are open-ended,
-        // waiting for an explicit Start then an explicit Done click with no time limit.
-        private enum CalibPhase { GyroCollect, StickCenter, StickRange }
-        private CalibPhase calibPhase;
-        private bool awaitingStart;
-
         private CalibrationDialog calibDialog;
 
-        private void StartCalibrate(object sender, EventArgs e) {
-            if (calibrationInProgress) {
-                RestoreCalibrateIcon();
-                return;
-            }
-
-            // The specific controller you double-clicked, not just "whatever's first in the
-            // list" - CalibrationState scopes sample admission to this exact controller (see
-            // CalibrationState.CalibratingController), so other controllers staying connected
-            // and polling can no longer contaminate the buffers. That's what the old "exactly
-            // one controller connected" restriction here was actually working around.
-            Button button = sender as Button;
-            calibratingJoycon = button?.Tag as Controller;
-            if (calibratingJoycon == null) {
-                this.console.Text = "Please connect a controller.";
-                RestoreCalibrateIcon();
-                return;
-            }
-
-            calibrationInProgress = true;
-
-            calibSteps = new List<CalibStep>();
-
-            bool isPair = calibratingJoycon.other != null && calibratingJoycon.other != calibratingJoycon;
-            if (!calibratingJoycon.HasGyro) {
-                // No gyro support yet (ExtractIMUValues/CalibrationState.AddSample are never
-                // reached for a DualSense - see TryAutoCalibrate's own !HasGyro guard) - stick
-                // centering only for now.
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });
-            } else if (calibratingJoycon.HasDualSticks) {
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = true });
-            } else if (isPair) {
-                // A joined pair is two independent physical devices, not one device with two
-                // sticks the way a Pro controller is - each side's stick AND gyro lives on its
-                // own Joycon object, so each gets its own gyro step targeting that specific
-                // instance too, not just its own stick step. Without this, only whichever half
-                // happened to be clicked would ever get its IMU calibrated - the partner's gyro/
-                // accelerometer calibration would silently stay whatever it was before (or the
-                // uncalibrated default), every single time this pair is calibrated.
-                Controller leftJc = calibratingJoycon.isLeft ? calibratingJoycon : calibratingJoycon.other;
-                Controller rightJc = calibratingJoycon.isLeft ? calibratingJoycon.other : calibratingJoycon;
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = leftJc });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = rightJc });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = leftJc, Secondary = false });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = rightJc, Secondary = false });
-            } else if (calibratingJoycon.isLeft) {
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.LeftStick, Target = calibratingJoycon, Secondary = false });
-            } else {
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.Gyro, Target = calibratingJoycon });
-                calibSteps.Add(new CalibStep { Kind = CalibStepKind.RightStick, Target = calibratingJoycon, Secondary = false });
-            }
-            calibStepIndex = 0;
-
-            calibDialog = new CalibrationDialog();
-            calibDialog.ButtonClicked += OnCalibButtonClicked;
-            calibDialog.Show(this);
-
-            this.console.Text = "Calibration started." + "\r\n";
-            BeginCurrentStep();
-        }
-
-        // A pair's two Gyro steps need disambiguating (there are two of them now); a solo/Pro
-        // run's single Gyro step doesn't need or want a side prefix, so this only adds one when
-        // the step's own target is genuinely one half of a joined pair.
-        private static string StepDisplayName(CalibStep step) {
-            switch (step.Kind) {
-                case CalibStepKind.Gyro:
-                    bool isPairTarget = step.Target != null &&
-                        step.Target.other != null && step.Target.other != step.Target;
-                    if (!isPairTarget)
-                        return "Gyroscope";
-                    return (step.Target.isLeft ? "Left" : "Right") + " Gyroscope";
-                case CalibStepKind.LeftStick: return "Left Stick";
-                case CalibStepKind.RightStick: return "Right Stick";
-            }
-            return "";
-        }
-
-        // The controller a prompt is currently showing for - every step kind's own Target,
-        // including Gyro (a joined pair's two gyro steps target two different physical Joycon
-        // objects, same as its two stick steps - see CalibStep).
-        private Controller CurrentPromptTarget() {
-            return calibSteps[calibStepIndex].Target;
-        }
-
-        // Shows the step's first phase instruction with a Start prompt - nothing begins until
-        // the user clicks it (OnCalibButtonClicked), so they have as long as they need to
-        // actually read the instruction and get into position.
-        private void BeginCurrentStep() {
-            CalibStep step = calibSteps[calibStepIndex];
-            calibDialog.SetStep(calibStepIndex + 1, calibSteps.Count, StepDisplayName(step));
-
-            if (step.Kind == CalibStepKind.Gyro) {
-                BeginPhase(CalibPhase.GyroCollect, "Place the controller on a flat, still surface.");
-            } else {
-                CalibrationState.ClearStickSamples();
-                CalibrationState.StickCalibratingController = step.Target;
-                CalibrationState.StickCalibrating = true;
-                CalibrationState.CurrentStickTarget = step.Secondary
-                    ? CalibrationState.StickTarget.Secondary
-                    : CalibrationState.StickTarget.Primary;
-                CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
-
-                BeginPhase(CalibPhase.StickCenter, String.Format("Leave the {0} centered - don't touch it.", StepDisplayName(step).ToLower()));
-            }
-        }
-
-        private void BeginPhase(CalibPhase phase, string instruction) {
-            calibPhase = phase;
-            awaitingStart = true;
-            calibDialog.SetInstruction(instruction);
-            ShowCalibStartPrompt();
-        }
-
-        // Wrap every prompt-showing call so CalibrationState.PendingConfirmController always
-        // matches whatever the dialog is actually asking for - lets Joycon.DoThingsWithButtons
-        // treat a face button on THIS controller as "confirm" while it's showing, without
-        // needing to track dialog state itself. Uses CurrentPromptTarget, not calibratingJoycon
-        // directly - for a joined pair's second stick step, the prompt is asking about the
-        // PARTNER's stick, so the confirm button needs to be pressed on that physical Joycon.
-        private void ShowCalibStartPrompt() {
-            CalibrationState.PendingConfirmController = CurrentPromptTarget();
-            calibDialog.ShowStartPrompt();
-        }
-
-        private void ShowCalibDonePrompt() {
-            CalibrationState.PendingConfirmController = CurrentPromptTarget();
-            calibDialog.ShowDonePrompt();
-        }
-
         private void btn_reassign_open_Click(object sender, EventArgs e) {
-            // isRemoteMode's serviceClient, not null - Reassign uses it to relay controller-
-            // button presses for its "left-click then press" auto-detect, which otherwise has no
-            // Joycon instances of its own to poll when the service owns the hardware.
+            // serviceClient is never null now - Reassign uses it to relay controller-button
+            // presses for its "left-click then press" auto-detect, since this process never has
+            // any Joycon instances of its own to poll (the service owns the hardware).
             string preferredProfileId = null;
             Button sourceButton = sender as Button;
-            if (sourceButton != null) {
-                if (!isRemoteMode && sourceButton.Tag is Controller)
-                    preferredProfileId = ControllerMappings.ProfileIdFor((Controller)sourceButton.Tag);
-                else if (isRemoteMode && sourceButton.Tag is int) {
-                    int padId = (int)sourceButton.Tag;
-                    ControllerRecord record = lastControllerSnapshot.FirstOrDefault(r => r.PadId == padId);
-                    preferredProfileId = record.ProfileId;
-                }
+            if (sourceButton != null && sourceButton.Tag is int) {
+                int padId = (int)sourceButton.Tag;
+                ControllerRecord record = lastControllerSnapshot.FirstOrDefault(r => r.PadId == padId);
+                preferredProfileId = record.ProfileId;
             }
 
-            Reassign mapForm = new Reassign(
-                isRemoteMode ? serviceClient : null,
-                isRemoteMode ? lastControllerSnapshot : null,
-                preferredProfileId);
+            Reassign mapForm = new Reassign(serviceClient, lastControllerSnapshot, preferredProfileId);
             mapForm.ShowDialog();
         }
 
-        // Local mapping dialogs read the live Joycon objects directly. The headless host uses
-        // this hook to push a fresh service snapshot after a USB handshake resolves the real
-        // per-unit MAC; no additional main-window rendering is needed here.
+        // The headless host uses this hook to push a fresh service snapshot after a USB
+        // handshake resolves the real per-unit MAC; no additional main-window rendering is
+        // needed here.
         public void RefreshControllerState() { }
-
-        // The dialog has one button whose meaning depends on where we are: first click in a
-        // phase starts it (begins sample admission, and for gyro also starts its countdown);
-        // for the two stick phases, a second click (Done) is what actually ends it - there's no
-        // timer for those at all, the user decides when they're finished. Shared entry point for
-        // both an actual mouse click on the dialog and a physical confirm button press (see
-        // HandleCalibrationConfirm) - clearing PendingConfirmController here, not at each
-        // prompt-hiding call site, means whichever trigger fires first is the one that counts.
-        private void OnCalibButtonClicked() {
-            CalibrationState.PendingConfirmController = null;
-
-            if (awaitingStart) {
-                awaitingStart = false;
-                StartPhase();
-            } else {
-                FinishStickPhase();
-            }
-        }
-
-        private void StartPhase() {
-            switch (calibPhase) {
-                case CalibPhase.GyroCollect:
-                    CalibrationState.ForceClaim(calibSteps[calibStepIndex].Target);
-                    calibDialog.SetInstruction("Hold still...");
-                    this.count = 3;
-                    calibDialog.ShowCountdown(this.count);
-                    countDown = new Timer();
-                    countDown.Interval = 1000;
-                    countDown.Tick += new EventHandler(GyroCollectTick);
-                    countDown.Enabled = true;
-                    break;
-
-                case CalibPhase.StickCenter:
-                    // No Done click here - centering is just a quick snapshot of rest position,
-                    // not something that benefits from open-ended time the way rotating around
-                    // the full range does. A brief automatic capture is enough, then straight
-                    // into the (unlimited, Done-gated) rotate phase.
-                    CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Center;
-                    calibDialog.HidePrompt();
-                    countDown = new Timer();
-                    countDown.Interval = 1000;
-                    countDown.Tick += new EventHandler(StickCenterCaptureTick);
-                    countDown.Enabled = true;
-                    break;
-            }
-        }
-
-        // Gyro alone stays on a fixed countdown - the point of this measurement is proving the
-        // controller sits genuinely untouched, so it can't reasonably end on a click the way the
-        // stick phases do.
-        private void GyroCollectTick(object sender, EventArgs e) {
-            if (this.count > 0) {
-                this.count--;
-                calibDialog.ShowCountdown(this.count);
-                return;
-            }
-
-            countDown.Stop();
-
-            // The current step's own Target, not calibratingJoycon directly - a joined pair has
-            // two separate Gyro steps, one per physical half (see CalibStep). A disconnect during
-            // the collection window (the controller could legitimately be dropped mid-
-            // calibration) must not leave calibrationInProgress/the icon/the dialog stuck, so the
-            // try/catch below is a hard requirement, not just tidiness.
-            Controller gyroTarget = calibSteps[calibStepIndex].Target;
-            try {
-                CalibrationState.FinishCalibration(gyroTarget);
-                gyroTarget.getActiveData();
-                this.console.Text += "Gyro calibration completed!!!" + "\r\n";
-                AdvanceStep();
-            } catch {
-                this.console.Text += "Calibration failed - was the controller disconnected?" + "\r\n";
-                calibDialog.ShowResult("Failed - was the controller disconnected?");
-                FinishCalibrationFlow();
-            }
-        }
-
-        // One-shot: centering doesn't need a Done click, just a brief automatic capture, then
-        // straight into the rotate phase (unlimited, Done-gated - no Start needed there either,
-        // see the comment at its ShowDonePrompt call site).
-        private void StickCenterCaptureTick(object sender, EventArgs e) {
-            countDown.Stop();
-            CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
-
-            calibPhase = CalibPhase.StickRange;
-            calibDialog.SetInstruction(String.Format("Now rotate the {0} in full circles out to its edges.", StepDisplayName(calibSteps[calibStepIndex]).ToLower()));
-            CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.Range;
-            ShowCalibDonePrompt();
-        }
-
-        // Center auto-advances on its own short timer (StickCenterCaptureTick), so this is only
-        // ever reached via a Done click on the rotate phase.
-        private void FinishStickPhase() {
-            calibDialog.HidePrompt();
-            CalibrationState.CurrentStickPhase = CalibrationState.StickPhase.None;
-
-            CalibStep step = calibSteps[calibStepIndex];
-            try {
-                CalibrationState.FinishStickCalibration(step.Target.serial_number, step.Secondary);
-                step.Target.getActiveStickData();
-                this.console.Text += StepDisplayName(step) + " calibration completed!!!" + "\r\n";
-                AdvanceStep();
-            } catch {
-                this.console.Text += "Stick calibration failed - was the controller disconnected?" + "\r\n";
-                calibDialog.ShowResult("Failed - was the controller disconnected?");
-                FinishCalibrationFlow();
-            }
-        }
-
-        private void AdvanceStep() {
-            calibStepIndex++;
-            if (calibStepIndex >= calibSteps.Count) {
-                calibDialog.ShowResult("Calibration complete!");
-                this.console.Text += "Calibration completed!!!" + "\r\n";
-                FinishCalibrationFlow();
-            } else {
-                BeginCurrentStep();
-            }
-        }
-
-        // Shared end-of-flow cleanup, reached after the last step finishes (success or failure)
-        // or as soon as any single step's own try/catch fails. Resets the stick flags here too,
-        // not just inside FinishStickCalibration - a gyro-step failure never calls that method
-        // at all, but a stick step earlier in the same run may have already turned
-        // StickCalibrating/StickCalibratingController on. The dialog is closed on a short delay
-        // (captured locally, not via the calibDialog field, in case a new run starts before the
-        // delay elapses) so a completion/failure message is actually readable before it vanishes.
-        private void FinishCalibrationFlow() {
-            // No-op if calibratingJoycon doesn't currently hold the claim (e.g. a gyro step
-            // already released it normally via FinishCalibration) - safe to call unconditionally.
-            CalibrationState.Release(calibratingJoycon);
-            CalibrationState.StickCalibrating = false;
-            CalibrationState.StickCalibratingController = null;
-            CalibrationState.PendingConfirmController = null;
-            calibrationInProgress = false;
-            calibratingJoycon = null;
-            RestoreCalibrateIcon();
-
-            CalibrationDialog dialogToClose = calibDialog;
-            calibDialog = null;
-            if (dialogToClose != null) {
-                Timer closeTimer = new Timer { Interval = 1500 };
-                closeTimer.Tick += (s, e) => {
-                    closeTimer.Stop();
-                    closeTimer.Dispose();
-                    dialogToClose.Close();
-                };
-                closeTimer.Start();
-            }
-        }
     }
 }

@@ -24,17 +24,12 @@ namespace BetterJoyForCemu {
 
         // Controller buttons have no equivalent to WindowsInput.Capture.Global (there's no OS-
         // level hook for "a button was pressed on this specific HID device") - the only way to
-        // detect a press is to poll a Joycon's own current button state directly. Locally
-        // (serviceClient == null) that's this process's own Program.mgr.j, polled by joyPoll
-        // below. In remote mode the service owns the hardware and this process has no Joycon
-        // instances at all - HeadlessJoyconHost does the identical polling over there instead and
-        // relays each transition over the control pipe (see ButtonTransition/StartButtonCapture),
-        // landing in ServiceClient_ButtonTransition below. Either way, every actual press ends up
-        // going through the shared HandleButtonTransition.
+        // detect a press is to poll a Joycon's own current button state directly. The service
+        // owns the hardware and does that polling itself (this process has no Joycon instances
+        // at all), relaying each transition over the control pipe (see ButtonTransition/
+        // StartButtonCapture), landing in ServiceClient_ButtonTransition below, which feeds the
+        // shared HandleButtonTransition.
         private readonly ServiceControlClient serviceClient;
-        private Timer joyPoll;
-        private Timer controllerRefreshTimer;
-        private readonly Dictionary<Controller, bool[]> joyPrevButtons = new Dictionary<Controller, bool[]>();
         private readonly List<ControllerProfileInfo> remoteProfiles = new List<ControllerProfileInfo>();
         private readonly string preferredProfileId;
         private ComboBox controllerSelector;
@@ -126,12 +121,9 @@ namespace BetterJoyForCemu {
                 ControllerMappings.SetValue(SelectedProfileId, key, value);
         }
 
-        // serviceClient: null when this process owns the hardware directly (local mode);
-        // non-null when deferring to a running service (see MainForm.btn_reassign_open_Click) -
-        // determines where controller-button auto-detect actually gets its presses from.
-        public Reassign(ServiceControlClient serviceClient = null,
-                        IEnumerable<ControllerRecord> remoteRecords = null,
-                        string preferredProfileId = null) {
+        public Reassign(ServiceControlClient serviceClient,
+                        IEnumerable<ControllerRecord> remoteRecords,
+                        string preferredProfileId) {
             this.serviceClient = serviceClient;
             this.preferredProfileId = preferredProfileId;
             InitializeComponent();
@@ -192,8 +184,7 @@ namespace BetterJoyForCemu {
             }
 
             StyleAssignmentMenus();
-            if (remoteRecords != null)
-                SetRemoteProfiles(remoteRecords);
+            SetRemoteProfiles(remoteRecords);
             RefreshControllerChoices();
         }
 
@@ -1139,9 +1130,8 @@ namespace BetterJoyForCemu {
 
         private void RefreshControllerChoices() {
             bool wasInitialSelection = initialControllerSelection;
-            List<ControllerProfileInfo> connectedChoices = serviceClient != null
-                ? remoteProfiles.OrderByDescending(p => p.ConnectionSequence).ToList()
-                : ControllerMappings.ConnectedProfiles(Program.mgr?.j);
+            List<ControllerProfileInfo> connectedChoices =
+                remoteProfiles.OrderByDescending(p => p.ConnectionSequence).ToList();
             List<ControllerProfileInfo> choices =
                 ControllerMappings.IncludeDisconnectedProfiles(connectedChoices);
 
@@ -1207,7 +1197,6 @@ namespace BetterJoyForCemu {
 
         private void ApplySelectedController() {
             CancelComboCapture();
-            joyPrevButtons.Clear();
 
             ControllerProfileInfo selected = SelectedProfile;
             bool hasController = selected != null && !String.IsNullOrEmpty(selected.ProfileId);
@@ -1332,59 +1321,23 @@ namespace BetterJoyForCemu {
         }
 
         private bool OpenSelectedVirtualController(ControllerProfileInfo selected) {
-            VirtualGameControllerType controllerType;
-            int ordinal;
+            string useAs = ControllerMappings.OptionValue(selected.ProfileId, "UseAs");
+            if (useAs == ControllerMappings.UseAsNone)
+                return false;
 
-            if (serviceClient == null) {
-                Controller outputOwner = Program.mgr?.j.FirstOrDefault(jc =>
-                    ControllerMappings.ProfileIdFor(jc) == selected.ProfileId &&
-                    (jc.out_xbox != null || jc.out_ds4 != null));
-                if (outputOwner == null)
-                    return false;
-
-                if (outputOwner.out_xbox != null) {
-                    controllerType = VirtualGameControllerType.Xbox360;
-                    ordinal = outputOwner.out_xbox.UserIndex;
-                    if (ordinal < 0)
-                        ordinal = LocalVirtualControllerOrdinal(selected.ProfileId, true);
-                } else {
-                    controllerType = VirtualGameControllerType.DualShock4;
-                    ordinal = LocalVirtualControllerOrdinal(selected.ProfileId, false);
-                }
-            } else {
-                string useAs = ControllerMappings.OptionValue(selected.ProfileId, "UseAs");
-                if (useAs == ControllerMappings.UseAsNone)
-                    return false;
-
-                controllerType = useAs == ControllerMappings.UseAsXbox360
-                    ? VirtualGameControllerType.Xbox360
-                    : VirtualGameControllerType.DualShock4;
-                ordinal = remoteProfiles
-                    .Where(profile => ControllerMappings.OptionValue(
-                        profile.ProfileId, "UseAs") == useAs)
-                    .OrderBy(profile => profile.ConnectionSequence)
-                    .Select(profile => profile.ProfileId)
-                    .ToList()
-                    .FindIndex(profileId => profileId == selected.ProfileId);
-            }
+            VirtualGameControllerType controllerType = useAs == ControllerMappings.UseAsXbox360
+                ? VirtualGameControllerType.Xbox360
+                : VirtualGameControllerType.DualShock4;
+            int ordinal = remoteProfiles
+                .Where(profile => ControllerMappings.OptionValue(
+                    profile.ProfileId, "UseAs") == useAs)
+                .OrderBy(profile => profile.ConnectionSequence)
+                .Select(profile => profile.ProfileId)
+                .ToList()
+                .FindIndex(profileId => profileId == selected.ProfileId);
 
             return GameControllerControlPanel.OpenForVirtualController(
                 controllerType, ordinal);
-        }
-
-        private static int LocalVirtualControllerOrdinal(string selectedProfileId,
-                                                          bool xboxOutput) {
-            if (Program.mgr == null)
-                return -1;
-
-            return Program.mgr.j
-                .Where(jc => xboxOutput ? jc.out_xbox != null : jc.out_ds4 != null)
-                .GroupBy(ControllerMappings.ProfileIdFor)
-                .Select(group => group.OrderBy(jc => jc.virtualControllerSequence).First())
-                .OrderBy(jc => jc.virtualControllerSequence)
-                .Select(ControllerMappings.ProfileIdFor)
-                .ToList()
-                .FindIndex(profileId => profileId == selectedProfileId);
         }
 
         private void Menu_joy_buttons_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
@@ -1532,26 +1485,15 @@ namespace BetterJoyForCemu {
             mouse = WindowsInput.Capture.Global.MouseAsync();
             mouse.MouseEvent += Mouse_MouseEvent;
 
-            if (serviceClient != null) {
-                serviceClient.ButtonTransition += ServiceClient_ButtonTransition;
-                serviceClient.SnapshotReceived += ServiceClient_SnapshotReceived;
-                serviceClient.StartButtonCapture();
-                serviceClient.RequestSnapshot();
-            } else {
-                joyPoll = new Timer { Interval = 30 };
-                joyPoll.Tick += JoyPoll_Tick;
-                joyPoll.Start();
-
-                controllerRefreshTimer = new Timer { Interval = 500 };
-                controllerRefreshTimer.Tick += (s, args) => RefreshControllerChoices();
-                controllerRefreshTimer.Start();
-            }
+            serviceClient.ButtonTransition += ServiceClient_ButtonTransition;
+            serviceClient.SnapshotReceived += ServiceClient_SnapshotReceived;
+            serviceClient.StartButtonCapture();
+            serviceClient.RequestSnapshot();
         }
 
-        // Remote-mode counterpart to JoyPoll_Tick below - HeadlessJoyconHost does the identical
-        // polling against its own (non-null there) Program.mgr.j and pushes each transition over
-        // the control pipe instead of acting on it directly. Fires on the pipe's background read
-        // thread - marshal here before reading the selected ComboBox profile.
+        // HeadlessJoyconHost polls its own Program.mgr.j and pushes each transition over the
+        // control pipe. Fires on the pipe's background read thread - marshal here before reading
+        // the selected ComboBox profile.
         private void ServiceClient_ButtonTransition(ButtonTransitionInfo info) {
             if (InvokeRequired) {
                 BeginInvoke(new Action<ButtonTransitionInfo>(ServiceClient_ButtonTransition), info);
@@ -1563,58 +1505,6 @@ namespace BetterJoyForCemu {
             HandleButtonTransition(info.ButtonIndex, info.IsDown);
         }
 
-        // Polls every connected Joycon's current button state and edge-detects a rising press
-        // ourselves (a freshly-seen Joycon's baseline is recorded without triggering, so a
-        // button already held before this dialog opened - or before that controller connected -
-        // never gets mistaken for a new press). Runs continuously, independent of curAssignment,
-        // same as the keyboard/mouse hooks only actually acting on a press while curAssignment
-        // is set. Local mode only (serviceClient == null) - see ServiceClient_ButtonTransition
-        // for the remote equivalent.
-        private void JoyPoll_Tick(object sender, EventArgs e) {
-            if (Program.mgr == null)
-                return;
-
-            int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
-            foreach (Controller jc in Program.mgr.j) {
-                // A joined pair's two halves each cross-reference the other's raw buttons into
-                // their own buttons[] array (see Joycon.DoThingsWithButtons, the "other != null"
-                // block) so that EITHER side alone already has a complete, correctly-labeled view
-                // of the whole pair's buttons - the left's own DPAD_* stay real d-pad, and its
-                // buttons[B]/[A]/[X]/[Y] mirror the right's real B/A/X/Y (and vice versa in the
-                // other direction for HOME/PLUS). Polling both objects independently, as this loop
-                // otherwise would, sees that same cross-referenced overlap as two separate
-                // presses - physically pressing B alone reports as both the right instance's own
-                // buttons[DPAD_DOWN] (which protocol-wise IS its B button) and the left instance's
-                // buttons[B] (cross-referenced from the right), landing in a captured combo as
-                // "DPAD_DOWN+B" for one single press. Skipping the right half here leaves the left
-                // half as the one consistent, complete source per pair.
-                if (jc.other != null && jc.other != jc && !jc.isLeft)
-                    continue;
-                if (ControllerMappings.ProfileIdFor(jc) != SelectedProfileId)
-                    continue;
-
-                if (!joyPrevButtons.TryGetValue(jc, out bool[] prev)) {
-                    prev = new bool[buttonCount];
-                    for (int bi = 0; bi < buttonCount; bi++)
-                        prev[bi] = jc.GetButton((Joycon.Button)bi);
-                    joyPrevButtons[jc] = prev;
-                    continue;
-                }
-
-                for (int bi = 0; bi < buttonCount; bi++) {
-                    bool now = jc.GetButton((Joycon.Button)bi);
-                    bool wasDown = prev[bi];
-                    prev[bi] = now;
-
-                    if (now != wasDown)
-                        HandleButtonTransition(bi, now);
-                }
-            }
-        }
-
-        // Shared by JoyPoll_Tick (local) and ServiceClient_ButtonTransition (remote) - both
-        // reduce down to "button bi just went to state now," regardless of which process
-        // actually polled the hardware to find that out.
         private void HandleButtonTransition(int bi, bool now) {
             if (InvokeRequired) {
                 this.Invoke(new Action<int, bool>(HandleButtonTransition), new object[] { bi, now });
@@ -1698,18 +1588,12 @@ namespace BetterJoyForCemu {
 
             keyboard?.Dispose();
             mouse?.Dispose();
-            joyPoll?.Stop();
-            joyPoll?.Dispose();
-            controllerRefreshTimer?.Stop();
-            controllerRefreshTimer?.Dispose();
             comboTimeout?.Stop();
             comboTimeout?.Dispose();
 
-            if (serviceClient != null) {
-                serviceClient.ButtonTransition -= ServiceClient_ButtonTransition;
-                serviceClient.SnapshotReceived -= ServiceClient_SnapshotReceived;
-                serviceClient.StopButtonCapture();
-            }
+            serviceClient.ButtonTransition -= ServiceClient_ButtonTransition;
+            serviceClient.SnapshotReceived -= ServiceClient_SnapshotReceived;
+            serviceClient.StopButtonCapture();
         }
 
         private void AsyncPrettyName(Control c) {
@@ -1754,8 +1638,6 @@ namespace BetterJoyForCemu {
 
         private void btn_apply_Click(object sender, EventArgs e) {
             ControllerMappings.Save();
-            if (serviceClient == null)
-                Program.mgr?.ApplyControllerProfileOptions();
         }
 
         private void btn_close_Click(object sender, EventArgs e) {

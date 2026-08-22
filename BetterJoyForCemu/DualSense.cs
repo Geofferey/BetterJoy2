@@ -302,7 +302,7 @@ namespace BetterJoyForCemu {
             // Joy-Con uses (stick_cal/stick2_cal seeded with an identity default in Attach() since
             // there's no SPI factory data to read) - a DualSense can now be recalibrated with the
             // existing double-click wizard exactly like a Pro controller's sticks, just skipping the
-            // gyro step (see MainForm.StartCalibrate's !HasGyro branch). AddStickSample is a no-op
+            // gyro step (see HeadlessJoyconHost.StartCalibration's !HasGyro branch). AddStickSample is a no-op
             // unless this controller is the one currently claimed by that wizard. Y is inverted
             // after CenterSticks (not before, unlike the old fixed linear map) since CenterSticks'
             // raw subtraction/division doesn't know about BetterJoy's own "up is positive" stick
