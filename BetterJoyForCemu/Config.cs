@@ -46,11 +46,20 @@ namespace BetterJoyForCemu {
 		// lines). Safe here because nothing else is racing this file at process start. See
 		// ReloadSettingsOnly for the live-reload path, which can't make either assumption.
 		//
-		// stickCaliData/stick2CaliData are the two lines following caliData - an install
-		// upgrading from before stick recalibration existed simply won't have them, which the
-		// line-count check below already tolerates (only settingsNum, i.e. the basic settings
-		// block, is required); both lists are left empty in that case, which is exactly the
-		// correct "no empirical override yet" state.
+		// Calibration data no longer lives in this file - it moved to controller_mappings.xml
+		// (keyed by serial, atomic temp-file+File.Replace writes, tolerant reload) because this
+		// file's positional-line format had a real data-loss bug: SaveCaliData/SaveStickCaliData
+		// below used to rewrite fixed line indices via File.ReadAllLines+File.WriteAllLines, not
+		// atomically, so a crash or kill between those two calls could leave the file with the
+		// basic-settings lines intact but the calibration lines missing entirely - which this
+		// method's own line-count check tolerated as "no stick recalibration data yet" rather
+		// than detecting as corruption, silently reverting every controller's calibration to
+		// default for that session. Worse, the NEXT save from that same session would then
+		// overwrite the file with that now-calibration-poor in-memory state, permanently losing
+		// whatever was actually still on disk. ControllerMappings.LoadCalibrationInto below
+		// handles a one-time migration of whatever's still salvageable from this file's old
+		// calibration lines (see Config.TryTakeLegacyCalibration) so no existing user's saved
+		// calibration is dropped by this move.
 		public static void Init(List<KeyValuePair<string, float[]>> caliData, List<KeyValuePair<string, ushort[]>> stickCaliData, List<KeyValuePair<string, ushort[]>> stick2CaliData) {
 			foreach (string s in DefaultKeys)
 				variables[s] = GetDefaultValue(s);
@@ -67,45 +76,10 @@ namespace BetterJoyForCemu {
 				using (StreamReader file = new StreamReader(path)) {
 					string line = String.Empty;
 					int lineNO = 0;
-					while ((line = file.ReadLine()) != null) {
-						// RemoveEmptyEntries matters here specifically for the calibration lines
-						// below: a genuinely blank line (e.g. no stick recalibration has ever
-						// been saved yet) must parse to zero entries. line.Split() with no
-						// options returns a single-element [""] for an empty string, which would
-						// otherwise silently add one bogus entry keyed "" with all-zero data to
-						// stickCaliData/stick2CaliData on every startup.
+					while ((line = file.ReadLine()) != null && lineNO < settingsNum) {
 						string[] vs = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
 						try {
-							if (lineNO < settingsNum) { // load in basic settings
-								variables[vs[0]] = vs[1];
-							} else if (lineNO == settingsNum) { // load in gyro/accel calibration presets
-								caliData.Clear();
-								for (int i = 0; i < vs.Length; i++) {
-									string[] caliArr = vs[i].Split(',');
-									float[] newArr = new float[6];
-									for (int j = 1; j < caliArr.Length; j++) {
-										newArr[j - 1] = float.Parse(caliArr[j]);
-									}
-									caliData.Add(new KeyValuePair<string, float[]>(
-										caliArr[0],
-										newArr
-									));
-								}
-							} else { // load in stick calibration presets (primary stick, then secondary)
-								var target = lineNO == settingsNum + 1 ? stickCaliData : stick2CaliData;
-								target.Clear();
-								for (int i = 0; i < vs.Length; i++) {
-									string[] caliArr = vs[i].Split(',');
-									ushort[] newArr = new ushort[6];
-									for (int j = 1; j < caliArr.Length; j++) {
-										newArr[j - 1] = ushort.Parse(caliArr[j]);
-									}
-									target.Add(new KeyValuePair<string, ushort[]>(
-										caliArr[0],
-										newArr
-									));
-								}
-							}
+							variables[vs[0]] = vs[1];
 						} catch { }
 						lineNO++;
 					}
@@ -114,17 +88,98 @@ namespace BetterJoyForCemu {
 				using (StreamWriter file = new StreamWriter(path)) {
 					foreach (string k in variables.Keys)
 						file.WriteLine(String.Format("{0} {1}", k, variables[k]));
-					string caliStr = "";
-					for (int i = 0; i < caliData.Count; i++) {
-						string space = " ";
-						if (i == 0) space = "";
-						caliStr += space + caliData[i].Key + "," + String.Join(",", caliData[i].Value);
-					}
-					file.WriteLine(caliStr);
-					file.WriteLine(""); // stick calibration (primary) - empty until first recalibration
-					file.WriteLine(""); // stick calibration (secondary, Pro controllers only)
 				}
 			}
+
+			ControllerMappings.LoadCalibrationInto(caliData, stickCaliData, stick2CaliData);
+		}
+
+		// One-time migration read for calibration data still sitting in this file's old
+		// position-based lines (index settingsNum = gyro/accel, settingsNum+1 = primary stick,
+		// settingsNum+2 = secondary stick) - called by ControllerMappings.LoadCalibrationInto
+		// only when controller_mappings.xml has no calibration data of its own yet. Blanks the
+		// migrated lines out immediately after reading them, so this can only ever hand back real
+		// data once; the blanked lines are the migration's own completion marker; no separate
+		// flag needed, and every OTHER setting in this file is left untouched. Returns false (all
+		// three lists empty) if the file doesn't exist, has nothing in those lines, or can't be
+		// read right now - the caller treats that as "nothing to migrate," not an error.
+		public static bool TryTakeLegacyCalibration(
+				out List<KeyValuePair<string, float[]>> caliData,
+				out List<KeyValuePair<string, ushort[]>> stickCaliData,
+				out List<KeyValuePair<string, ushort[]>> stick2CaliData) {
+			caliData = new List<KeyValuePair<string, float[]>>();
+			stickCaliData = new List<KeyValuePair<string, ushort[]>>();
+			stick2CaliData = new List<KeyValuePair<string, ushort[]>>();
+
+			if (!File.Exists(path))
+				return false;
+
+			string[] txt;
+			try {
+				txt = File.ReadAllLines(path);
+			} catch {
+				return false; // torn/locked read - try again next startup, not fatal
+			}
+
+			bool foundAny = false;
+			if (txt.Length > settingsNum && ParseCaliLine(txt[settingsNum], caliData))
+				foundAny = true;
+			if (txt.Length > settingsNum + 1 && ParseStickCaliLine(txt[settingsNum + 1], stickCaliData))
+				foundAny = true;
+			if (txt.Length > settingsNum + 2 && ParseStickCaliLine(txt[settingsNum + 2], stick2CaliData))
+				foundAny = true;
+
+			if (!foundAny)
+				return false;
+
+			if (txt.Length > settingsNum) txt[settingsNum] = "";
+			if (txt.Length > settingsNum + 1) txt[settingsNum + 1] = "";
+			if (txt.Length > settingsNum + 2) txt[settingsNum + 2] = "";
+			try {
+				File.WriteAllLines(path, txt);
+			} catch {
+				// Migration already succeeded in the out lists above and the caller persists
+				// them into controller_mappings.xml regardless - a failed blank-out here just
+				// means a redundant (harmless) migration attempt next startup, not data loss.
+			}
+
+			return true;
+		}
+
+		private static bool ParseCaliLine(string line, List<KeyValuePair<string, float[]>> target) {
+			if (String.IsNullOrWhiteSpace(line))
+				return false;
+			string[] vs = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+			bool any = false;
+			foreach (string entry in vs) {
+				try {
+					string[] caliArr = entry.Split(',');
+					float[] newArr = new float[6];
+					for (int j = 1; j < caliArr.Length; j++)
+						newArr[j - 1] = float.Parse(caliArr[j]);
+					target.Add(new KeyValuePair<string, float[]>(caliArr[0], newArr));
+					any = true;
+				} catch { }
+			}
+			return any;
+		}
+
+		private static bool ParseStickCaliLine(string line, List<KeyValuePair<string, ushort[]>> target) {
+			if (String.IsNullOrWhiteSpace(line))
+				return false;
+			string[] vs = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+			bool any = false;
+			foreach (string entry in vs) {
+				try {
+					string[] caliArr = entry.Split(',');
+					ushort[] newArr = new ushort[6];
+					for (int j = 1; j < caliArr.Length; j++)
+						newArr[j - 1] = ushort.Parse(caliArr[j]);
+					target.Add(new KeyValuePair<string, ushort[]>(caliArr[0], newArr));
+					any = true;
+				} catch { }
+			}
+			return any;
 		}
 
 		// Live cross-process reload (see HeadlessJoyconHost's FileSystemWatcher) - deliberately
@@ -187,49 +242,17 @@ namespace BetterJoyForCemu {
 			return true;
 		}
 
+		// Delegates to controller_mappings.xml's atomic store now - see Init's comment for why
+		// this file's own positional-line saves were retired (non-atomic File.ReadAllLines +
+		// File.WriteAllLines could lose calibration data on a crash mid-write). Kept as a
+		// same-named forwarding method rather than changing call sites - CalibrationState.cs
+		// doesn't need to know where calibration actually lives on disk.
 		public static void SaveCaliData(List<KeyValuePair<string, float[]>> caliData) {
-			string[] txt = File.ReadAllLines(path);
-			if (txt.Length < settingsNum + 1) // no custom calibrations yet
-				Array.Resize(ref txt, txt.Length + 1);
-
-			string caliStr = "";
-			for (int i = 0; i < caliData.Count; i++) {
-				string space = " ";
-				if (i == 0) space = "";
-				caliStr += space + caliData[i].Key + "," + String.Join(",", caliData[i].Value);
-			}
-            txt[settingsNum] = caliStr;
-            File.WriteAllLines(path, txt);
+			ControllerMappings.SaveGyroCalibration(caliData);
 		}
 
-		// Two lines after the gyro/accel one: primary stick, then secondary (Pro controllers
-		// only). Resizes to fit both regardless of whether SaveCaliData has ever run in this
-		// process/file before - the two calls make no assumption about each other's ordering.
 		public static void SaveStickCaliData(List<KeyValuePair<string, ushort[]>> stickCaliData, List<KeyValuePair<string, ushort[]>> stick2CaliData) {
-			string[] txt = File.ReadAllLines(path);
-			int neededLines = settingsNum + 3;
-			if (txt.Length < neededLines) {
-				int oldLength = txt.Length;
-				Array.Resize(ref txt, neededLines);
-				for (int i = oldLength; i < neededLines; i++)
-					txt[i] = "";
-			}
-
-			string stickStr = "";
-			for (int i = 0; i < stickCaliData.Count; i++) {
-				string space = i == 0 ? "" : " ";
-				stickStr += space + stickCaliData[i].Key + "," + String.Join(",", stickCaliData[i].Value);
-			}
-			txt[settingsNum + 1] = stickStr;
-
-			string stick2Str = "";
-			for (int i = 0; i < stick2CaliData.Count; i++) {
-				string space = i == 0 ? "" : " ";
-				stick2Str += space + stick2CaliData[i].Key + "," + String.Join(",", stick2CaliData[i].Value);
-			}
-			txt[settingsNum + 2] = stick2Str;
-
-			File.WriteAllLines(path, txt);
+			ControllerMappings.SaveStickCalibration(stickCaliData, stick2CaliData);
 		}
 
 		public static void Save() {

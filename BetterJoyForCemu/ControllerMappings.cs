@@ -84,6 +84,20 @@ namespace BetterJoyForCemu {
             new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         private static bool loaded;
 
+        // Physical-controller calibration, keyed by raw serial (not profile ID - a paired
+        // profile's two physical halves each need their own independent entry, same as
+        // CalibrationState.cs's own List<KeyValuePair> model this mirrors). Lives alongside the
+        // profile binds/options in the same XML file and shares its atomic-write/tolerant-reload
+        // machinery - moved here from Config.cs's old settings file, whose non-atomic
+        // File.ReadAllLines+File.WriteAllLines saves could lose calibration data on a crash
+        // mid-write (see Config.Init's comment for the full history).
+        private static volatile Dictionary<string, float[]> gyroCalibration =
+            new Dictionary<string, float[]>(StringComparer.Ordinal);
+        private static volatile Dictionary<string, ushort[]> stickCalibration =
+            new Dictionary<string, ushort[]>(StringComparer.Ordinal);
+        private static volatile Dictionary<string, ushort[]> stick2Calibration =
+            new Dictionary<string, ushort[]>(StringComparer.Ordinal);
+
         private static string PathOnDisk => Path.Combine(AppPaths.DataDir, FileName);
 
         public static string Value(string profileId, string key) {
@@ -158,6 +172,122 @@ namespace BetterJoyForCemu {
                 }
             }
             if (created)
+                Save();
+        }
+
+        // Populates CalibrationState.cs's own CaliData/StickCaliData/Stick2CaliData lists -
+        // called from Config.Init with those exact lists, mirroring the shape that method
+        // already had before calibration moved here, so CalibrationState.cs and its callers
+        // (Program.cs, MainForm.cs) need no changes at all. Runs the one-time legacy migration
+        // first (see MigrateLegacyCalibrationIfNeeded) so a fresh install of this version still
+        // picks up whatever an existing user had calibrated under the old settings-file store.
+        public static void LoadCalibrationInto(
+                List<KeyValuePair<string, float[]>> caliData,
+                List<KeyValuePair<string, ushort[]>> stickCaliData,
+                List<KeyValuePair<string, ushort[]>> stick2CaliData) {
+            EnsureLoaded();
+            MigrateLegacyCalibrationIfNeeded();
+
+            lock (writeLock) {
+                caliData.Clear();
+                // CalibrationState.ActiveCaliData falls back to CaliData[0] when no entry matches
+                // a given serial - this default MUST stay element 0 of the list it's given,
+                // exactly as CalibrationState.cs's own static initializer always put it, whether
+                // or not anything real has ever been calibrated.
+                caliData.Add(new KeyValuePair<string, float[]>("0", new float[6] { 0, 0, 0, -710, 0, 0 }));
+                foreach (KeyValuePair<string, float[]> entry in gyroCalibration.OrderBy(e => e.Key, StringComparer.Ordinal))
+                    caliData.Add(entry);
+
+                stickCaliData.Clear();
+                foreach (KeyValuePair<string, ushort[]> entry in stickCalibration.OrderBy(e => e.Key, StringComparer.Ordinal))
+                    stickCaliData.Add(entry);
+
+                stick2CaliData.Clear();
+                foreach (KeyValuePair<string, ushort[]> entry in stick2Calibration.OrderBy(e => e.Key, StringComparer.Ordinal))
+                    stick2CaliData.Add(entry);
+            }
+        }
+
+        // Called from Config.SaveCaliData - same forwarding relationship as
+        // LoadCalibrationInto/Config.Init, just for the save direction. The "0" default entry
+        // (see LoadCalibrationInto) is never actually written back out here, matching how it was
+        // never a real persisted entry in the old settings-file format either - it's
+        // CalibrationState.cs's own built-in fallback, not something to round-trip.
+        public static void SaveGyroCalibration(List<KeyValuePair<string, float[]>> caliData) {
+            EnsureLoaded();
+            lock (writeLock) {
+                var next = new Dictionary<string, float[]>(StringComparer.Ordinal);
+                foreach (KeyValuePair<string, float[]> entry in caliData)
+                    if (entry.Key != "0")
+                        next[entry.Key] = entry.Value;
+                gyroCalibration = next;
+            }
+            Save();
+        }
+
+        public static void SaveStickCalibration(
+                List<KeyValuePair<string, ushort[]>> stickCaliData,
+                List<KeyValuePair<string, ushort[]>> stick2CaliData) {
+            EnsureLoaded();
+            lock (writeLock) {
+                var nextStick = new Dictionary<string, ushort[]>(StringComparer.Ordinal);
+                foreach (KeyValuePair<string, ushort[]> entry in stickCaliData)
+                    nextStick[entry.Key] = entry.Value;
+                stickCalibration = nextStick;
+
+                var nextStick2 = new Dictionary<string, ushort[]>(StringComparer.Ordinal);
+                foreach (KeyValuePair<string, ushort[]> entry in stick2CaliData)
+                    nextStick2[entry.Key] = entry.Value;
+                stick2Calibration = nextStick2;
+            }
+            Save();
+        }
+
+        // One-time pull of whatever calibration data is still salvageable from Config.cs's old
+        // settings-file store (see Config.TryTakeLegacyCalibration) - only runs while this file's
+        // own calibration is still completely empty, so it can never overwrite anything a user
+        // has already calibrated (or re-calibrated) under the new store. Config.
+        // TryTakeLegacyCalibration blanks the legacy lines it reads as its own one-time-only
+        // guarantee, so calling this on every startup is safe and cheap once migration has
+        // actually happened once - the legacy read finds nothing left and returns immediately.
+        private static void MigrateLegacyCalibrationIfNeeded() {
+            lock (writeLock) {
+                if (gyroCalibration.Count > 0 || stickCalibration.Count > 0 || stick2Calibration.Count > 0)
+                    return;
+            }
+
+            List<KeyValuePair<string, float[]>> legacyGyro;
+            List<KeyValuePair<string, ushort[]>> legacyStick, legacyStick2;
+            if (!Config.TryTakeLegacyCalibration(out legacyGyro, out legacyStick, out legacyStick2))
+                return;
+
+            bool changed = false;
+            lock (writeLock) {
+                var nextGyro = new Dictionary<string, float[]>(gyroCalibration, StringComparer.Ordinal);
+                foreach (KeyValuePair<string, float[]> entry in legacyGyro) {
+                    if (entry.Key == "0")
+                        continue; // the hardcoded default, never a real migrated entry
+                    nextGyro[entry.Key] = entry.Value;
+                    changed = true;
+                }
+                gyroCalibration = nextGyro;
+
+                var nextStick = new Dictionary<string, ushort[]>(stickCalibration, StringComparer.Ordinal);
+                foreach (KeyValuePair<string, ushort[]> entry in legacyStick) {
+                    nextStick[entry.Key] = entry.Value;
+                    changed = true;
+                }
+                stickCalibration = nextStick;
+
+                var nextStick2 = new Dictionary<string, ushort[]>(stick2Calibration, StringComparer.Ordinal);
+                foreach (KeyValuePair<string, ushort[]> entry in legacyStick2) {
+                    nextStick2[entry.Key] = entry.Value;
+                    changed = true;
+                }
+                stick2Calibration = nextStick2;
+            }
+
+            if (changed)
                 Save();
         }
 
@@ -259,7 +389,7 @@ namespace BetterJoyForCemu {
         public static void Save() {
             EnsureLoaded();
             lock (writeLock) {
-                var root = new XElement("controllerMappings", new XAttribute("version", "2"));
+                var root = new XElement("controllerMappings", new XAttribute("version", "3"));
                 foreach (KeyValuePair<string, Dictionary<string, string>> profile in profiles.OrderBy(p => p.Key, StringComparer.Ordinal)) {
                     var profileElement = new XElement("profile", new XAttribute("id", profile.Key));
                     foreach (string key in Keys) {
@@ -273,6 +403,29 @@ namespace BetterJoyForCemu {
                             profileElement.Add(new XElement("option", new XAttribute("key", key), new XAttribute("value", value ?? String.Empty)));
                     }
                     root.Add(profileElement);
+                }
+
+                // Keyed by raw serial, not profile ID - a union of whichever of the three
+                // calibration dictionaries actually have an entry for that serial, since gyro/
+                // stick/stick2 are independent (e.g. a solo Joy-Con only ever has gyro+stick,
+                // never stick2; a not-yet-recalibrated controller may have gyro but no stick
+                // override yet).
+                var calibratedSerials = new HashSet<string>(StringComparer.Ordinal);
+                calibratedSerials.UnionWith(gyroCalibration.Keys);
+                calibratedSerials.UnionWith(stickCalibration.Keys);
+                calibratedSerials.UnionWith(stick2Calibration.Keys);
+                foreach (string serial in calibratedSerials.OrderBy(s => s, StringComparer.Ordinal)) {
+                    var calibrationElement = new XElement("calibration", new XAttribute("serial", serial));
+                    float[] gyro;
+                    if (gyroCalibration.TryGetValue(serial, out gyro))
+                        calibrationElement.Add(new XElement("gyro", new XAttribute("values", String.Join(",", gyro))));
+                    ushort[] stick;
+                    if (stickCalibration.TryGetValue(serial, out stick))
+                        calibrationElement.Add(new XElement("stick", new XAttribute("values", String.Join(",", stick))));
+                    ushort[] stick2;
+                    if (stick2Calibration.TryGetValue(serial, out stick2))
+                        calibrationElement.Add(new XElement("stick2", new XAttribute("values", String.Join(",", stick2))));
+                    root.Add(calibrationElement);
                 }
 
                 string path = PathOnDisk;
@@ -303,6 +456,8 @@ namespace BetterJoyForCemu {
             }
 
             Dictionary<string, Dictionary<string, string>> parsed;
+            Dictionary<string, float[]> parsedGyro;
+            Dictionary<string, ushort[]> parsedStick, parsedStick2;
             try {
                 XDocument document = XDocument.Load(path);
                 XElement root = document.Root;
@@ -330,14 +485,68 @@ namespace BetterJoyForCemu {
                     }
                     parsed[profileId] = values;
                 }
+
+                parsedGyro = new Dictionary<string, float[]>(StringComparer.Ordinal);
+                parsedStick = new Dictionary<string, ushort[]>(StringComparer.Ordinal);
+                parsedStick2 = new Dictionary<string, ushort[]>(StringComparer.Ordinal);
+                foreach (XElement calibrationElement in root.Elements("calibration")) {
+                    string serial = (string)calibrationElement.Attribute("serial");
+                    if (String.IsNullOrEmpty(serial))
+                        continue;
+
+                    float[] gyro = ParseFloatValues((string)calibrationElement.Element("gyro")?.Attribute("values"), 6);
+                    if (gyro != null)
+                        parsedGyro[serial] = gyro;
+                    ushort[] stick = ParseUShortValues((string)calibrationElement.Element("stick")?.Attribute("values"), 6);
+                    if (stick != null)
+                        parsedStick[serial] = stick;
+                    ushort[] stick2 = ParseUShortValues((string)calibrationElement.Element("stick2")?.Attribute("values"), 6);
+                    if (stick2 != null)
+                        parsedStick2[serial] = stick2;
+                }
             } catch {
                 return;
             }
 
             lock (writeLock) {
                 profiles = parsed;
+                gyroCalibration = parsedGyro;
+                stickCalibration = parsedStick;
+                stick2Calibration = parsedStick2;
                 loaded = true;
             }
+        }
+
+        // Null (not a zero-filled array) on anything malformed - a partially-parseable
+        // calibration entry is worth discarding entirely rather than silently feeding a
+        // half-real array into CenterSticks/gyro math, matching Reload's existing "the whole
+        // parse either succeeds or the last known-good state stands" discipline.
+        private static float[] ParseFloatValues(string csv, int expectedCount) {
+            if (String.IsNullOrEmpty(csv))
+                return null;
+            string[] parts = csv.Split(',');
+            if (parts.Length != expectedCount)
+                return null;
+            var result = new float[expectedCount];
+            for (int i = 0; i < expectedCount; i++) {
+                if (!float.TryParse(parts[i], out result[i]))
+                    return null;
+            }
+            return result;
+        }
+
+        private static ushort[] ParseUShortValues(string csv, int expectedCount) {
+            if (String.IsNullOrEmpty(csv))
+                return null;
+            string[] parts = csv.Split(',');
+            if (parts.Length != expectedCount)
+                return null;
+            var result = new ushort[expectedCount];
+            for (int i = 0; i < expectedCount; i++) {
+                if (!ushort.TryParse(parts[i], out result[i]))
+                    return null;
+            }
+            return result;
         }
 
         public static string ProfileIdFor(Controller controller) {
