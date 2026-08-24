@@ -31,8 +31,7 @@ namespace BetterJoyForCemu {
         // around an off-centre IMU produces centripetal acceleration proportional to rotation
         // speed squared, regardless of which axis is spinning. That makes the apparent tilt point
         // the same way for both signs of that rotation, matching the observed one-way crawl on
-        // the OTHER output axis - originally seen as sustained yaw crawling pitch, later confirmed
-        // (DualSense, pure pitch motion on a table) as sustained pitch crawling yaw the same way.
+        // the OTHER output axis during sustained yaw.
         // Reduce accelerometer influence whenever motion is both sustained-speed and strongly
         // dominated by a single axis, whichever axis that is. Keep a non-zero correction floor:
         // fully removing the gravity anchor lets small gyro/reference-axis disagreement turn into
@@ -70,12 +69,10 @@ namespace BetterJoyForCemu {
         private const float ExtendedTrustReductionFullRate = 60.0f; // degrees/sec
         private const float ExtendedDominanceStart = 0.90f;
         private const float ExtendedDominanceFull = 0.98f;
-        // Residual leakage that points the same way for both signs of the dominant axis cannot be
-        // represented by a conventional signed cross-axis coefficient. Learn leaked-axis /
-        // |dominant-axis| instead. The narrow purity gate keeps ordinary diagonals and corner-to-
-        // corner gestures out of the learner; the cap is a safety bound, not a controller-specific
-        // correction value. Shared by both leak directions (yaw->pitch and pitch->yaw) since the
-        // underlying centripetal-error mechanism is the same either way.
+        // The narrow purity gate keeps ordinary diagonals and corner-to-corner gestures out of
+        // the cross-axis learners; the cap is a safety bound, not a controller-specific value.
+        // Yaw->pitch is an even-order leak and uses |yaw|. Real DualSense table captures show
+        // pitch->yaw is instead a signed projection and therefore uses pitch without rectifying it.
         private const float EvenLeakPurityFull = 0.08f;
         private const float EvenLeakPurityZero = 0.20f;
         private const float MaximumEvenLeakRatio = 0.15f;
@@ -93,8 +90,8 @@ namespace BetterJoyForCemu {
         private float gravityErrorDegrees;
         private float evenYawLeakRatio;
         private float evenYawLeakCorrection;
-        private float evenPitchLeakRatio;
-        private float evenPitchLeakCorrection;
+        private float signedPitchLeakRatio;
+        private float signedPitchLeakCorrection;
 
         // Gates every generalization beyond 2027652's original yaw-dominant-only formula: pitch
         // dominance and roll dominance both folded into gravity-trust reduction, and pitch->yaw
@@ -116,8 +113,8 @@ namespace BetterJoyForCemu {
         public float GravityErrorDegrees => gravityErrorDegrees;
         public float EvenYawLeakRatio => evenYawLeakRatio;
         public float EvenYawLeakCorrection => evenYawLeakCorrection;
-        public float EvenPitchLeakRatio => evenPitchLeakRatio;
-        public float EvenPitchLeakCorrection => evenPitchLeakCorrection;
+        public float SignedPitchLeakRatio => signedPitchLeakRatio;
+        public float SignedPitchLeakCorrection => signedPitchLeakCorrection;
 
         public void Reset() {
             gravity = Vector3.Zero;
@@ -131,8 +128,8 @@ namespace BetterJoyForCemu {
             gravityErrorDegrees = 0.0f;
             evenYawLeakRatio = 0.0f;
             evenYawLeakCorrection = 0.0f;
-            evenPitchLeakRatio = 0.0f;
-            evenPitchLeakCorrection = 0.0f;
+            signedPitchLeakRatio = 0.0f;
+            signedPitchLeakCorrection = 0.0f;
         }
 
         public void Update(Vector3 gyroDegPerSec, Vector3 accel, float deltaTime) {
@@ -156,7 +153,7 @@ namespace BetterJoyForCemu {
                 rollDominance = 0.0f;
                 gravityErrorDegrees = 0.0f;
                 evenYawLeakCorrection = 0.0f;
-                evenPitchLeakCorrection = 0.0f;
+                signedPitchLeakCorrection = 0.0f;
                 return;
             }
 
@@ -325,7 +322,7 @@ namespace BetterJoyForCemu {
             // zeroed) when off, so yawRate is left exactly as Map() originally computed it, same
             // as every caller got before this correction existed.
             if (EnableExtendedAxisCorrection)
-                ApplyEvenPitchLeakCorrection(ref yawRate, originalPitchRate, deltaTime);
+                ApplySignedPitchLeakCorrection(ref yawRate, originalPitchRate, deltaTime);
 
             // Diagnostic only: zero while the canonical controller frame is flat.
             rollRadians = (float)Math.Atan2(gravityDirection.X, -gravityDirection.Y);
@@ -412,13 +409,12 @@ namespace BetterJoyForCemu {
             pitchRate -= evenYawLeakCorrection;
         }
 
-        // Mirror of ApplyEvenYawLeakCorrection: sustained pitch-dominant rotation produces the
-        // same kind of even-order centripetal leak, just landing on yaw instead of pitch. Confirmed
-        // on real DualSense hardware - a controller rested flat and pitched cleanly up/down still
-        // produced a small, consistent (non-random, non-diminishing) left/right cursor drift; this
-        // is the same mechanism as the historical yaw->pitch crawl, just the other axis pair.
-        private void ApplyEvenPitchLeakCorrection(ref float yawRate, float pitchRate,
-                                                  float deltaTime) {
+        // DualSense table captures show a small signed projection from pitch into yaw: reversing
+        // pitch also reverses the unwanted yaw. Learn yaw/pitch so both directions reinforce the
+        // same coefficient. Using |pitch| here made the learner chase opposite coefficients after
+        // every reversal, leaving a visible horizontal transient in otherwise vertical motion.
+        private void ApplySignedPitchLeakCorrection(ref float yawRate, float pitchRate,
+                                                    float deltaTime) {
             float absolutePitch = Math.Abs(pitchRate);
             float absoluteYaw = Math.Abs(yawRate);
             float pitchSpeedConfidence = SmoothStep(Clamp01(
@@ -437,23 +433,21 @@ namespace BetterJoyForCemu {
                                        purityConfidence;
 
             if (learningConfidence > 0.0f && absolutePitch > 1e-5f) {
-                // |pitch| is deliberate, mirroring ApplyEvenYawLeakCorrection: a real even-order
-                // leak retains its yaw sign when the user reverses pitch direction.
-                float observedRatio = Clamp(yawRate / absolutePitch,
+                float observedRatio = Clamp(yawRate / pitchRate,
                                             -MaximumEvenLeakRatio,
                                             MaximumEvenLeakRatio);
                 float attackBlend = 1.0f -
                     (float)Math.Pow(2.0, -deltaTime / EvenLeakAttackHalfTime);
-                evenPitchLeakRatio += (observedRatio - evenPitchLeakRatio) *
-                                      attackBlend * learningConfidence;
+                signedPitchLeakRatio += (observedRatio - signedPitchLeakRatio) *
+                                        attackBlend * learningConfidence;
             } else {
                 float releaseBlend = 1.0f -
                     (float)Math.Pow(2.0, -deltaTime / EvenLeakReleaseHalfTime);
-                evenPitchLeakRatio += (0.0f - evenPitchLeakRatio) * releaseBlend;
+                signedPitchLeakRatio += (0.0f - signedPitchLeakRatio) * releaseBlend;
             }
 
-            evenPitchLeakCorrection = evenPitchLeakRatio * absolutePitch * learningConfidence;
-            yawRate -= evenPitchLeakCorrection;
+            signedPitchLeakCorrection = signedPitchLeakRatio * pitchRate * learningConfidence;
+            yawRate -= signedPitchLeakCorrection;
         }
 
         private static Vector3 RotateByInverseLocalMotion(Vector3 value,

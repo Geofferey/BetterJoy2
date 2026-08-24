@@ -651,17 +651,15 @@ namespace BetterJoyForCemu {
             float accelYG = CorrectAccelSample(acc_r[1], accelYPlus, accelYMinus);
             float accelZG = CorrectAccelSample(acc_r[2], accelZPlus, accelZMinus);
 
-            // Axis/sign convention - UpdateCanonicalGyroMouseImu's fixed rotation reads gyr_g.Y
-            // as the horizontal-driving (yaw) component and gyr_g.Z as the vertical-driving
-            // (pitch) component; gyr_g.X supplies roll to Player Space's gravity integration.
-            // DualSense's raw roll channel is opposite the matching accelerometer rotation in
-            // that canonical frame, so negate it here at the device-normalization boundary. A
-            // real table-roll capture showed the old sign making gyro-tracked gravity and the
-            // accelerometer target rotate in opposite directions: gravity error grew to roughly
-            // twice the physical roll angle, eventually projecting otherwise-pure roll into both
-            // mouse axes. Keeping this correction DualSense-specific preserves Nintendo's
-            // established axis convention.
-            gyr_g.X = -gyroRollDegPerSec;
+            // Keep all three DualSense gyro channels in the same handed sensor frame as its
+            // accelerometer before UpdateCanonicalGyroMouseImu applies the shared proper rotation.
+            // A long, flat yaw capture makes this invariant directly observable: the physical
+            // rotation axis is gravity, so the calibrated gyro vector must be collinear with the
+            // accelerometer vector. Pitch and yaw already were; negating only roll made that one
+            // component point the opposite way, creating a fake ~10%-of-yaw roll rate. Player
+            // Space integrated it into an alternating tilt even while raw accelerometer roll
+            // stayed fixed. The device's factory-corrected roll sign is therefore retained here.
+            gyr_g.X = gyroRollDegPerSec;
             gyr_g.Y = gyroYawDegPerSec;
             // Sign confirmed on real hardware (was -gyroPitchDegPerSec, produced inverted
             // up/down - tilting up moved the cursor down and vice versa).

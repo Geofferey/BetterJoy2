@@ -624,7 +624,7 @@ namespace BetterJoyForCemu {
                 GyroStickCsv(gyroStickPlayerSpace.YawDominance),
                 GyroStickCsv(gyroStickPlayerSpace.PitchDominance),
                 GyroStickCsv(gyroStickPlayerSpace.EvenYawLeakCorrection),
-                GyroStickCsv(gyroStickPlayerSpace.EvenPitchLeakCorrection),
+                GyroStickCsv(gyroStickPlayerSpace.SignedPitchLeakCorrection),
                 GyroStickCsv(gyroMousePlayerSpace.Gravity.X),
                 GyroStickCsv(gyroMousePlayerSpace.Gravity.Y),
                 GyroStickCsv(gyroMousePlayerSpace.Gravity.Z),
@@ -632,7 +632,7 @@ namespace BetterJoyForCemu {
                 GyroStickCsv(gyroMousePlayerSpace.YawDominance),
                 GyroStickCsv(gyroMousePlayerSpace.PitchDominance),
                 GyroStickCsv(gyroMousePlayerSpace.EvenYawLeakCorrection),
-                GyroStickCsv(gyroMousePlayerSpace.EvenPitchLeakCorrection)
+                GyroStickCsv(gyroMousePlayerSpace.SignedPitchLeakCorrection)
             };
             gyroStickDiagQueue.Enqueue(string.Join(",", fields) + "\r\n");
         }
@@ -952,8 +952,8 @@ namespace BetterJoyForCemu {
                 gyroMousePlayerSpace.GravityErrorDegrees,
                 gyroMousePlayerSpace.EvenYawLeakRatio,
                 gyroMousePlayerSpace.EvenYawLeakCorrection,
-                gyroMousePlayerSpace.EvenPitchLeakRatio,
-                gyroMousePlayerSpace.EvenPitchLeakCorrection,
+                gyroMousePlayerSpace.SignedPitchLeakRatio,
+                gyroMousePlayerSpace.SignedPitchLeakCorrection,
                 GyroMouseDiagnosticSource(),
                 reportDeltaAverage, reportDeltaMinimum, reportDeltaMaximum,
                 diagIntervalReportDeltaCount,
