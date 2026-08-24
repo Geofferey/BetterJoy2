@@ -256,6 +256,13 @@ namespace BetterJoyForCemu {
         // must accumulate its own X source (see ProcessGyroStickSample).
         protected float pendingGyroStickDxLeft, pendingGyroStickDyLeft;
         protected float pendingGyroStickDxRight, pendingGyroStickDyRight;
+        // Gyro-to-stick represents angular velocity as a held stick deflection. Nintendo happens
+        // to bundle three fixed 5 ms samples before each output, so its historical sensitivity is
+        // calibrated around a 15 ms window. Track the real accumulated sample time so faster
+        // devices such as DualSense can normalize to that same window instead of producing a
+        // tiny deflection merely because they flush reports more often.
+        protected float pendingGyroStickSamplePeriod;
+        protected const float GyroStickReferenceReportPeriod = ImuSamplePeriodSeconds * 3.0f;
         // Gravity-referenced roll (always zero at physical level, independent of RecenterGyro) -
         // captured from gyroStickPlayerSpace.Map()'s previously-discarded rollRadians output, for
         // use as the stick-X source when GyroStickAxisX == "roll" in Absolute/Hybrid mode. Rate
@@ -296,7 +303,8 @@ namespace BetterJoyForCemu {
         protected static readonly ConcurrentQueue<string> gyroStickDiagQueue =
             new ConcurrentQueue<string>();
         protected static int gyroStickDiagWriterStarted;
-        protected static int gyroStickDiagHeaderWritten;
+        protected const double GyroStickDiagLogIntervalSeconds = 0.05;
+        protected const long GyroStickDiagMaxFileBytes = 8L * 1024L * 1024L;
         protected const float ImuSamplePeriodSeconds = 0.005f;
 
         // ProcessGyroMouseSample/ProcessGyroStickSample integrate Player Space's gravity fusion
@@ -323,6 +331,7 @@ namespace BetterJoyForCemu {
 
         protected long gyroStickDiagReportSequence;
         protected long gyroStickDiagLastArrivalTimestamp;
+        protected long gyroStickDiagLastLogTimestamp;
         protected bool gyroStickDiagHasDeviceTimer;
         protected byte gyroStickDiagLastDeviceTimer;
         protected int gyroStickDiagSampleCount;
@@ -472,19 +481,19 @@ namespace BetterJoyForCemu {
                     continue;
 
                 var batch = new StringBuilder();
-                if (Interlocked.CompareExchange(ref gyroStickDiagHeaderWritten, 1, 0) == 0) {
-                    try {
-                        if (!File.Exists(logPath) || new FileInfo(logPath).Length == 0)
-                            batch.Append(header);
-                    } catch {
-                        batch.Append(header);
-                    }
-                }
                 while (gyroStickDiagQueue.TryDequeue(out string line))
                     batch.Append(line);
 
                 try {
-                    File.AppendAllText(logPath, batch.ToString());
+                    long existingLength = File.Exists(logPath)
+                        ? new FileInfo(logPath).Length
+                        : 0L;
+                    bool startFresh = existingLength == 0L ||
+                                      existingLength + batch.Length >= GyroStickDiagMaxFileBytes;
+                    if (startFresh)
+                        File.WriteAllText(logPath, header + batch.ToString());
+                    else
+                        File.AppendAllText(logPath, batch.ToString());
                 } catch {
                     // Diagnostic only: never let an unavailable log path affect controller I/O.
                 }
@@ -502,9 +511,20 @@ namespace BetterJoyForCemu {
             // reactivation does not claim that the whole off period was one delayed packet.
             if (!gyroStickDiagActive) {
                 gyroStickDiagLastArrivalTimestamp = 0;
+                gyroStickDiagLastLogTimestamp = 0;
                 gyroStickDiagHasDeviceTimer = false;
                 return;
             }
+
+            // DualSense reports at roughly 800 Hz. Formatting and retaining every report made a
+            // 14 MB CSV in seconds and provided far more temporal resolution than this diagnostic
+            // can use. The live gyro path still processes every sample; only evidence rows are
+            // sampled at 20 Hz. Nintendo is sampled at the same readable cadence.
+            if (gyroStickDiagLastLogTimestamp != 0 &&
+                (arrivalTimestamp - gyroStickDiagLastLogTimestamp) /
+                    (double)Stopwatch.Frequency < GyroStickDiagLogIntervalSeconds)
+                return;
+            gyroStickDiagLastLogTimestamp = arrivalTimestamp;
 
             EnsureGyroStickDiagWriterStarted();
 
@@ -1509,6 +1529,7 @@ namespace BetterJoyForCemu {
         protected void ResetGyroStickMotionState(bool resetPlayerSpace = false) {
             pendingGyroStickDxLeft = pendingGyroStickDyLeft = 0.0f;
             pendingGyroStickDxRight = pendingGyroStickDyRight = 0.0f;
+            pendingGyroStickSamplePeriod = 0.0f;
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
             if (resetPlayerSpace)
@@ -1624,6 +1645,7 @@ namespace BetterJoyForCemu {
                 gyroStickPlayerSpace.Map(stickGyroRate, subSamplePeriod, out yawRate,
                                          out pitchRate, out rollRadians);
                 gyroStickLatestWorldRoll = rollRadians;
+                pendingGyroStickSamplePeriod += subSamplePeriod;
 
                 // Rate mode with roll selected as the X source uses the raw local roll rate
                 // directly - unlike yaw/pitch, roll needs no gravity reference to be a
@@ -1652,6 +1674,19 @@ namespace BetterJoyForCemu {
 
             if (!flushToStick)
                 return;
+
+            // The pending values above are integrated angle over however much sensor time this
+            // output report contained. Convert them back to the established 15 ms reference
+            // window so an equal angular velocity means an equal stick deflection on Nintendo
+            // (3 x 5 ms) and DualSense (~1 x 1.25 ms). For Nintendo the scale is exactly 1.
+            if (pendingGyroStickSamplePeriod > 0.0f) {
+                float reportPeriodScale = GyroStickReferenceReportPeriod /
+                                          pendingGyroStickSamplePeriod;
+                pendingGyroStickDxLeft *= reportPeriodScale;
+                pendingGyroStickDyLeft *= reportPeriodScale;
+                pendingGyroStickDxRight *= reportPeriodScale;
+                pendingGyroStickDyRight *= reportPeriodScale;
+            }
 
             float[] diagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
             float physicalX = diagnosticStick[0];
@@ -1682,6 +1717,7 @@ namespace BetterJoyForCemu {
                                               diagnosticStick[0], diagnosticStick[1]);
             pendingGyroStickDxLeft = pendingGyroStickDyLeft = 0.0f;
             pendingGyroStickDxRight = pendingGyroStickDyRight = 0.0f;
+            pendingGyroStickSamplePeriod = 0.0f;
         }
 
         // flushToMouse: integrate every sub-sample (all 3, for accuracy - see the field comment
