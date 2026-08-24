@@ -1,19 +1,30 @@
 # Controller architecture refactor plan
 
-Status: **steps 1, 2, 3, 4, 5, and 7 of 7 done and committed** (see
-"Suggested migration approach" below for the full breakdown, and
-`clever-wiggling-rocket.md` for step 5's sub-step-level plan). Written after
-the DualSense baseline work exposed real structural risk in how `Joycon.cs`
-shares code across device types - that risk is now resolved:
-`JoyconController`/`ProController`/`SnesController`/`N64Controller`/
-`DualSenseController` are real, independent types under
-`NintendoController`/`Controller`, and the `isPro`-superset-flag pattern that
-caused a real incident is gone from the type system. Only step 6
-(`GyroMath.cs` extraction) remains - done out of numeric order since it's
-explicitly the highest-risk piece left (this pipeline has already burned a
-session on a subtle regression, see "What must not regress" below) and
-deserves its own dedicated planning pass rather than being rushed through
-after step 5's six sub-steps.
+Status: **all 7 steps done and committed.** The class-hierarchy refactor this
+document describes is complete. Written after the DualSense baseline work
+exposed real structural risk in how `Joycon.cs` shares code across device
+types - that risk is resolved: `JoyconController`/`ProController`/
+`SnesController`/`N64Controller`/`DualSenseController` are real, independent
+types under `NintendoController`/`Controller`, and the `isPro`-superset-flag
+pattern that caused a real incident is gone from the type system. Step 6
+(`GyroMath.cs` extraction) was done last, out of numeric order, since it was
+explicitly the highest-risk piece (this gyro/IMU pipeline has a documented
+history of "looked correct, broke real hardware behavior" - see "What must
+not regress" below) and got its own dedicated planning pass rather than
+being rushed through after step 5's six sub-steps. See "Suggested migration
+approach" below for the full per-step breakdown and commit references, and
+`clever-wiggling-rocket.md`'s git history for step 5's and step 6's
+sub-step-level plans (the file gets overwritten between planning sessions,
+so only the current plan is there - git log the file if a past plan's exact
+text is needed).
+
+Remaining, explicitly out of scope for this document (see "Known issues" and
+"Related, deferred" below for what's left): the `HasGyro`/`HasDualSticks`
+SNES/N64 capability-accuracy gap step 5 found and deliberately didn't fix,
+the settings-architecture migration (a separate, unrelated plan later in
+this doc), and the doc's original "true static functions" vision for the
+gyro pipeline (step 6 did a pure mechanical move only - see its entry
+below for why).
 
 ## Guiding principles for how this gets executed
 
@@ -890,12 +901,32 @@ incremental and independently testable, not a single large rewrite:
    revisit only if it becomes an actual problem. See the "Known issues"
    section above for the `HasGyro`/`HasDualSticks` SNES/N64 accuracy gap
    this step found and deliberately didn't fix.
-6. Extract `GyroMath.cs` - after step 4 at the earliest (see the reasoning
-   under that section: telling device quirk apart from base algorithm is
-   easier once DualSense's own gyro data exists to compare against, not
-   before). A pure mechanical move first (same logic, new file, still
-   called the same way), device-quirk-vs-base-algorithm separation as a
-   deliberate follow-up, not bundled into the same commit.
+6. **Done**, last (deliberately, as the highest-risk step remaining - see
+   `clever-wiggling-rocket.md`'s git history for the full plan). An Explore
+   pass first confirmed most of this section's original ambition had
+   already happened as a side effect of steps 1-5: `MadgwickAHRS.cs`/
+   `GyroMouseOrientation.cs`/`GyroMousePlayerSpace.cs` were already separate,
+   fully generic files, and the real device-quirk boundary (`isLeft`/
+   `SupportsPairing`/offset-array selection) was already correctly isolated
+   inside `NintendoController.ExtractIMUValues`, not smeared through shared
+   code. What was left was a large block of already-generic gyro-mouse/
+   gyro-stick/auto-calibration methods still physically living in
+   `Controller.cs` - a pure organizational problem, not a device-coupling
+   one. Executed as **the pure mechanical move only** (`GyroMath.cs` as a
+   second `partial class Controller` file, same pattern
+   `VirtualControllerLifecycle.cs` established for `JoyconManager` in step
+   3) - `Controller.cs` dropped from 3580 to 1767 lines, zero logic changes,
+   zero call-site changes, independently re-verified against the pre-move
+   source before committing given this pipeline's regression history. The
+   doc's original "ideally static, input-in/output-out functions" end state
+   for this pipeline is **explicitly not done** - that's a materially
+   larger, higher-risk transformation (per-instance state like bias
+   windows/neutral frames/smoothing filters would need to become explicitly
+   threaded parameters) left as a genuine future candidate, not attempted
+   here. Device ownership/coordination logic (`OwnsGyroMouse`,
+   `PairHasActiveGyroMouse`, `GetButtonsForVigem`, `CanonicalButtonToLocal
+   VigemIndex`) and `DoThingsWithButtons` itself stay on `Controller.cs` -
+   they're pairing-specific coordination, not gyro algorithm.
 7. **Done**, ahead of step 6 - fixed the `connection`/`isUSB` staleness bug
    as a small, self-contained change rather than waiting for another step
    to happen to touch those fields, since it was already precisely
@@ -907,6 +938,20 @@ not one large branch merged all at once.
 
 ## Related, deferred (not part of this refactor, noted so they aren't lost)
 
+- **Converting `GyroMath.cs` to true static/parameterized functions.** Step
+  6 did only a pure mechanical move (same instance methods, same fields,
+  just relocated to a second `partial class Controller` file) - it did not
+  attempt the doc's original "ideally static, input-in/output-out
+  functions" target shape. That would mean threading substantial
+  per-instance state (bias windows, neutral frames, smoothing filters,
+  pending deltas) through explicit parameters instead of reading instance
+  fields - a materially larger, higher-risk change than solving the
+  "these methods are stuck in a 3580-line file" problem the mechanical
+  move already fixed. Worth doing eventually if/when isolated unit testing
+  of this pipeline becomes a real goal (there's no test project in this
+  repo today - see the diagnostic CSV/log writers, `gyro_stick_debug.csv`
+  in particular, as the closest thing to a regression-capture mechanism
+  currently available), not assumed necessary on its own.
 - Gyro support for DualSense - user has specific plans "in my head" not yet
   written down; surface them into this document (or a new one) before
   starting, since `HasGyro`/the acc/gyr-neutral initialization gap above
