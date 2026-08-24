@@ -1,15 +1,19 @@
 # Controller architecture refactor plan
 
-Status: **steps 1-5 of 7 done and committed** (see "Suggested migration
-approach" below for the full breakdown, and `clever-wiggling-rocket.md` for
-step 5's sub-step-level plan). Written after the DualSense baseline work
-exposed real structural risk in how `Joycon.cs` shares code across device
-types - that risk is now resolved: `JoyconController`/`ProController`/
-`SnesController`/`N64Controller`/`DualSenseController` are real, independent
-types under `NintendoController`/`Controller`, and the `isPro`-superset-flag
-pattern that caused a real incident is gone from the type system. Steps 6
-(`GyroMath.cs` extraction) and 7 (the `connection`/`isUSB` staleness fix) are
-still open.
+Status: **steps 1, 2, 3, 4, 5, and 7 of 7 done and committed** (see
+"Suggested migration approach" below for the full breakdown, and
+`clever-wiggling-rocket.md` for step 5's sub-step-level plan). Written after
+the DualSense baseline work exposed real structural risk in how `Joycon.cs`
+shares code across device types - that risk is now resolved:
+`JoyconController`/`ProController`/`SnesController`/`N64Controller`/
+`DualSenseController` are real, independent types under
+`NintendoController`/`Controller`, and the `isPro`-superset-flag pattern that
+caused a real incident is gone from the type system. Only step 6
+(`GyroMath.cs` extraction) remains - done out of numeric order since it's
+explicitly the highest-risk piece left (this pipeline has already burned a
+session on a subtle regression, see "What must not regress" below) and
+deserves its own dedicated planning pass rather than being rushed through
+after step 5's six sub-steps.
 
 ## Guiding principles for how this gets executed
 
@@ -46,13 +50,10 @@ still open.
   are digital-only on DS4 output. **Not a bug to fix** - explicit product
   decision, DualSense doesn't get DS4-output support at all (see "What
   moves into `DualSense.cs`" below).
-- `connection` (transport byte, USB/BT) is set once in the constructor from
-  the *initial* `isUSB` value and never updated again, even though
-  DualSense's `isUSB` is corrected per-packet in `ReceiveRaw` after that -
-  they can silently disagree after a DualSense reconnects on a different
-  transport than it was first seen on. Real bug, independent of this
-  refactor; worth fixing when whichever step touches these fields (see
-  "Suggested migration approach" below), not before.
+- ~~`connection` (transport byte, USB/BT) is set once in the constructor
+  from the *initial* `isUSB` value and never updated again~~ - **fixed, step
+  7**: `DualSenseController.ReceiveRaw` now updates `connection` alongside
+  `isUSB` at the same place `isUSB` itself gets corrected per-packet.
 - `Detach()`'s Nintendo-only "let the controller talk to Bluetooth again"
   handshake (the `0x80,0x05`/`0x80,0x06` output report) is gated on
   `isUSB`, not on `UsesNintendoProtocol` - and `isUSB` is `true` for a
@@ -895,9 +896,11 @@ incremental and independently testable, not a single large rewrite:
    before). A pure mechanical move first (same logic, new file, still
    called the same way), device-quirk-vs-base-algorithm separation as a
    deliberate follow-up, not bundled into the same commit.
-7. Fix the `connection`/`isUSB` staleness bug as part of whichever step
-   touches those fields, not as an afterthought. Do **not** add DS4-output
-   support to `DualSenseController` - see the explicit decision above.
+7. **Done**, ahead of step 6 - fixed the `connection`/`isUSB` staleness bug
+   as a small, self-contained change rather than waiting for another step
+   to happen to touch those fields, since it was already precisely
+   diagnosed and low-risk in isolation. Do **not** add DS4-output support
+   to `DualSenseController` - see the explicit decision above.
 
 Each step should be its own commit, buildable and testable independently -
 not one large branch merged all at once.
