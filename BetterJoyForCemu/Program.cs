@@ -559,17 +559,15 @@ namespace BetterJoyForCemu {
             }
 
             if (foundNew && !Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"])) { // attempt to auto join-up joycons on connection
-                NintendoController temp = null;
+                JoyconController temp = null;
                 // Pairing is Joy-Con-only (see Controller.other's comment) - the auto-join
-                // decision itself stays Nintendo-family-typed/filtered here rather than moving to
-                // the generic lifecycle module, per DOCS/CONTROLLERS-REFACTOR.md's design.
-                // NintendoController, not JoyconController, is a deliberate interim type here
-                // (step 5 sub-step D2a) - narrowed further to JoyconController in sub-step D2b.
+                // decision itself stays JoyconController-typed/filtered here rather than moving
+                // to the generic lifecycle module, per DOCS/CONTROLLERS-REFACTOR.md's design.
                 foreach (Controller vBase in j) {
                     // Do not attach two controllers if they are either:
-                    // - Not a Nintendo-family device, or one that doesn't support pairing
+                    // - Not a JoyconController, or one that doesn't support pairing
                     // - Already attached to another one (that isn't itself)
-                    if (!(vBase is NintendoController v) || !v.SupportsPairing || (v.other != null && v.other != v)) {
+                    if (!(vBase is JoyconController v) || !v.SupportsPairing || (v.other != null && v.other != v)) {
                         continue;
                     }
 
@@ -592,11 +590,11 @@ namespace BetterJoyForCemu {
                         // all - see DOCS/CONTROLLERS-REFACTOR.md's virtual-controller-lifecycle
                         // section), but the actual destroy goes through the same pairing-ignorant
                         // primitive AssignPadId/ApplyControllerProfileOptions use, not a duplicate.
-                        NintendoController loser = temp.virtualControllerSequence > v.virtualControllerSequence ? temp : v;
+                        JoyconController loser = temp.virtualControllerSequence > v.virtualControllerSequence ? temp : v;
                         DestroyOutputControllers(loser);
 
-                        NintendoController left = temp.isLeft ? temp : v;
-                        NintendoController right = temp.isLeft ? v : temp;
+                        JoyconController left = temp.isLeft ? temp : v;
+                        JoyconController right = temp.isLeft ? v : temp;
                         form.CollapseJoinedPair(left, right);
                         DumpState("AutoJoin: paired");
 
@@ -610,7 +608,7 @@ namespace BetterJoyForCemu {
                 // just automatically on connect. Profile lookup uses this controller's still-solo
                 // identity (ProfileIdFor), since that's the identity it had before this decision.
                 foreach (Controller vBase in j) {
-                    if (!(vBase is NintendoController v) || !v.SupportsPairing || v.other != null)
+                    if (!(vBase is JoyconController v) || !v.SupportsPairing || v.other != null)
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(v);
                     if (ControllerMappings.OptionValue(profileId, "DefaultOrientation") ==

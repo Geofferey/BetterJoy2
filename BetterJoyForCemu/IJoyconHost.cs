@@ -9,27 +9,27 @@ namespace BetterJoyForCemu {
 
         // UI-only - real work in GUI mode; safe no-ops headless, since there's no controller
         // slot/tray icon to update without a desktop. Controller-typed where any device kind is
-        // meaningful; left NintendoController-typed where the operation is inherently Joy-Con
-        // pairing/orientation-specific (no other device type is known to pair two physical units
-        // into one logical controller - see Controller.other's comment) - callers already narrow
-        // via "is NintendoController"/SupportsPairing before reaching these (see
+        // meaningful; left JoyconController-typed where the operation is inherently Joy-Con
+        // pairing/orientation-specific (no other device type pairs two physical units into one
+        // logical controller - see Controller.other's comment) - callers already narrow via
+        // "is JoyconController"/SupportsPairing before reaching these (see
         // MainForm.ExecuteJoinOrSplit), so a non-pairing controller (e.g. DualSenseController)
         // simply never reaches them, no crash.
         void AssignSlot(Controller controller);
-        void CollapseJoinedPair(NintendoController left, NintendoController right);
-        void HandleJoyconDropped(Controller dropped, NintendoController survivingPartner);
+        void CollapseJoinedPair(JoyconController left, JoyconController right);
+        void HandleJoyconDropped(Controller dropped, JoyconController survivingPartner);
         // forceSelfPair: skip searching for an opposite-handed partner and self-pair (vertical
         // orientation) even when other Joycons are connected - the double right-click override,
         // see MainForm.HandlePossibleOrientationDoubleClick. Ignored on the split side (a Joycon
         // that already has a partner just splits either way, there's no ambiguity to override).
-        void JoinOrSplitJoycon(NintendoController joycon, bool forceSelfPair = false);
+        void JoinOrSplitJoycon(JoyconController joycon, bool forceSelfPair = false);
         void NotifyLowBattery(Controller controller);
 
         // Keeps a solo-vs-self-paired ("vertical") slot icon in sync with Controller.other, for
         // orientation changes that don't go through JoinOrSplitJoycon itself (e.g. Program.cs's
         // DefaultOrientation auto-self-pair on connect). Safe no-op headless, same as the rest of
         // this UI-only group.
-        void RefreshOrientationIcon(NintendoController joycon);
+        void RefreshOrientationIcon(JoyconController joycon);
         void UpdateBatteryColor(Controller controller);
         void RefreshControllerState();
 

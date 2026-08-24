@@ -46,9 +46,9 @@ namespace BetterJoyForCemu {
         }
 
         public void AssignSlot(Controller controller) { BroadcastSnapshot(); }
-        public void RefreshOrientationIcon(NintendoController joycon) { BroadcastSnapshot(); }
-        public void CollapseJoinedPair(NintendoController left, NintendoController right) { BroadcastSnapshot(); }
-        public void HandleJoyconDropped(Controller dropped, NintendoController survivingPartner) { BroadcastSnapshot(); }
+        public void RefreshOrientationIcon(JoyconController joycon) { BroadcastSnapshot(); }
+        public void CollapseJoinedPair(JoyconController left, JoyconController right) { BroadcastSnapshot(); }
+        public void HandleJoyconDropped(Controller dropped, JoyconController survivingPartner) { BroadcastSnapshot(); }
         public void UpdateBatteryColor(Controller controller) { BroadcastSnapshot(); }
         public void RefreshControllerState() { BroadcastSnapshot(); }
 
@@ -61,13 +61,13 @@ namespace BetterJoyForCemu {
         // don't exist headless - used both for the hardware stick-double-click path (Controller.cs
         // calls this via IJoyconHost the same as GUI mode) and the remote JoinOrSplit command
         // from a connected GUI (see JoinOrSplitByPadId below).
-        public void JoinOrSplitJoycon(NintendoController v, bool forceSelfPair = false) {
+        public void JoinOrSplitJoycon(JoyconController v, bool forceSelfPair = false) {
             if (v.other == null && v.SupportsPairing) {
                 if (forceSelfPair || Program.mgr.j.Count == 1) {
                     v.other = v; // self-pair - single joycon in vertical mode
                 } else {
                     foreach (Controller jcBase in Program.mgr.j) {
-                        if (!(jcBase is NintendoController jc))
+                        if (!(jcBase is JoyconController jc))
                             continue;
                         if (jc.SupportsPairing && jc.isLeft != v.isLeft && jc != v && jc.other == null) {
                             v.other = jc;
@@ -81,19 +81,19 @@ namespace BetterJoyForCemu {
                             // here (pairing-specific, Joy-Con-only); the destroy itself goes
                             // through the same pairing-ignorant primitive Program.cs uses, not a
                             // duplicate - see DestroyOutputControllers.
-                            NintendoController loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
+                            JoyconController loser = v.virtualControllerSequence > jc.virtualControllerSequence ? v : jc;
                             Program.mgr.DestroyOutputControllers(loser);
                             break;
                         }
                     }
                 }
             } else if (v.other != null && v.SupportsPairing) {
-                NintendoController partner = v.other;
+                JoyconController partner = v.other;
 
                 // Whichever half doesn't currently drive a virtual controller was the passive
                 // side of the pair - see ReassignSplitOffJoycon (Program.cs) for why it needs a
                 // fresh PadId now that it's standalone again.
-                NintendoController passiveHalf = v.out_xbox == null && v.out_ds4 == null ? v
+                JoyconController passiveHalf = v.out_xbox == null && v.out_ds4 == null ? v
                     : partner.out_xbox == null && partner.out_ds4 == null ? partner : null;
 
                 partner.other = null;
@@ -553,9 +553,8 @@ namespace BetterJoyForCemu {
 
         private void JoinOrSplitByPadId(int padId, bool forceSelfPair) {
             // Joining/splitting is Joy-Con-only pairing logic (see JoinOrSplitJoycon's own
-            // NintendoController-typed parameter) - a non-Nintendo-family match here is simply a
-            // no-op.
-            NintendoController jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId) as NintendoController;
+            // JoyconController-typed parameter) - a non-pairing match here is simply a no-op.
+            JoyconController jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId) as JoyconController;
             if (jc != null)
                 JoinOrSplitJoycon(jc, forceSelfPair);
         }

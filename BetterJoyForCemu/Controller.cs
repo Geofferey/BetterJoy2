@@ -559,17 +559,18 @@ namespace BetterJoyForCemu {
             mappingProfileId = null;
         }
 
-        private NintendoController _other = null;
+        private JoyconController _other = null;
 
         // Pairing contract: null = solo, == this = self-paired ("vertical"), == <other instance>
-        // = a real two-unit pair. Only Joy-Con-family currently ever sets this away from null
+        // = a real two-unit pair. Only JoyconController currently ever sets this away from null
         // (see SupportsPairing) - the mechanism itself is device-agnostic (a device that never
-        // pairs just never touches it), which is why it lives here rather than only on the
-        // Joy-Con-specific parts of the hierarchy. Typed NintendoController (step 5 sub-step D2a)
-        // rather than the wider Controller, since ProcessButtonsAndStick reaches into
-        // other.otherStick, a Nintendo-family-only field - narrows further to JoyconController in
-        // sub-step D2b, since only Joy-Con actually pairs.
-        public NintendoController other {
+        // pairs just never touches it), which is why it lives here rather than only on
+        // JoyconController itself. Typed JoyconController (step 5 sub-step D2b), not the wider
+        // NintendoController - no ProController/SnesController/N64Controller ever actually pairs,
+        // and every real assignment site is already gated behind SupportsPairing (true only for
+        // JoyconController), so this makes that invariant impossible to violate by accident
+        // rather than just true in practice today.
+        public JoyconController other {
             get {
                 return _other;
             }
@@ -1276,11 +1277,11 @@ namespace BetterJoyForCemu {
             if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && SupportsPairing) {
                 if ((buttons_down_timestamp[(int)Button.STICK] - lastDoubleClick) < 3000000) {
                     ReleaseGyroMouseActions();
-                    // is-check, not a bare cast: JoinOrSplitJoycon is NintendoController-typed
+                    // is-check, not a bare cast: JoinOrSplitJoycon is JoyconController-typed
                     // (pairing is Joy-Con-only, see Controller.other's comment) - SupportsPairing
-                    // being true above already guarantees this is Nintendo-family today, but this
-                    // stays correct (a silent no-op) rather than throwing if that ever changes.
-                    if (this is NintendoController joyconForDoubleClick)
+                    // being true above already guarantees this is a JoyconController today, but
+                    // this stays correct (a silent no-op) rather than throwing if that ever changes.
+                    if (this is JoyconController joyconForDoubleClick)
                         form.JoinOrSplitJoycon(joyconForDoubleClick); // trigger connection button click
 
                     lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
@@ -1676,7 +1677,7 @@ namespace BetterJoyForCemu {
         // old basis after other changes would mix two coordinate systems and make gyro-mouse or
         // another filtered gyro feature jump/bend badly after join/split. This snapshot is read
         // and updated only by the controller's poll thread.
-        protected NintendoController gyroMouseOrientationPartner;
+        protected JoyconController gyroMouseOrientationPartner;
 
         // Gyro-stick evidence capture. This records the applied path beside the legacy-frame raw
         // rate candidate and all three calibrated sensor samples. Nintendo reports bundle three
@@ -2724,7 +2725,7 @@ namespace BetterJoyForCemu {
         // coordinate bases in ExtractIMUValues. Never carry either orientation estimator across
         // that boundary. Kept on the Poll thread so it cannot race AHRS.Update/MapSample.
         protected void EnsureGyroOrientationBasis() {
-            NintendoController currentPartner = other;
+            JoyconController currentPartner = other;
             if (Object.ReferenceEquals(currentPartner, gyroMouseOrientationPartner))
                 return;
 
