@@ -165,7 +165,11 @@
     <Compile Include="BluetoothRadio.cs" />
     <Compile Include="GameControllerControlPanel.cs" />
     <Compile Include="Joycon.cs" />
+    <Compile Include="JoyconController.cs" />
     <Compile Include="NintendoController.cs" />
+    <Compile Include="ProController.cs" />
+    <Compile Include="SnesController.cs" />
+    <Compile Include="N64Controller.cs" />
     <Compile Include="MadgwickAHRS.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
