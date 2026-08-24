@@ -34,6 +34,18 @@ namespace BetterJoyForCemu {
         public override bool HasAnalogTriggers => false;  // L2/R2 report a real analog value, not just a digital button bit
         public override bool UsesNintendoProtocol => true; // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
 
+        // Internal-only properties (not part of Controller's public capability contract - see
+        // DOCS/CONTROLLERS-REFACTOR.md step 5) that replace the four remaining raw isSnes/is64
+        // gate checks below with named, literal restatements of exactly what they test for today.
+        // Deliberately NOT unified with HasGyro/HasDualSticks above, which stay exactly as they
+        // are (still wrong for SNES/N64 - a known, documented, deliberately-deferred issue, not
+        // fixed in this pass) - these three answer a narrower, purely internal question ("does
+        // this specific method's logic apply to this instance") separate from the public contract
+        // other code already depends on.
+        protected bool HasSticks => !isSnes;                        // SNES has zero physical sticks
+        protected bool HasImuHardware => !(isSnes || is64);          // SNES/N64 have no gyro/accel to read
+        protected bool ReadsCalibrationFromConfig => isSnes || is64; // vs. SPI flash for Joy-Con/Pro
+
         // Single source of truth for device-kind identity - see DOCS/CONTROLLERS-REFACTOR.md's
         // settings/step-1 notes. DualSense no longer appears here at all as of step 4 Phase J -
         // DualSenseController.Kind answers for itself.
@@ -374,7 +386,7 @@ namespace BetterJoyForCemu {
                 }
 
 
-                if (ts_en == raw_buf[1] && !(isSnes || is64)) {
+                if (ts_en == raw_buf[1] && HasImuHardware) {
                     form.AppendTextBox("Duplicate timestamp enqueued.\r\n");
                     DebugPrint(string.Format("Duplicate timestamp enqueued. TS: {0:X2}", ts_en), DebugType.THREADING);
 
@@ -421,7 +433,7 @@ namespace BetterJoyForCemu {
                 DebugPrint("Received a report with report ID 0 - skipping.", DebugType.ALL);
                 return -1;
             }
-            if (!isSnes) {
+            if (HasSticks) {
                 stick_raw[0] = report_buf[6 + (isLeft ? 0 : 3)];
                 stick_raw[1] = report_buf[7 + (isLeft ? 0 : 3)];
                 stick_raw[2] = report_buf[8 + (isLeft ? 0 : 3)];
@@ -520,7 +532,7 @@ namespace BetterJoyForCemu {
 
         // Get Gyro/Accel data
         private void ExtractIMUValues(byte[] report_buf, int n = 0) {
-            if (!(isSnes || is64)) {
+            if (HasImuHardware) {
                 // Must happen before this sample is transformed/added to either estimator. If a
                 // join/split changed the basis, the orientation accumulated in the old basis is
                 // invalid even though the physical controller itself never disconnected.
@@ -661,7 +673,7 @@ namespace BetterJoyForCemu {
         }
 
         private void dump_calibration_data() {
-            if (isSnes || is64 || thirdParty) {
+            if (ReadsCalibrationFromConfig || thirdParty) {
                 short[] temp = (short[])ConfigurationManager.AppSettings["acc_sensiti"].Split(',').Select(s => short.Parse(s)).ToArray();
                 acc_sensiti[0] = temp[0]; acc_sensiti[1] = temp[1]; acc_sensiti[2] = temp[2];
                 temp = (short[])ConfigurationManager.AppSettings["gyr_sensiti"].Split(',').Select(s => short.Parse(s)).ToArray();
