@@ -1012,6 +1012,29 @@ namespace BetterJoyForCemu {
                 (other != null && other != this && other.IsGyroMouseActive());
         }
 
+        // Guide/PS is an output action, not a physical-controller button identity. "default"
+        // retains the established per-controller mapping below (including the solo Joy-Con
+        // layouts); any explicit bind can instead use one physical button, a controller chord,
+        // or a keyboard/mouse combination. The old physical Home-button remap remains separate.
+        protected bool ResolveVirtualGuideState(bool defaultState) {
+            string mapping = MappingValue("guide");
+            if (mapping == "default") {
+                // Preserve the old rule: assigning the physical Home/PS button to something else
+                // also suppressed its hardcoded Guide/PS output. Once Guide has an explicit bind,
+                // the two mappings are intentionally independent.
+                return MappingValue("home") == "0" && defaultState;
+            }
+            if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return false;
+            return IsComboHeld(mapping);
+        }
+
+        private bool TryGetHeldCustomGuideMapping(out string mapping) {
+            mapping = MappingValue("guide");
+            return !String.IsNullOrEmpty(mapping) && mapping != "0" && mapping != "default" &&
+                   IsComboHeld(mapping);
+        }
+
         // Bind capture deliberately uses the left Joycon as a joined pair's canonical Pro-style
         // view. If the ViGEm target survived on the right Joycon, that object's local button array
         // stores the same physical controls under the opposite-half indices. Translate the
@@ -1041,15 +1064,34 @@ namespace BetterJoyForCemu {
         }
 
         protected bool[] GetButtonsForVigem() {
-            if (!PairHasActiveGyroMouse())
+            bool gyroMouseConsumesButtons = PairHasActiveGyroMouse();
+            bool customGuideHeld = TryGetHeldCustomGuideMapping(out string guideMapping);
+            if (!gyroMouseConsumesButtons && !customGuideHeld)
                 return buttons;
 
             Array.Copy(buttons, vigemButtons, buttons.Length);
-            for (int canonicalIndex = 0;
-                 canonicalIndex < gyroOnlyReservedButtons.Length;
-                 canonicalIndex++) {
-                if (gyroOnlyReservedButtons[canonicalIndex])
-                    vigemButtons[CanonicalButtonToLocalVigemIndex(canonicalIndex)] = false;
+            if (gyroMouseConsumesButtons) {
+                for (int canonicalIndex = 0;
+                     canonicalIndex < gyroOnlyReservedButtons.Length;
+                     canonicalIndex++) {
+                    if (gyroOnlyReservedButtons[canonicalIndex])
+                        vigemButtons[CanonicalButtonToLocalVigemIndex(canonicalIndex)] = false;
+                }
+            }
+
+            // A controller button assigned to Guide/PS becomes Guide/PS instead of also leaking
+            // its native virtual button. For chords, consume members only while the full chord is
+            // held; pressing one member alone keeps its ordinary output.
+            if (customGuideHeld) {
+                foreach (string part in guideMapping.Split('+')) {
+                    if (!part.StartsWith("joy_"))
+                        continue;
+
+                    int canonicalIndex;
+                    if (Int32.TryParse(part.Substring(4), out canonicalIndex) &&
+                        canonicalIndex >= 0 && canonicalIndex < vigemButtons.Length)
+                        vigemButtons[CanonicalButtonToLocalVigemIndex(canonicalIndex)] = false;
+                }
             }
             return vigemButtons;
         }
@@ -1546,9 +1588,7 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            // overwrite guide button if it's custom-mapped
-            if (input.MappingValue("home") != "0")
-                output.guide = false;
+            output.guide = input.ResolveVirtualGuideState(output.guide);
 
             if (!(isSnes || is64)) {
                 if (other != null || hasDualSticks) { // no need for && other != this
@@ -1728,9 +1768,7 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            // overwrite guide button if it's custom-mapped
-            if (input.MappingValue("home") != "0")
-                output.ps = false;
+            output.ps = input.ResolveVirtualGuideState(output.ps);
 
             if (!(isSnes || is64)) {
                 if (other != null || hasDualSticks) { // no need for && other != this

@@ -31,7 +31,7 @@ namespace BetterJoyForCemu {
         public const string FileName = "controller_mappings.xml";
 
         public static readonly string[] Keys = {
-            "capture", "home", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
+            "capture", "home", "guide", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
             // independent activation keys below.
@@ -381,6 +381,10 @@ namespace BetterJoyForCemu {
         }
 
         public static string DefaultValue(string key) {
+            // Preserve each controller/output topology's established Guide/PS behavior until the
+            // user explicitly assigns this new independent virtual-button binding.
+            if (key == "guide")
+                return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
             return AppConfigBackedKeys.Contains(key) ? "0" : Config.GetDefaultValue(key);
@@ -694,6 +698,8 @@ namespace BetterJoyForCemu {
         }
 
         private static string LegacyValue(string key) {
+            if (key == "guide")
+                return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
 

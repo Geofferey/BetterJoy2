@@ -166,7 +166,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
 
@@ -194,6 +194,7 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> gyroMouseButtons = new List<SplitButton>();
         private readonly List<SplitButton> gyroStickActivationButtons = new List<SplitButton>();
         private SplitButton btn_ratchet_gyro;
+        private SplitButton btn_guide;
         private List<SplitButton> specialButtons;
 
         private static bool IsGyroActivationKey(string key) {
@@ -260,6 +261,7 @@ namespace BetterJoyForCemu {
             }
 
             btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
+            btn_guide = new SplitButton { Name = "btn_guide" };
 
             btn_gyro_analog_sliders = new SplitButton { Name = "btn_gyro_analog_sliders" };
             btn_gyro_analog_sliders.Menu = menu_gyro_analog_sliders;
@@ -530,20 +532,21 @@ namespace BetterJoyForCemu {
 
         private Panel BuildBindingsPage() {
             Panel page = CreateProfilePage("Bindings",
-                "Choose the controller inputs used for system actions and Joy-Con rail buttons.");
+                "Choose what special inputs do and which input controls virtual Guide / PS.");
             AddSectionHeading(page, "System controls", 96,
-                "Common actions available from this controller profile.");
-            AddMappingRow(page, lbl_capture, btn_capture, "Capture", 157, 24, 150, 430);
-            AddMappingRow(page, lbl_home, btn_home, "Home / Guide", 196, 24, 150, 430);
-            AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 235, 24, 150, 430);
+                "Physical Home / PS behavior and virtual Guide / PS activation are independent.");
+            AddMappingRow(page, lbl_capture, btn_capture, "Capture button", 157, 24, 150, 430);
+            AddMappingRow(page, lbl_home, btn_home, "Home / PS button", 196, 24, 150, 430);
+            AddMappingRow(page, null, btn_guide, "Guide / PS output", 235, 24, 150, 430);
+            AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 274, 24, 150, 430);
 
-            page.Controls.Add(CreateDivider(24, 284));
-            AddSectionHeading(page, "Joy-Con rail buttons", 301,
+            page.Controls.Add(CreateDivider(24, 323));
+            AddSectionHeading(page, "Joy-Con rail buttons", 340,
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 362, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 362, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 403, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 403, 315, 440, 154);
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 401, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 401, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 442, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 442, 315, 440, 154);
             return page;
         }
 
@@ -1606,6 +1609,14 @@ namespace BetterJoyForCemu {
 
         private void GetPrettyName(Control c) {
             string val = GetBindValue((string)c.Tag);
+            if ((string)c.Tag == "guide" && val == "default") {
+                c.Text = "Default (Home / PS)";
+                tip_reassign.SetToolTip(c,
+                    "Uses this controller layout's original Guide / PS behavior.\r\n\r\n" +
+                    "Left-click to detect a replacement button or combo.\r\n" +
+                    "Middle-click to reset.\r\nRight-click for input options.");
+                return;
+            }
             if (IsGyroActivationKey((string)c.Tag) && val == "always") {
                 c.Text = "Always On";
                 tip_reassign.SetToolTip(c,
@@ -1617,13 +1628,14 @@ namespace BetterJoyForCemu {
 
             // A combo is "+"-joined parts (see Joycon.IsComboHeld) - a single-input bind is just
             // a one-part combo, so this handles both uniformly.
-            bool disabledActivation = unassigned && IsGyroActivationKey((string)c.Tag);
-            string description = disabledActivation
+            bool explicitlyDisabled = unassigned &&
+                (IsGyroActivationKey((string)c.Tag) || (string)c.Tag == "guide");
+            string description = explicitlyDisabled
                 ? "(disabled)"
                 : (unassigned ? "(unassigned)" : String.Join("+", val.Split('+').Select(DescribeBindPart)));
-            c.Text = disabledActivation
+            c.Text = explicitlyDisabled
                 ? "Disabled"
-                : (unassigned ? ((c == btn_home) ? "Guide" : "") : description);
+                : (unassigned ? "" : description);
 
             // Long combos can still run out of room on the button itself (see Reassign.Designer.cs
             // for the width these buttons get) - the tooltip always shows the full, untruncated
