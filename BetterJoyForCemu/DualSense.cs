@@ -4,6 +4,7 @@ using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Numerics;
 using System.Text;
 using System.Threading;
 
@@ -59,6 +60,11 @@ namespace BetterJoyForCemu {
         private const float MaxGyroSubSamplePeriod = 0.02f;
 
         protected override float GyroSubSamplePeriod => measuredGyroSubSamplePeriod;
+        // See GyroMath.cs's GyroStickBiasCorrection declaration - opts DualSense's gyro-stick into
+        // the same stationary-bias correction gyro-mouse already gets, confirmed needed via a real
+        // capture (see that comment). Joy-Con never overrides this, so it stays at the class
+        // default (Vector3.Zero, a no-op).
+        protected override Vector3 GyroStickBiasCorrection => gyroMouseBias;
 
         // Gyro/accel calibration, read once from DualSense's own hardware calibration feature
         // report (0x05) at Attach() - see ReadGyroCalibration. Nominal sensor-chip scale
@@ -109,6 +115,7 @@ namespace BetterJoyForCemu {
             // a real pure-pitch hardware test, but Joy-Con has no reported version of this problem,
             // so it stays off there and on only here.
             gyroMousePlayerSpace.EnableExtendedAxisCorrection = true;
+            gyroStickPlayerSpace.EnableExtendedAxisCorrection = true;
         }
 
         // No shared shell worth extracting - see Controller.Attach's abstract declaration. This is
@@ -391,7 +398,13 @@ namespace BetterJoyForCemu {
                 }
 
                 ParseDualSenseReport(dsBuf, reportOffset);
+                // BeginGyroStickDiagnosticReport/AccumulateGyroStickDiagnosticSample bracket every
+                // ExtractIMUValues call so gyro_stick_debug.csv actually gets rows for DualSense -
+                // previously only NintendoController.ReceiveRaw wired these up, so this csv was
+                // silently empty for every DualSense session, gyro-stick issues included.
+                BeginGyroStickDiagnosticReport();
                 ExtractIMUValues(dsBuf, reportOffset);
+                AccumulateGyroStickDiagnosticSample();
                 DoThingsWithButtons();
 
                 // The actual acc_g/gyr_g -> mouse/stick conversion - ExtractIMUValues only
@@ -402,6 +415,10 @@ namespace BetterJoyForCemu {
                 // to gate on.
                 ProcessGyroMouseSample(true);
                 ProcessGyroStickSample(true);
+                // r[6+o] is DualSense's free-running sequence/status counter - the nearest
+                // equivalent to Joy-Con's per-report device timer byte NintendoController passes
+                // here (see ParseDualSenseReport's comment on that same byte).
+                RecordGyroStickDiagnosticReport(dsBuf[6 + reportOffset], Stopwatch.GetTimestamp());
 
                 if (out_xbox != null) {
                     try { out_xbox.UpdateInput(MapToXbox360Input(this)); } catch (Exception) { }

@@ -311,6 +311,16 @@ namespace BetterJoyForCemu {
         // measured elapsed time instead.
         protected virtual float GyroSubSamplePeriod => ImuSamplePeriodSeconds;
 
+        // ProcessGyroStickSample subtracts this from gyroMouseSensorRate before feeding
+        // gyroStickPlayerSpace, mirroring the stationary-bias correction gyro-mouse already
+        // applies via ApplyGyroMouseStationaryBias (see DOCS/GYRO-TO-STICK.md's "Why gyro-stick
+        // doesn't have this" section). Defaults to zero - a no-op, leaving gyro-stick's existing
+        // behavior for every controller that doesn't override this untouched. Confirmed needed on
+        // DualSense (a real capture showed neither yaw nor pitch dominance ever crossing 0.5,
+        // meaning a small uncorrected sensor bias was diluting axis purity on every sample); no
+        // equivalent problem reported on Joy-Con, so it opts in alone via DualSenseController.
+        protected virtual Vector3 GyroStickBiasCorrection => Vector3.Zero;
+
         protected long gyroStickDiagReportSequence;
         protected long gyroStickDiagLastArrivalTimestamp;
         protected bool gyroStickDiagHasDeviceTimer;
@@ -320,6 +330,7 @@ namespace BetterJoyForCemu {
         protected Vector3 gyroStickDiagLegacyAccelSum;
         protected Vector3 gyroStickDiagSensorGyroSum;
         protected Vector3 gyroStickDiagSensorAccelSum;
+        protected Vector3 gyroStickDiagIntegratedLegacyGyro;
         protected Vector3 gyroStickDiagFirstLegacyGyro;
         protected Vector3 gyroStickDiagSecondLegacyGyro;
         protected Vector3 gyroStickDiagThirdLegacyGyro;
@@ -357,6 +368,7 @@ namespace BetterJoyForCemu {
             gyroStickDiagLegacyAccelSum = Vector3.Zero;
             gyroStickDiagSensorGyroSum = Vector3.Zero;
             gyroStickDiagSensorAccelSum = Vector3.Zero;
+            gyroStickDiagIntegratedLegacyGyro = Vector3.Zero;
             gyroStickDiagFirstLegacyGyro = Vector3.Zero;
             gyroStickDiagSecondLegacyGyro = Vector3.Zero;
             gyroStickDiagThirdLegacyGyro = Vector3.Zero;
@@ -387,6 +399,7 @@ namespace BetterJoyForCemu {
             gyroStickDiagLegacyAccelSum += acc_g;
             gyroStickDiagSensorGyroSum += gyroMouseSensorRate;
             gyroStickDiagSensorAccelSum += gyroMouseSensorAccel;
+            gyroStickDiagIntegratedLegacyGyro += gyr_g * GyroSubSamplePeriod;
             gyroStickDiagSampleCount++;
         }
 
@@ -447,7 +460,11 @@ namespace BetterJoyForCemu {
                 "rate_candidate_dx,rate_candidate_dy," +
                 "avg_ax_g,avg_ay_g,avg_az_g,avg_accel_mag_g," +
                 "sensor_gx_dps,sensor_gy_dps,sensor_gz_dps," +
-                "sensor_ax_g,sensor_ay_g,sensor_az_g,sensor_accel_mag_g,q0,q1,q2,q3\r\n";
+                "sensor_ax_g,sensor_ay_g,sensor_az_g,sensor_accel_mag_g,q0,q1,q2,q3," +
+                "stick_grav_x,stick_grav_y,stick_grav_z,stick_trust,stick_yaw_dom,stick_pitch_dom," +
+                "stick_y_leak,stick_p_leak," +
+                "mouse_grav_x,mouse_grav_y,mouse_grav_z,mouse_trust,mouse_yaw_dom,mouse_pitch_dom," +
+                "mouse_y_leak,mouse_p_leak\r\n";
 
             while (true) {
                 Thread.Sleep(500);
@@ -508,8 +525,11 @@ namespace BetterJoyForCemu {
             Vector3 averageSensorAccel = gyroStickDiagSensorAccelSum * inverseSamples;
             float radiansToDegrees = 57.2957795f;
             float degreesToRadians = 0.0174532925f;
-            float integratedPitch = gyroStickDiagLegacyGyroSum.Y * ImuSamplePeriodSeconds;
-            float integratedYaw = gyroStickDiagLegacyGyroSum.Z * ImuSamplePeriodSeconds;
+            // Nintendo contributes three fixed 5 ms samples and DualSense contributes one sample
+            // measured from its hardware clock. Accumulating each sample with the same period the
+            // live mapper used keeps this legacy-frame comparator honest for both report formats.
+            float integratedPitch = gyroStickDiagIntegratedLegacyGyro.Y;
+            float integratedYaw = gyroStickDiagIntegratedLegacyGyro.Z;
             float rateCandidateDx = GyroStickSensitivityX * integratedYaw * degreesToRadians;
             float rateCandidateDy = -GyroStickSensitivityY * integratedPitch * degreesToRadians;
             float[] quaternion = AHRS.Quaternion;
@@ -576,7 +596,23 @@ namespace BetterJoyForCemu {
                 GyroStickCsv(quaternion[0]),
                 GyroStickCsv(quaternion[1]),
                 GyroStickCsv(quaternion[2]),
-                GyroStickCsv(quaternion[3])
+                GyroStickCsv(quaternion[3]),
+                GyroStickCsv(gyroStickPlayerSpace.Gravity.X),
+                GyroStickCsv(gyroStickPlayerSpace.Gravity.Y),
+                GyroStickCsv(gyroStickPlayerSpace.Gravity.Z),
+                GyroStickCsv(gyroStickPlayerSpace.GravityCorrectionTrust),
+                GyroStickCsv(gyroStickPlayerSpace.YawDominance),
+                GyroStickCsv(gyroStickPlayerSpace.PitchDominance),
+                GyroStickCsv(gyroStickPlayerSpace.EvenYawLeakCorrection),
+                GyroStickCsv(gyroStickPlayerSpace.EvenPitchLeakCorrection),
+                GyroStickCsv(gyroMousePlayerSpace.Gravity.X),
+                GyroStickCsv(gyroMousePlayerSpace.Gravity.Y),
+                GyroStickCsv(gyroMousePlayerSpace.Gravity.Z),
+                GyroStickCsv(gyroMousePlayerSpace.GravityCorrectionTrust),
+                GyroStickCsv(gyroMousePlayerSpace.YawDominance),
+                GyroStickCsv(gyroMousePlayerSpace.PitchDominance),
+                GyroStickCsv(gyroMousePlayerSpace.EvenYawLeakCorrection),
+                GyroStickCsv(gyroMousePlayerSpace.EvenPitchLeakCorrection)
             };
             gyroStickDiagQueue.Enqueue(string.Join(",", fields) + "\r\n");
         }
@@ -1564,9 +1600,12 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            const float subSamplePeriod = 0.005f;
+            float subSamplePeriod = GyroSubSamplePeriod;
             const float degreesToRadians = 0.0174532925f;
-            Vector3 stickGyroRate = gyroMouseSensorRate;
+            // GyroStickBiasCorrection defaults to Vector3.Zero (a no-op subtraction, bit-identical
+            // to gyro-stick's prior behavior) - see its own declaration for why this is opt-in
+            // rather than applied unconditionally to every controller.
+            Vector3 stickGyroRate = gyroMouseSensorRate - GyroStickBiasCorrection;
             Vector3 stickAccel = gyroMouseSensorAccel;
 
             // Keep gravity current while the activation control is released so reactivation has
@@ -1662,15 +1701,19 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            // Keep learning the selected controller's zero-rate bias while gyro-mouse is
-            // inactive, so activating it after the controller has been resting does not begin
-            // with half a second of cursor crawl.
+            // Keep learning the selected controller's zero-rate bias only while neither mouse nor
+            // stick gyro is active. DualSense gyro-stick reuses this bias; allowing the estimator
+            // to update merely because gyro-mouse is off would eventually classify a slow,
+            // deliberate stick turn as the new zero and make that direction fight the user.
             bool gyroPointerActive = gyroMouseEnabledThisReport;
+            bool anyGyroOutputActive = gyroPointerActive ||
+                                       gyroLeftStickActiveThisReport ||
+                                       gyroRightStickActiveThisReport;
             Vector3 mouseGyroRate = gyr_g;
             Vector3 mouseAccel = acc_g;
             if (UseFilteredIMU) {
                 Vector3 calibratedSensorRate = ApplyGyroMouseStationaryBias(
-                    gyroMouseSensorRate, !gyroPointerActive);
+                    gyroMouseSensorRate, !anyGyroOutputActive);
                 mouseGyroRate = TransformGyroMouseToNeutralFrame(calibratedSensorRate);
                 mouseAccel = TransformGyroMouseToNeutralFrame(gyroMouseSensorAccel);
             }

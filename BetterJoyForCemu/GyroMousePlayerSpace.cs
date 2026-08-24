@@ -108,6 +108,7 @@ namespace BetterJoyForCemu {
         // opt-in rather than assumed to generalize - set true only from DualSenseController.
         public bool EnableExtendedAxisCorrection;
 
+        public Vector3 Gravity => gravity;
         public float GravityCorrectionTrust => gravityCorrectionTrust;
         public float YawDominance => yawDominance;
         public float PitchDominance => pitchDominance;
