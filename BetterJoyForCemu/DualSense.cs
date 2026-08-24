@@ -36,6 +36,29 @@ namespace BetterJoyForCemu {
         private bool sentUsbActiveLightbar = false;
         private long lastDualSenseRawDumpTimestamp = 0;
         private long lastDualSenseImuLogTimestamp = 0;
+        // GyroSubSamplePeriod override support - see GyroMath.cs's field comment. DualSense's real
+        // report interval has nothing like Joy-Con's fixed 5ms, so ProcessGyroMouseSample/
+        // ProcessGyroStickSample need the actual elapsed time here instead of the Nintendo-tuned
+        // hardcoded constant. Measured from the report's own embedded hardware timestamp
+        // (r[27+o..30+o], a free-running microsecond counter), not wall-clock arrival time - a
+        // real hardware capture showed a fast, sustained wrist-roll motion (gravity trust
+        // correctly dropped to ~0.29, but gyro-only integration still drifted ~99deg from the
+        // accelerometer's own reading, producing a corkscrew cursor path) traced to USB/BT
+        // delivering multiple already-sampled reports in a burst: wall-clock arrival time bunches
+        // those together near-zero apart even though the sensor captured them evenly spaced in
+        // real time, so Stopwatch-based measurement was under-measuring dt exactly when a fast
+        // motion made integration accuracy matter most. The hardware counter reflects the sensor's
+        // own sampling clock and is immune to transport-layer buffering/batching.
+        private uint? lastImuHardwareTimestampTicks;
+        private uint lastLoggedImuDeltaTicks;
+        private float measuredGyroSubSamplePeriod = ImuSamplePeriodSeconds;
+        // Bounds for the measured interval: floor avoids a near-zero/duplicate-timestamp dt
+        // collapsing the gravity-fusion integration to a no-op, ceiling avoids a single stall
+        // (BT hiccup, USB re-enumeration) injecting one wildly oversized rotation step.
+        private const float MinGyroSubSamplePeriod = 0.0005f;
+        private const float MaxGyroSubSamplePeriod = 0.02f;
+
+        protected override float GyroSubSamplePeriod => measuredGyroSubSamplePeriod;
 
         // Gyro/accel calibration, read once from DualSense's own hardware calibration feature
         // report (0x05) at Attach() - see ReadGyroCalibration. Nominal sensor-chip scale
@@ -80,6 +103,12 @@ namespace BetterJoyForCemu {
             RefreshGyroOnlyButtonReservations();
 
             connection = isUSB ? 0x01 : 0x02;
+
+            // Pitch-dominant-motion-leaking-into-yaw correction is opt-in on GyroMousePlayerSpace
+            // (see its EnableExtendedAxisCorrection field comment) - confirmed needed on DualSense via
+            // a real pure-pitch hardware test, but Joy-Con has no reported version of this problem,
+            // so it stays off there and on only here.
+            gyroMousePlayerSpace.EnableExtendedAxisCorrection = true;
         }
 
         // No shared shell worth extracting - see Controller.Attach's abstract declaration. This is
@@ -193,6 +222,15 @@ namespace BetterJoyForCemu {
 
         private static short ReadCalibrationInt16(byte[] buf, int offset) {
             return (short)(buf[offset] | (buf[offset + 1] << 8));
+        }
+
+        // 4-byte LE free-running counter, DualSense's own IMU sample clock - ticks at ~3MHz on
+        // real hardware, not the 1MHz a "microsecond timestamp" label would suggest (see the
+        // ExtractIMUValues call site for the real-hardware measurement that found this). See
+        // measuredGyroSubSamplePeriod's field comment for why this is used over wall-clock timing.
+        private static uint ReadTimestampTicks(byte[] buf, int offset) {
+            return (uint)(buf[offset] | (buf[offset + 1] << 8) |
+                          (buf[offset + 2] << 16) | (buf[offset + 3] << 24));
         }
 
         // Deliberately no override here (inherits Controller's no-op): the old Joycon.PowerOff()
@@ -512,12 +550,37 @@ namespace BetterJoyForCemu {
         // implementations (DS4Windows, nondebug/dualsense, JoyShockLibrary) - all three agree
         // exactly. Wire order is gyroPitch, gyroYaw, gyroRoll (raw sensor channels 0/1/2, DS4
         // Windows's own field names - not a claim about which is physically pitch/yaw/roll on
-        // the real controller), then accelX/Y/Z, then a 4-byte microsecond timestamp this
-        // implementation doesn't need. One IMU sample per report (unlike Joy-Con's three
-        // sub-samples per report), so this runs once per ReceiveRaw call, not in a sub-sample
-        // loop.
+        // the real controller), then accelX/Y/Z, then a 4-byte hardware timestamp used to measure
+        // real per-report elapsed time (see ReadTimestampTicks - despite the name/reference
+        // sources calling it a microsecond counter, a real hardware capture shows it increments at
+        // ~3 ticks/us, not 1; ReadTimestampTicks's caller compensates). One IMU sample per report
+        // (unlike Joy-Con's three sub-samples per report), so this runs once per ReceiveRaw call,
+        // not in a sub-sample loop.
         private void ExtractIMUValues(byte[] r, int o) {
             EnsureGyroOrientationBasis();
+
+            uint hardwareTimestampTicks = ReadTimestampTicks(r, 27 + o);
+            if (lastImuHardwareTimestampTicks.HasValue) {
+                // Unsigned subtraction wraps correctly modulo 2^32 across the counter's rollover,
+                // as long as the true elapsed time between consecutive reports is well under half
+                // that range - always true for a per-report delta.
+                uint deltaTicks = unchecked(hardwareTimestampTicks -
+                                            lastImuHardwareTimestampTicks.Value);
+                // Decoded directly from real raw hex dumps: consecutive samples known to be 250ms
+                // apart (a throttled debug log's own wall-clock interval) showed this counter
+                // advancing by ~750,000 ticks, not ~250,000 - a consistent ~3.0x ratio across five
+                // separate sample pairs (750,418 average / 250,000 = 3.0017). The field name/
+                // reference sources call it a microsecond counter, but on real hardware it's
+                // ticking at ~3MHz, not 1MHz. Dividing by 1,000,000 (treating it as literal
+                // microseconds) was silently feeding gravity integration a dt ~3x too large on
+                // every single report - confirmed as the actual cause of a real corkscrew/spiral
+                // cursor path during sustained wrist roll, even at full gyro trust.
+                float measuredDt = deltaTicks / 3000000.0f;
+                measuredGyroSubSamplePeriod = Math.Max(MinGyroSubSamplePeriod,
+                    Math.Min(MaxGyroSubSamplePeriod, measuredDt));
+                lastLoggedImuDeltaTicks = deltaTicks;
+            }
+            lastImuHardwareTimestampTicks = hardwareTimestampTicks;
 
             gyr_r[0] = ReadCalibrationInt16(r, 15 + o); // gyroPitch (raw channel 0)
             gyr_r[1] = ReadCalibrationInt16(r, 17 + o); // gyroYaw (raw channel 1)
@@ -571,16 +634,17 @@ namespace BetterJoyForCemu {
             float accelYG = CorrectAccelSample(acc_r[1], accelYPlus, accelYMinus);
             float accelZG = CorrectAccelSample(acc_r[2], accelZPlus, accelZMinus);
 
-            // Axis/sign convention - fully verified on real hardware (see
-            // DOCS/CONTROLLERS-REFACTOR.md's DualSense-gyro entry for the investigation this
-            // resolved). UpdateCanonicalGyroMouseImu's fixed rotation reads gyr_g.Y as the
-            // horizontal-driving (yaw) component and gyr_g.Z as the vertical-driving (pitch)
-            // component; gyr_g.X (roll) only feeds AHRS's roll-compensation estimate, not cursor
-            // movement directly - confirmed empirically: rolling the controller left/right
-            // produces zero cursor movement (correct), yaw drives horizontal, pitch drives
-            // vertical, and GyroMouseRollCompensation's roll estimate stays flat during pure
-            // pitch motion instead of tracking it (see the acc_g note below for what fixed that).
-            gyr_g.X = gyroRollDegPerSec;
+            // Axis/sign convention - UpdateCanonicalGyroMouseImu's fixed rotation reads gyr_g.Y
+            // as the horizontal-driving (yaw) component and gyr_g.Z as the vertical-driving
+            // (pitch) component; gyr_g.X supplies roll to Player Space's gravity integration.
+            // DualSense's raw roll channel is opposite the matching accelerometer rotation in
+            // that canonical frame, so negate it here at the device-normalization boundary. A
+            // real table-roll capture showed the old sign making gyro-tracked gravity and the
+            // accelerometer target rotate in opposite directions: gravity error grew to roughly
+            // twice the physical roll angle, eventually projecting otherwise-pure roll into both
+            // mouse axes. Keeping this correction DualSense-specific preserves Nintendo's
+            // established axis convention.
+            gyr_g.X = -gyroRollDegPerSec;
             gyr_g.Y = gyroYawDegPerSec;
             // Sign confirmed on real hardware (was -gyroPitchDegPerSec, produced inverted
             // up/down - tilting up moved the cursor down and vice versa).
@@ -600,6 +664,19 @@ namespace BetterJoyForCemu {
 
             UpdateCanonicalGyroMouseImu();
 
+            // AHRS is a shared field on Controller (Controller.cs:249), constructed once with a
+            // hardcoded 0.005f "5ms sampling rate" - correct for Nintendo's genuinely fixed 3x5ms
+            // report cadence, but MadgwickAHRS.Update integrates its quaternion using this
+            // SamplePeriod internally regardless of how much real time actually elapsed between
+            // calls. This is a second, independent instance of the same class of bug
+            // GyroSubSamplePeriod fixed for GyroMousePlayerSpace: DualSense's real report interval
+            // (measured above into measuredGyroSubSamplePeriod) is nowhere near 5ms, so AHRS's own
+            // tracked orientation - which GyroMouseRollCompensation's wrist-roll correction reads
+            // directly via AHRS.GetEulerAngles() - was drifting/rotating at the wrong rate on every
+            // single DualSense report, independent of whether GyroMousePlayerSpace's own timing was
+            // already fixed. Sync it to the same measured value every report.
+            AHRS.SamplePeriod = measuredGyroSubSamplePeriod;
+
             float deg_to_rad = 0.0174533f;
             AHRS.Update(gyr_g.X * deg_to_rad, gyr_g.Y * deg_to_rad, gyr_g.Z * deg_to_rad, acc_g.X, acc_g.Y, acc_g.Z);
 
@@ -611,9 +688,10 @@ namespace BetterJoyForCemu {
             if ((nowTicks - lastDualSenseImuLogTimestamp) / (double)Stopwatch.Frequency >= 0.25) {
                 lastDualSenseImuLogTimestamp = nowTicks;
                 LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
-                    "IMU: raw gyro=({0},{1},{2}) raw accel=({3},{4},{5}) gyr_g=({6:F1},{7:F1},{8:F1})deg/s acc_g=({9:F2},{10:F2},{11:F2})g",
+                    "IMU: raw gyro=({0},{1},{2}) raw accel=({3},{4},{5}) gyr_g=({6:F1},{7:F1},{8:F1})deg/s acc_g=({9:F2},{10:F2},{11:F2})g dt={12:F3}ms rawTicksDelta={13}",
                     gyr_r[0], gyr_r[1], gyr_r[2], acc_r[0], acc_r[1], acc_r[2],
-                    gyr_g.X, gyr_g.Y, gyr_g.Z, acc_g.X, acc_g.Y, acc_g.Z));
+                    gyr_g.X, gyr_g.Y, gyr_g.Z, acc_g.X, acc_g.Y, acc_g.Z,
+                    measuredGyroSubSamplePeriod * 1000.0f, lastLoggedImuDeltaTicks));
             }
         }
 

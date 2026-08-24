@@ -299,6 +299,18 @@ namespace BetterJoyForCemu {
         protected static int gyroStickDiagHeaderWritten;
         protected const float ImuSamplePeriodSeconds = 0.005f;
 
+        // ProcessGyroMouseSample/ProcessGyroStickSample integrate Player Space's gravity fusion
+        // and rate accumulation using this as "how much real time this call represents." Nintendo
+        // reports arrive as three genuinely fixed 5ms sub-samples on a hardware-guaranteed clock
+        // (see 92e388a, "Fix filtered gyro-stick motion mapping") - no measurement needed or
+        // wanted there, so NintendoController never overrides this. DualSense has no such
+        // guarantee: it delivers one IMU sample per report at a variable interval (confirmed on
+        // real hardware to average ~1.5ms, ranging 0-28ms - nowhere near a fixed 5ms), so treating
+        // every call as a 5ms tick over/under-integrates the tracked gravity vector by a large,
+        // inconsistent factor call to call. DualSenseController overrides this with a real
+        // measured elapsed time instead.
+        protected virtual float GyroSubSamplePeriod => ImuSamplePeriodSeconds;
+
         protected long gyroStickDiagReportSequence;
         protected long gyroStickDiagLastArrivalTimestamp;
         protected bool gyroStickDiagHasDeviceTimer;
@@ -876,10 +888,11 @@ namespace BetterJoyForCemu {
                 allowCalibration ? "activeData[1]" : "gyr_neutral[1]", neutralValue,
                 diagIntervalDx, diagIntervalDy, diagIntervalSampleCount);
             line += string.Format(
-                "  |  gravity trust={0,5:F3} yaw-dom={1,5:F3} pitch-dom={2,5:F3} error={3,6:F2}deg y-leak={4,7:F4} y-corr={5,7:F3} p-leak={6,7:F4} p-corr={7,7:F3}  |  timing[{8}]: HID ms avg={9,6:F2} min={10,6:F2} max={11,6:F2} n={12,3}; timer d avg={13,5:F2} min={14,3} max={15,3} unexpected={16,3}; phase ms/report HID-wait avg={17,6:F2} min={18,6:F2} max={19,6:F2}, outside-HID avg={20,6:F2} min={21,6:F2} max={22,6:F2} n={23,3}; pointer-request ms avg={24,6:F2} min={25,6:F2} max={26,6:F2} n={27,3}\r\n",
+                "  |  gravity trust={0,5:F3} yaw-dom={1,5:F3} pitch-dom={2,5:F3} roll-dom={3,5:F3} error={4,6:F2}deg y-leak={5,7:F4} y-corr={6,7:F3} p-leak={7,7:F4} p-corr={8,7:F3}  |  timing[{9}]: HID ms avg={10,6:F2} min={11,6:F2} max={12,6:F2} n={13,3}; timer d avg={14,5:F2} min={15,3} max={16,3} unexpected={17,3}; phase ms/report HID-wait avg={18,6:F2} min={19,6:F2} max={20,6:F2}, outside-HID avg={21,6:F2} min={22,6:F2} max={23,6:F2} n={24,3}; pointer-request ms avg={25,6:F2} min={26,6:F2} max={27,6:F2} n={28,3}\r\n",
                 gyroMousePlayerSpace.GravityCorrectionTrust,
                 gyroMousePlayerSpace.YawDominance,
                 gyroMousePlayerSpace.PitchDominance,
+                gyroMousePlayerSpace.RollDominance,
                 gyroMousePlayerSpace.GravityErrorDegrees,
                 gyroMousePlayerSpace.EvenYawLeakRatio,
                 gyroMousePlayerSpace.EvenYawLeakCorrection,
@@ -1662,7 +1675,7 @@ namespace BetterJoyForCemu {
                 mouseAccel = TransformGyroMouseToNeutralFrame(gyroMouseSensorAccel);
             }
 
-            const float subSamplePeriod = 0.005f;
+            float subSamplePeriod = GyroSubSamplePeriod;
             const float degToRad = 0.0174533f;
 
             // The legacy X/Y sensitivities define the established 45-degree reference gain.

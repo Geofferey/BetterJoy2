@@ -44,6 +44,32 @@ namespace BetterJoyForCemu {
         private const float MinimumGravityTrust = 0.25f;
         private const float TrustReductionHalfTime = 0.05f;
         private const float TrustRecoveryHalfTime = 0.35f;
+        // Per-axis dominance is computed from the SAME gravityDirection estimate the trust
+        // reduction exists to protect - during a fast, transient flick (confirmed on DualSense: a
+        // roll spiking to 170+deg/s and back within ~250ms) the true rotation axis is itself noisy
+        // sample to sample before gravity has had a chance to track it, so dominance can bounce
+        // between axes (or land on the wrong one) throughout the whole event and never cleanly
+        // cross DominanceStart for long enough to fully engage. This second, dominance-independent
+        // term is a safety net keyed on total angular speed alone regardless of axis: any
+        // sufficiently fast rotation is centripetal-artifact-prone whether or not per-axis
+        // classification currently agrees on which axis it's happening around. Thresholds sit well
+        // above normal gyro-mouse aiming speeds specifically to avoid damping legitimate fast
+        // diagonal flicks, which this cannot distinguish from a fast roll by design.
+        private const float OverallSpeedTrustReductionStart = 60.0f; // degrees/sec
+        private const float OverallSpeedTrustReductionFull = 160.0f; // degrees/sec
+        // Yaw's speed/dominance thresholds above were tuned for exactly one trigger (2027652,
+        // Joy-Con, yaw only). Reusing those same low thresholds for pitch and roll turns this into
+        // an OR of three independent triggers instead of one - confirmed on real DualSense
+        // hardware: median gravity trust across a normal, non-aggressive handling capture was
+        // 0.469 (a quarter of all samples at the floor), because ordinary in-hand movement crosses
+        // 2deg/s and 80% single-axis purity on SOME axis often enough that at least one of the
+        // three almost always fires. Pitch and roll need meaningfully stricter bars than yaw's
+        // proven single-trigger tuning - genuinely fast AND genuinely pure rotation, not the
+        // everyday threshold yaw alone could safely use.
+        private const float ExtendedTrustReductionStartRate = 15.0f; // degrees/sec
+        private const float ExtendedTrustReductionFullRate = 60.0f; // degrees/sec
+        private const float ExtendedDominanceStart = 0.90f;
+        private const float ExtendedDominanceFull = 0.98f;
         // Residual leakage that points the same way for both signs of the dominant axis cannot be
         // represented by a conventional signed cross-axis coefficient. Learn leaked-axis /
         // |dominant-axis| instead. The narrow purity gate keeps ordinary diagonals and corner-to-
@@ -63,15 +89,29 @@ namespace BetterJoyForCemu {
         private float gravityCorrectionTrust = 1.0f;
         private float yawDominance;
         private float pitchDominance;
+        private float rollDominance;
         private float gravityErrorDegrees;
         private float evenYawLeakRatio;
         private float evenYawLeakCorrection;
         private float evenPitchLeakRatio;
         private float evenPitchLeakCorrection;
 
+        // Gates every generalization beyond 2027652's original yaw-dominant-only formula: pitch
+        // dominance and roll dominance both folded into gravity-trust reduction, and pitch->yaw
+        // leak correction. Off by default so every existing caller - specifically Joy-Con's
+        // gyroMousePlayerSpace/gyroStickPlayerSpace instances, already tuned and trusted via
+        // 2027652 - gets bit-identical behavior to before any of this existed. Confirmed needed on
+        // DualSense hardware via two separate real tests (pure pitch drifted left/right; rolling
+        // the wrist produced a corkscrew cursor path - both are the same centripetal-acceleration
+        // mechanism 2027652 already fixed for yaw, just on axes that formula never covered). The
+        // user explicitly has no such problem on Joy-Con doing the same motions, so this stays
+        // opt-in rather than assumed to generalize - set true only from DualSenseController.
+        public bool EnableExtendedAxisCorrection;
+
         public float GravityCorrectionTrust => gravityCorrectionTrust;
         public float YawDominance => yawDominance;
         public float PitchDominance => pitchDominance;
+        public float RollDominance => rollDominance;
         public float GravityErrorDegrees => gravityErrorDegrees;
         public float EvenYawLeakRatio => evenYawLeakRatio;
         public float EvenYawLeakCorrection => evenYawLeakCorrection;
@@ -86,6 +126,7 @@ namespace BetterJoyForCemu {
             gravityCorrectionTrust = 1.0f;
             yawDominance = 0.0f;
             pitchDominance = 0.0f;
+            rollDominance = 0.0f;
             gravityErrorDegrees = 0.0f;
             evenYawLeakRatio = 0.0f;
             evenYawLeakCorrection = 0.0f;
@@ -111,6 +152,7 @@ namespace BetterJoyForCemu {
                 gravityCorrectionTrust = 1.0f;
                 yawDominance = 0.0f;
                 pitchDominance = 0.0f;
+                rollDominance = 0.0f;
                 gravityErrorDegrees = 0.0f;
                 evenYawLeakCorrection = 0.0f;
                 evenPitchLeakCorrection = 0.0f;
@@ -155,6 +197,24 @@ namespace BetterJoyForCemu {
                 ? Clamp01(pitchSpeed / angularSpeedDegrees)
                 : 0.0f;
 
+            // The third axis completing the yaw/pitch/roll triad - rotation around the
+            // controller's own pointing axis, which by construction is orthogonal to both
+            // gravityDirection (yaw's axis) and worldPitchAxisForDominance (pitch's axis). Pure
+            // roll drives neither yawRate nor pitchRate, so it was invisible to both dominance
+            // checks above - but it produces the exact same centripetal accelerometer corruption
+            // during a fast wrist roll, just with nowhere for the existing formula to detect it.
+            // Left uncorrected, that corrupted accelerometer reading gets full trust throughout
+            // the roll and drags the tracked gravity vector away from truth, which then reads out
+            // as a corkscrew/spiral cursor path once the (temporarily wrong) gravity reference
+            // feeds back into yawRate/pitchRate.
+            Vector3 rollAxis = Vector3.Cross(gravityDirection, worldPitchAxisForDominance);
+            float rollSpeed = rollAxis.LengthSquared() > 0.0f
+                ? Math.Abs(Vector3.Dot(Vector3.Normalize(rollAxis), gyroDegPerSec))
+                : 0.0f;
+            rollDominance = angularSpeedDegrees > 1e-5f
+                ? Clamp01(rollSpeed / angularSpeedDegrees)
+                : 0.0f;
+
             // Both factors use magnitudes deliberately. A centripetal/rectification error is
             // even in the dominant axis's direction, so turning/tilting either way along it must
             // produce identical trust. Whichever axis - yaw or pitch - is actually dominant right
@@ -168,14 +228,35 @@ namespace BetterJoyForCemu {
                 (yawDominance - DominanceStart) /
                 (DominanceFull - DominanceStart)));
             float pitchSpeedConfidence = SmoothStep(Clamp01(
-                (pitchSpeed - TrustReductionStartRate) /
-                (TrustReductionFullRate - TrustReductionStartRate)));
+                (pitchSpeed - ExtendedTrustReductionStartRate) /
+                (ExtendedTrustReductionFullRate - ExtendedTrustReductionStartRate)));
             float pitchDominanceConfidence = SmoothStep(Clamp01(
-                (pitchDominance - DominanceStart) /
-                (DominanceFull - DominanceStart)));
-            float dominantAxisTrustReduction = Math.Max(
-                yawSpeedConfidence * yawDominanceConfidence,
-                pitchSpeedConfidence * pitchDominanceConfidence);
+                (pitchDominance - ExtendedDominanceStart) /
+                (ExtendedDominanceFull - ExtendedDominanceStart)));
+            float rollSpeedConfidence = SmoothStep(Clamp01(
+                (rollSpeed - ExtendedTrustReductionStartRate) /
+                (ExtendedTrustReductionFullRate - ExtendedTrustReductionStartRate)));
+            float rollDominanceConfidence = SmoothStep(Clamp01(
+                (rollDominance - ExtendedDominanceStart) /
+                (ExtendedDominanceFull - ExtendedDominanceStart)));
+            // yawSpeedConfidence/yawDominanceConfidence alone reproduces the pre-existing,
+            // already-trusted 2027652 formula exactly - EnableExtendedAxisCorrection off (the
+            // default) folds in nothing extra, so callers that never opt in see the identical
+            // trust value they always did.
+            float dominantAxisTrustReduction = yawSpeedConfidence * yawDominanceConfidence;
+            if (EnableExtendedAxisCorrection) {
+                dominantAxisTrustReduction = Math.Max(dominantAxisTrustReduction,
+                    pitchSpeedConfidence * pitchDominanceConfidence);
+                dominantAxisTrustReduction = Math.Max(dominantAxisTrustReduction,
+                    rollSpeedConfidence * rollDominanceConfidence);
+                // Dominance-independent safety net - see OverallSpeedTrustReductionStart/Full's
+                // field comment. No dominance factor: engages purely on total speed.
+                float overallSpeedConfidence = SmoothStep(Clamp01(
+                    (angularSpeedDegrees - OverallSpeedTrustReductionStart) /
+                    (OverallSpeedTrustReductionFull - OverallSpeedTrustReductionStart)));
+                dominantAxisTrustReduction = Math.Max(dominantAxisTrustReduction,
+                    overallSpeedConfidence);
+            }
             float targetTrust = 1.0f - dominantAxisTrustReduction * (1.0f - MinimumGravityTrust);
             float trustHalfTime = targetTrust < gravityCorrectionTrust
                 ? TrustReductionHalfTime
@@ -239,18 +320,40 @@ namespace BetterJoyForCemu {
             float originalYawRate = yawRate;
             float originalPitchRate = pitchRate;
             ApplyEvenYawLeakCorrection(ref pitchRate, originalYawRate, deltaTime);
-            ApplyEvenPitchLeakCorrection(ref yawRate, originalPitchRate, deltaTime);
+            // Opt-in - see EnableExtendedAxisCorrection's field comment. Skipped entirely (not just
+            // zeroed) when off, so yawRate is left exactly as Map() originally computed it, same
+            // as every caller got before this correction existed.
+            if (EnableExtendedAxisCorrection)
+                ApplyEvenPitchLeakCorrection(ref yawRate, originalPitchRate, deltaTime);
 
             // Diagnostic only: zero while the canonical controller frame is flat.
             rollRadians = (float)Math.Atan2(gravityDirection.X, -gravityDirection.Y);
         }
 
-        // Match GamepadMotionHelpers::CalculateWorldSpaceGyro's vertical axis: the controller's
-        // LOCAL pitch axis (+X) projected onto the plane perpendicular to gravity. Shared between
-        // Update() (to judge pitch dominance for gravity-trust reduction) and Map() (to compute
-        // the actual pitch output), so both agree on what "pitch" means at a given gravity pose.
-        private static Vector3 ComputeWorldPitchAxis(Vector3 gravityDirection,
-                                                      out float sideReduction) {
+        // Returns the controller-local rotation axis that should drive screen vertical movement.
+        // The legacy GamepadMotionHelpers projection is retained for existing callers. Its fixed
+        // local +X source fades to zero when +X aligns with gravity, however, so at a 90-degree
+        // wrist roll it loses one pointer axis instead of exchanging local pitch and yaw. The
+        // DualSense opt-in path derives screen pitch from forward x gravity: flat it is local +X;
+        // as the wrist rolls it rotates continuously into +/-Y; only pointing the controller's
+        // forward axis vertically is genuinely singular. Update() and Map() share this function
+        // so dominance classification and output always use the same basis.
+        private Vector3 ComputeWorldPitchAxis(Vector3 gravityDirection,
+                                               out float sideReduction) {
+            if (EnableExtendedAxisCorrection) {
+                Vector3 dynamicAxis = Vector3.Cross(new Vector3(0.0f, 0.0f, 1.0f),
+                                                    gravityDirection);
+                float length = dynamicAxis.Length();
+                if (length <= 0.0f) {
+                    sideReduction = 0.0f;
+                    return Vector3.Zero;
+                }
+
+                dynamicAxis /= length;
+                sideReduction = Clamp01(length / WorldPitchSideReductionThreshold);
+                return dynamicAxis;
+            }
+
             float gravityAlongLocalPitch = gravityDirection.X;
             Vector3 axis = new Vector3(1.0f, 0.0f, 0.0f) - gravityDirection * gravityAlongLocalPitch;
             float lengthSquared = axis.LengthSquared();
