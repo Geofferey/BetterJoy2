@@ -791,7 +791,7 @@ namespace BetterJoyForCemu {
             if (Program.mgr == null)
                 return;
 
-            int buttonCount = Enum.GetValues(typeof(Joycon.Button)).Length;
+            int buttonCount = Enum.GetValues(typeof(Controller.Button)).Length;
             foreach (Controller jc in Program.mgr.j) {
                 // See the identical skip in Reassign.cs's JoyPoll_Tick - a joined pair's two
                 // halves cross-reference each other's raw buttons, so polling both independently
@@ -805,13 +805,13 @@ namespace BetterJoyForCemu {
                 if (!buttonCapturePrev.TryGetValue(jc, out bool[] prev)) {
                     prev = new bool[buttonCount];
                     for (int bi = 0; bi < buttonCount; bi++)
-                        prev[bi] = jc.GetButton((Joycon.Button)bi);
+                        prev[bi] = jc.GetButton((Controller.Button)bi);
                     buttonCapturePrev[jc] = prev;
                     continue; // baseline only - don't report a controller's already-held buttons as fresh presses
                 }
 
                 for (int bi = 0; bi < buttonCount; bi++) {
-                    bool now = jc.GetButton((Joycon.Button)bi);
+                    bool now = jc.GetButton((Controller.Button)bi);
                     if (now == prev[bi])
                         continue;
                     prev[bi] = now;

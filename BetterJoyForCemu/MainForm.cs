@@ -484,7 +484,7 @@ namespace BetterJoyForCemu {
                 }
 
                 button.Tag = (int)record.PadId;
-                button.BackColor = record.Battery >= 0 ? Joycon.GetBatteryColor(record.Battery) : Color.FromArgb(0x00, SystemColors.Control);
+                button.BackColor = record.Battery >= 0 ? Controller.GetBatteryColor(record.Battery) : Color.FromArgb(0x00, SystemColors.Control);
 
                 // Mirrors AssignJoyconToSlot's loc-button wiring - unsubscribe first since this
                 // whole method reruns on every snapshot push, unlike AssignJoyconToSlot which

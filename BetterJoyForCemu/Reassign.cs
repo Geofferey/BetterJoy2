@@ -130,12 +130,12 @@ namespace BetterJoyForCemu {
             CreateDynamicProfileControls();
             BuildProfileInterface();
 
-            foreach (int i in Enum.GetValues(typeof(Joycon.Button))) {
-                ToolStripMenuItem temp = new ToolStripMenuItem(Enum.GetName(typeof(Joycon.Button), i));
+            foreach (int i in Enum.GetValues(typeof(Controller.Button))) {
+                ToolStripMenuItem temp = new ToolStripMenuItem(Enum.GetName(typeof(Controller.Button), i));
                 temp.Tag = i;
                 menu_joy_buttons.Items.Add(temp);
 
-                ToolStripMenuItem activationItem = new ToolStripMenuItem(Enum.GetName(typeof(Joycon.Button), i));
+                ToolStripMenuItem activationItem = new ToolStripMenuItem(Enum.GetName(typeof(Controller.Button), i));
                 activationItem.Tag = i;
                 menu_gyro_activation.Items.Add(activationItem);
             }
@@ -1632,7 +1632,7 @@ namespace BetterJoyForCemu {
         }
 
         private static string DescribeBindPart(string part) {
-            Type t = part.StartsWith("joy_") ? typeof(Joycon.Button) : (part.StartsWith("key_") ? typeof(WindowsInput.Events.KeyCode) : typeof(WindowsInput.Events.ButtonCode));
+            Type t = part.StartsWith("joy_") ? typeof(Controller.Button) : (part.StartsWith("key_") ? typeof(WindowsInput.Events.KeyCode) : typeof(WindowsInput.Events.ButtonCode));
             return Enum.GetName(t, Int32.Parse(part.Substring(4)));
         }
 

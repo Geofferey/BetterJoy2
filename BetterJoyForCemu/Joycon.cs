@@ -275,24 +275,6 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Shared with MainForm.AssignJoyconToSlot, which needs to apply an already-known
-        // battery level immediately when a Joycon claims a slot (e.g. splitting off a
-        // collapsed pair) - otherwise that slot would show no battery color at all until the
-        // next battery-level event happens to fire.
-        public static System.Drawing.Color GetBatteryColor(int battery) {
-            switch (battery) {
-                case 4:
-                case 3:
-                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.Green);
-                case 2:
-                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.GreenYellow);
-                case 1:
-                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.Orange);
-                default:
-                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.Red);
-            }
-        }
-
         // RetireDuplicateConnections' generic MAC-based dedup now lives directly on Controller
         // (step 4 Phase J) - Joycon no longer needs its own override at all, since the
         // DualSense-only Bluetooth-auto-disconnect tail that used to be spliced into this method

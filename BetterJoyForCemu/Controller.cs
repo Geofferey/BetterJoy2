@@ -728,6 +728,22 @@ namespace BetterJoyForCemu {
         // the ControllerKind enum this returns (used by the remote-mode snapshot protocol).
         public abstract ControllerKind Kind { get; }
 
+        // Device-agnostic battery%->Color mapping - promoted off Joycon (step 5) since nothing in
+        // its body is Joy-Con-specific. Used by MainForm's remote-snapshot rendering.
+        public static System.Drawing.Color GetBatteryColor(int battery) {
+            switch (battery) {
+                case 4:
+                case 3:
+                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.Green);
+                case 2:
+                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.GreenYellow);
+                case 1:
+                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.Orange);
+                default:
+                    return System.Drawing.Color.FromArgb(0xAA, System.Drawing.Color.Red);
+            }
+        }
+
         // Monotonic creation order, assigned once in the constructor - used to decide which half
         // of a pair gets disconnected on join: whichever connected (and got its virtual
         // controller created) FIRST is the one most likely to already be the controller a

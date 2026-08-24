@@ -20,7 +20,7 @@ namespace BetterJoyForCemu {
 				case "capture":
 					return "key_" + ((int)WindowsInput.Events.KeyCode.PrintScreen);
 				case "reset_mouse":
-					return "joy_" + ((int)Joycon.Button.STICK);
+					return "joy_" + ((int)Controller.Button.STICK);
 			}
 			return "0";
 		}
