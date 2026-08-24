@@ -207,6 +207,13 @@ namespace BetterJoyForCemu {
             // placeholder-serial heuristic isUSB otherwise depends on.
             if (dsRet == 64 || dsRet == 78) {
                 isUSB = dsRet == 64;
+                // connection (the DSU/cemuhook transport byte UpdServer.cs reports to clients) was
+                // otherwise only ever set once in the constructor from the initial isUSB guess and
+                // never updated again - it could silently disagree with isUSB's real per-packet
+                // correction above after a transport switch (e.g. connecting over USB after a
+                // stale Bluetooth link). Keep them in lockstep here, at the one place isUSB itself
+                // is corrected. See DOCS/CONTROLLERS-REFACTOR.md step 7.
+                connection = isUSB ? 0x01 : 0x02;
                 if (isUSB && !sentUsbActiveLightbar) {
                     // Fires once per connection, on the first confirmed-USB read - covers every
                     // USB-connect scenario (fresh plug-in, reconnect, with or without a prior
