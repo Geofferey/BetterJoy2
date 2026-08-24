@@ -538,12 +538,9 @@ namespace BetterJoyForCemu {
         // style idle checks) and gyro-mouse idle detection, both device-generic.
         protected long inactivity = Stopwatch.GetTimestamp();
 
-        // volatile: written by other's setter (join/split thread) and read by Joycon's
-        // MappingValue/ProfileBoolOption/etc (poll thread) - see OnOtherChanging's override in
-        // Joycon for the race this guards against. Type kept as Joycon (not Controller) since
-        // ProcessButtonsAndStick reaches into other.otherStick, a Joycon-only field - an accepted
-        // interim state until NintendoController exists as this property's natural typed home
-        // (see DOCS/CONTROLLERS-REFACTOR.md step 5).
+        // volatile: written by other's setter (join/split thread) and read by NintendoController's
+        // MappingValue/ProfileBoolOption/etc (poll thread) - see OnOtherChanging's override there
+        // for the race this guards against.
         protected volatile string mappingProfileId;
 
         // Program.cs's MAC resolution (DualSense's feature-report read, Joy-Con's BT-address
@@ -562,14 +559,17 @@ namespace BetterJoyForCemu {
             mappingProfileId = null;
         }
 
-        private Joycon _other = null;
+        private NintendoController _other = null;
 
         // Pairing contract: null = solo, == this = self-paired ("vertical"), == <other instance>
         // = a real two-unit pair. Only Joy-Con-family currently ever sets this away from null
         // (see SupportsPairing) - the mechanism itself is device-agnostic (a device that never
         // pairs just never touches it), which is why it lives here rather than only on the
-        // Joy-Con-specific parts of the hierarchy.
-        public Joycon other {
+        // Joy-Con-specific parts of the hierarchy. Typed NintendoController (step 5 sub-step D2a)
+        // rather than the wider Controller, since ProcessButtonsAndStick reaches into
+        // other.otherStick, a Nintendo-family-only field - narrows further to JoyconController in
+        // sub-step D2b, since only Joy-Con actually pairs.
+        public NintendoController other {
             get {
                 return _other;
             }
@@ -581,16 +581,16 @@ namespace BetterJoyForCemu {
 
                 // Queued (RequestLEDUpdate), not written directly - this setter runs on
                 // whatever thread is doing the join/split (scan thread for auto-join, UI/pipe
-                // thread for a manual one), which by this point always races this Joycon's own
+                // thread for a manual one), which by this point always races this controller's own
                 // already-running Poll() thread for the HID handle. See RequestLEDUpdate's
                 // comment.
                 if (_other == null || _other == this) {
                     // Solo (_other == null, held sideways) and self-paired ("vertical",
-                    // _other == this, held upright) both use this Joycon's own PadId for its LED -
-                    // neither has a partner controller to share a pair's LED value with.
+                    // _other == this, held upright) both use this controller's own PadId for its
+                    // LED - neither has a partner controller to share a pair's LED value with.
                     RequestLEDUpdate(PadId);
                 } else {
-                    // Set LED to current Joycon Pair
+                    // Set LED to current pair
                     int lowestPadId = Math.Min(_other.PadId, PadId);
                     RequestLEDUpdate(lowestPadId);
                 }
@@ -1276,11 +1276,11 @@ namespace BetterJoyForCemu {
             if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && SupportsPairing) {
                 if ((buttons_down_timestamp[(int)Button.STICK] - lastDoubleClick) < 3000000) {
                     ReleaseGyroMouseActions();
-                    // is-check, not a bare cast: JoinOrSplitJoycon is Joycon-typed (pairing is
-                    // Joy-Con-only, see Controller.other's comment) - SupportsPairing being true
-                    // above already guarantees this is a Joycon today, but this stays correct
-                    // (a silent no-op) rather than throwing if that ever changes.
-                    if (this is Joycon joyconForDoubleClick)
+                    // is-check, not a bare cast: JoinOrSplitJoycon is NintendoController-typed
+                    // (pairing is Joy-Con-only, see Controller.other's comment) - SupportsPairing
+                    // being true above already guarantees this is Nintendo-family today, but this
+                    // stays correct (a silent no-op) rather than throwing if that ever changes.
+                    if (this is NintendoController joyconForDoubleClick)
                         form.JoinOrSplitJoycon(joyconForDoubleClick); // trigger connection button click
 
                     lastDoubleClick = buttons_down_timestamp[(int)Button.STICK];
@@ -1671,12 +1671,12 @@ namespace BetterJoyForCemu {
         protected Vector2 filteredGyroMouseRate;
         protected bool filteredGyroMouseRateInitialized;
 
-        // A solo Joycon is held sideways and ExtractIMUValues rotates its gyro axes; a joined
-        // Joycon uses the pair/vertical basis instead. Keeping an orientation integrated in the
+        // A solo Joy-Con is held sideways and ExtractIMUValues rotates its gyro axes; a joined
+        // pair uses the pair/vertical basis instead. Keeping an orientation integrated in the
         // old basis after other changes would mix two coordinate systems and make gyro-mouse or
         // another filtered gyro feature jump/bend badly after join/split. This snapshot is read
         // and updated only by the controller's poll thread.
-        protected Joycon gyroMouseOrientationPartner;
+        protected NintendoController gyroMouseOrientationPartner;
 
         // Gyro-stick evidence capture. This records the applied path beside the legacy-frame raw
         // rate candidate and all three calibrated sensor samples. Nintendo reports bundle three
@@ -2720,11 +2720,11 @@ namespace BetterJoyForCemu {
             // shares a controller with gyro-mouse.
         }
 
-        // A solo Joycon and a joined Joycon transform the same physical IMU into different
+        // A solo Joy-Con and a joined pair transform the same physical IMU into different
         // coordinate bases in ExtractIMUValues. Never carry either orientation estimator across
         // that boundary. Kept on the Poll thread so it cannot race AHRS.Update/MapSample.
         protected void EnsureGyroOrientationBasis() {
-            Joycon currentPartner = other;
+            NintendoController currentPartner = other;
             if (Object.ReferenceEquals(currentPartner, gyroMouseOrientationPartner))
                 return;
 
@@ -3276,10 +3276,10 @@ namespace BetterJoyForCemu {
                 output.axis_right_x = (short) ((buttons[(int)Button.X] ? Int16.MinValue : 0) + (buttons[(int)Button.MINUS] ? Int16.MaxValue : 0));
                 output.axis_right_y = (short) ((buttons[(int)Button.SHOULDER2_2] ? Int16.MinValue: 0) + (buttons[(int)Button.Y] ? Int16.MaxValue: 0));
 
-                // N64's stick-drift-tracking calibration (minX/maxX/minY/maxY) is Nintendo-only
-                // state that stays on Joycon - is64 being true already guarantees input actually
+                // N64's stick-drift-tracking calibration (minX/maxX/minY/maxY) is N64-only state
+                // that stays on N64Controller - is64 being true already guarantees input actually
                 // is one (no other Kind ever reports N64), so this cast is safe.
-                var n64Stick = Joycon.Getn64StickValues((Joycon)input);
+                var n64Stick = N64Controller.Getn64StickValues((N64Controller)input);
 
                 output.axis_left_x = CastStickValue(n64Stick[0]);
                 output.axis_left_y = CastStickValue(n64Stick[1]);

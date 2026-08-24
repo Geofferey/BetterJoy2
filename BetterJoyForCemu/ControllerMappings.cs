@@ -570,8 +570,8 @@ namespace BetterJoyForCemu {
             // Past this point only Joy-Con Left/Right kinds remain - the only pairing-capable
             // topology today (see Controller.other's comment). The is-check is redundant given
             // Kind's fallthrough already narrows to Joy-Con in practice, but keeps this correct
-            // if a future non-Joycon device somehow reaches here instead of an early return above.
-            if (!(controller is Joycon joycon))
+            // if a future non-pairing device somehow reaches here instead of an early return above.
+            if (!(controller is NintendoController joycon))
                 return ownId;
 
             if (joycon.other == joycon)
@@ -579,8 +579,8 @@ namespace BetterJoyForCemu {
             if (joycon.other == null)
                 return (joycon.isLeft ? "solo-left:" : "solo-right:") + ownId;
 
-            Joycon left = joycon.isLeft ? joycon : joycon.other;
-            Joycon right = joycon.isLeft ? joycon.other : joycon;
+            NintendoController left = joycon.isLeft ? joycon : joycon.other;
+            NintendoController right = joycon.isLeft ? joycon.other : joycon;
             return "pair:" + DeviceId(left) + "+" + DeviceId(right);
         }
 
@@ -588,9 +588,9 @@ namespace BetterJoyForCemu {
             if (controller == null)
                 return null;
 
-            if (controller is Joycon pairJoycon && pairJoycon.other != null && pairJoycon.other != pairJoycon) {
-                Joycon left = pairJoycon.isLeft ? pairJoycon : pairJoycon.other;
-                Joycon right = pairJoycon.isLeft ? pairJoycon.other : pairJoycon;
+            if (controller is NintendoController pairJoycon && pairJoycon.other != null && pairJoycon.other != pairJoycon) {
+                NintendoController left = pairJoycon.isLeft ? pairJoycon : pairJoycon.other;
+                NintendoController right = pairJoycon.isLeft ? pairJoycon.other : pairJoycon;
                 return new ControllerProfileInfo {
                     ProfileId = ProfileIdFor(controller),
                     DisplayName = "Joy-Con Pair (L " + DeviceSuffix(left) + " / R " + DeviceSuffix(right) + ")",
@@ -607,9 +607,9 @@ namespace BetterJoyForCemu {
                 case ControllerKind.Pro: type = "Pro Controller"; break;
                 default:
                     // Unreachable for any Kind except Left/Right today (see ProfileIdFor's same
-                    // narrowing), which is always a Joycon - the is-check is defensive, not load-
-                    // bearing, same reasoning as ProfileIdFor above.
-                    Joycon soloJoycon = controller as Joycon;
+                    // narrowing), which is always a pairing-capable Nintendo device - the is-check
+                    // is defensive, not load-bearing, same reasoning as ProfileIdFor above.
+                    NintendoController soloJoycon = controller as NintendoController;
                     if (soloJoycon != null && soloJoycon.other == soloJoycon)
                         type = soloJoycon.isLeft ? "Left Joy-Con (vertical)" : "Right Joy-Con (vertical)";
                     else if (soloJoycon != null)
@@ -635,7 +635,7 @@ namespace BetterJoyForCemu {
             foreach (Controller controller in controllers) {
                 if (controller == null)
                     continue;
-                if (controller is Joycon joycon && joycon.other != null && joycon.other != joycon && !joycon.isLeft)
+                if (controller is NintendoController joycon && joycon.other != null && joycon.other != joycon && !joycon.isLeft)
                     continue;
 
                 ControllerProfileInfo info = ProfileFor(controller);

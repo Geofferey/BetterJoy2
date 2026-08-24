@@ -60,17 +60,17 @@ namespace BetterJoyForCemu {
         void CleanUp() { // removes dropped controllers from list
             List<Controller> rem = new List<Controller>();
             List<Controller> droppedNotify = new List<Controller>();
-            List<Joycon> partnerNotify = new List<Joycon>();
+            List<NintendoController> partnerNotify = new List<NintendoController>();
 
             foreach (Controller joycon in j) {
                 if (joycon.state == Controller.state_.DROPPED) {
                     // Capture the pair partner (if any) before Detach/nulling below, so
                     // HandleJoyconDropped can still find whichever slot(s) need fixing up -
                     // the dropped Joycon's own slot, and/or the surviving partner's.
-                    Joycon partner = (joycon.other != null && joycon.other != joycon) ? joycon.other : null;
+                    NintendoController partner = (joycon.other != null && joycon.other != joycon) ? joycon.other : null;
 
                     if (joycon.other != null) {
-                        Joycon survivor = joycon.other;
+                        NintendoController survivor = joycon.other;
                         survivor.other = null; // The other of the other is the joycon itself
 
                         // The survivor needs its own controller back if the dropped half was the

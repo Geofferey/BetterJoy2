@@ -164,7 +164,6 @@
     <Compile Include="GyroMousePlayerSpace.cs" />
     <Compile Include="BluetoothRadio.cs" />
     <Compile Include="GameControllerControlPanel.cs" />
-    <Compile Include="Joycon.cs" />
     <Compile Include="JoyconController.cs" />
     <Compile Include="NintendoController.cs" />
     <Compile Include="ProController.cs" />

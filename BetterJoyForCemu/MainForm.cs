@@ -746,11 +746,11 @@ namespace BetterJoyForCemu {
         // Kept as literal no-ops (matching RefreshControllerState's existing pattern) rather than
         // removed, since MainForm still implements IJoyconHost for now - dropping the interface
         // entirely is a separate follow-up commit once the rest of this is verified stable.
-        public void CollapseJoinedPair(Joycon left, Joycon right) { }
+        public void CollapseJoinedPair(NintendoController left, NintendoController right) { }
 
         public void AssignSlot(Controller controller) { }
 
-        public void HandleJoyconDropped(Controller dropped, Joycon survivingPartner) { }
+        public void HandleJoyconDropped(Controller dropped, NintendoController survivingPartner) { }
 
         // Never invoked in this process - MainForm has no live Controller to call this with (see
         // the comment above). The actual balloon is now shown from WireServiceClientEvents'
@@ -761,9 +761,9 @@ namespace BetterJoyForCemu {
 
         public void HandleCalibrationConfirm(Controller controller) { }
 
-        public void RefreshOrientationIcon(Joycon v) { }
+        public void RefreshOrientationIcon(NintendoController v) { }
 
-        public void JoinOrSplitJoycon(Joycon v, bool forceSelfPair = false) { }
+        public void JoinOrSplitJoycon(NintendoController v, bool forceSelfPair = false) { }
 
         // Extracted from the old local NotifyLowBattery's balloon-tip text, kept for Phase 3 to
         // reuse once a low-battery event is actually pushed to this window over the service
