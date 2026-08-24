@@ -401,7 +401,18 @@ namespace BetterJoyForCemu {
             arr[2] = (float)QuickselectMedian(zg, rnd.Next);
             arr[3] = (float)QuickselectMedian(xa, rnd.Next);
             arr[4] = (float)QuickselectMedian(ya, rnd.Next);
-            arr[5] = (float)QuickselectMedian(za, rnd.Next) - (controller.isLeft ? 4010f : -4010f); // Joycon.cs acc_sen 16384
+            arr[5] = (float)QuickselectMedian(za, rnd.Next);
+            // The +-4010 raw-count correction below is tied to two Nintendo-specific constants
+            // together (SPI's acc_sen=16384 scale AND the *4.0f reference multiplier
+            // NintendoController.ExtractIMUValues' own AllowCalibration=true formula applies) -
+            // meaningless, and actively wrong, for any device with a different raw scale/formula
+            // (e.g. DualSenseController's 8192-LSB/g scale, no *4.0f multiplier). This was
+            // previously applied to every Controller unconditionally, corrupting DualSense's
+            // accel Z bias by a huge, wrong offset the moment gyro support was added - confirmed
+            // via a real capture showing resting |acc_g| far short of 1g. Gate it to the one
+            // device family the underlying hardware quirk actually describes.
+            if (controller.UsesNintendoProtocol)
+                arr[5] -= controller.isLeft ? 4010f : -4010f; // Joycon.cs acc_sen 16384
 
             List<KeyValuePair<string, float[]>> snapshot;
             lock (samplesLock) {

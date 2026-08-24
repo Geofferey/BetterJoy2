@@ -12,12 +12,19 @@ namespace BetterJoyForCemu {
     // migration order. Everything here was previously Joycon.cs's Tier 2 DualSense-specific code
     // (isDualSense-gated), relocated verbatim into its own real sibling of Joycon under
     // Controller, per the target architecture in the doc. DualSense does not pair (SupportsPairing
-    // is always false), has no gyro yet (HasGyro is always false), and deliberately never gets a
-    // DS4-output target - see the doc's "Tier 3" note on MapToDualShock4Input.
+    // is always false) and deliberately never gets a DS4-output target - see the doc's "Tier 3"
+    // note on MapToDualShock4Input. Gyro/accel support (see ExtractIMUValues/
+    // ReadGyroCalibration below): byte offsets, calibration feature report, and scale constants
+    // were cross-checked against three independent reference implementations; physical axis
+    // sign/handedness (the one item no public reference source documented) was confirmed
+    // empirically against real hardware instead - see ExtractIMUValues' own comments for what
+    // that investigation found (a Nintendo-only calibration-bias leak in shared CalibrationState
+    // code, and gyr_g/acc_g needing matching channel order for AHRS's sensor fusion to agree
+    // with itself, not just an axis-sign guess).
     public class DualSenseController : Controller {
         public override bool SupportsPairing => false;
         public override bool HasDualSticks => true;
-        public override bool HasGyro => false;
+        public override bool HasGyro => true;
         public override bool HasAnalogTriggers => true;
         public override bool UsesNintendoProtocol => false;
         public override ControllerKind Kind => ControllerKind.DualSense;
@@ -28,6 +35,24 @@ namespace BetterJoyForCemu {
         private const int DualSenseMaxReportLen = 78; // Bluetooth report length; USB (64) fits the same buffer
         private bool sentUsbActiveLightbar = false;
         private long lastDualSenseRawDumpTimestamp = 0;
+        private long lastDualSenseImuLogTimestamp = 0;
+
+        // Gyro/accel calibration, read once from DualSense's own hardware calibration feature
+        // report (0x05) at Attach() - see ReadGyroCalibration. Nominal sensor-chip scale
+        // constants (fixed, not read from hardware): 16 LSB per degree/second, 8192 LSB per g -
+        // cross-confirmed against two independent reference implementations (DS4Windows,
+        // JoyShockLibrary; DS4Windows's calibration correction below rescales this specific
+        // unit's real sensitivity onto these nominal constants before dividing by them).
+        private const float GyroLsbPerDegPerSec = 16.0f;
+        private const float AccelLsbPerG = 8192.0f;
+        private short gyroPitchBias, gyroYawBias, gyroRollBias;
+        private short gyroPitchPlus, gyroPitchMinus, gyroYawPlus, gyroYawMinus, gyroRollPlus, gyroRollMinus;
+        private short gyroSpeedPlus, gyroSpeedMinus;
+        private short accelXPlus, accelXMinus, accelYPlus, accelYMinus, accelZPlus, accelZMinus;
+        // False until a real calibration report has been successfully read and CRC-verified (BT)
+        // - ExtractIMUValues falls back to the nominal scale with zero bias when this is false,
+        // rather than dividing by a degenerate (0-0) Plus/Minus range.
+        private bool gyroCalibrationValid;
 
         public DualSenseController(IntPtr handle_, string path, string serialNum, int id = 0) {
             serial_number = serialNum;
@@ -42,7 +67,8 @@ namespace BetterJoyForCemu {
                 buttons_down_timestamp[i] = -1;
             // Single-unit device, same "primary/solo" convention every non-Joy-Con device uses
             // (see Controller.isLeft's own comment) - CalibrationState.FinishCalibration reads
-            // this, though it's moot until DualSense has gyro support.
+            // this to correct a real Joy-Con-side gravity-axis sign difference that doesn't apply
+            // here, but the flag itself still needs to be true for the gyro calibration wizard.
             isLeft = true;
 
             PadId = id;
@@ -89,8 +115,84 @@ namespace BetterJoyForCemu {
             deadzone2 = 8;
             getActiveStickData();
 
+            ReadGyroCalibration();
+
             form.AppendTextBox("DualSense attached (baseline mode).\r\n");
             return 0;
+        }
+
+        private const byte GyroCalibrationFeatureReportId = 0x05;
+        private const int GyroCalibrationFeatureReportLen = 41;
+
+        // DualSense's own factory gyro/accel calibration, read via a HID feature report - its
+        // equivalent of Joy-Con's SPI-flash calibration read (Joycon.dump_calibration_data).
+        // Report ID 0x05, 41 bytes (1 report-ID byte + 36 calibration bytes + trailing CRC32).
+        // On Bluetooth the reply is CRC32-verified (seeded 0xA3, via the same Crc32() helper
+        // SendDualSenseRumble/SendDualSenseLightbar already use for outgoing reports with a
+        // different seed) and retried up to 5 times, matching DS4Windows exactly; USB is trusted
+        // on a single unconditional read, also matching DS4Windows. DualSense always uses the
+        // same calibration byte grouping on both transports (unlike DualShock 4, which DS4Windows
+        // varies by transport) - byte offsets below are DualSense-specific, not shared with any
+        // DS4 code path. Falls back to gyroCalibrationValid=false (nominal scale, zero bias) if
+        // every attempt fails, rather than leaving stale/degenerate calibration data silently in
+        // place.
+        private void ReadGyroCalibration() {
+            byte[] buf = new byte[GyroCalibrationFeatureReportLen];
+            buf[0] = GyroCalibrationFeatureReportId;
+
+            bool verified = false;
+            int attempts = isUSB ? 1 : 5;
+            for (int attempt = 0; attempt < attempts && !verified; attempt++) {
+                int ret = HIDapi.hid_get_feature_report(handle, buf, new UIntPtr((uint)GyroCalibrationFeatureReportLen));
+                if (ret < GyroCalibrationFeatureReportLen)
+                    continue;
+
+                if (isUSB) {
+                    verified = true;
+                } else {
+                    uint received = (uint)buf[37] | ((uint)buf[38] << 8) | ((uint)buf[39] << 16) | ((uint)buf[40] << 24);
+                    uint calculated = Crc32(0xA3, buf, GyroCalibrationFeatureReportLen - 4);
+                    verified = received == calculated;
+                }
+            }
+
+            if (!verified) {
+                gyroCalibrationValid = false;
+                form.AppendTextBox("DualSense gyro calibration read failed - using uncalibrated nominal scale.\r\n");
+                LogDualSenseRawDump("Gyro calibration read failed after " + attempts + " attempt(s).");
+                return;
+            }
+
+            gyroPitchBias = ReadCalibrationInt16(buf, 1);
+            gyroYawBias = ReadCalibrationInt16(buf, 3);
+            gyroRollBias = ReadCalibrationInt16(buf, 5);
+            gyroPitchPlus = ReadCalibrationInt16(buf, 7);
+            gyroPitchMinus = ReadCalibrationInt16(buf, 9);
+            gyroYawPlus = ReadCalibrationInt16(buf, 11);
+            gyroYawMinus = ReadCalibrationInt16(buf, 13);
+            gyroRollPlus = ReadCalibrationInt16(buf, 15);
+            gyroRollMinus = ReadCalibrationInt16(buf, 17);
+            gyroSpeedPlus = ReadCalibrationInt16(buf, 19);
+            gyroSpeedMinus = ReadCalibrationInt16(buf, 21);
+            accelXPlus = ReadCalibrationInt16(buf, 23);
+            accelXMinus = ReadCalibrationInt16(buf, 25);
+            accelYPlus = ReadCalibrationInt16(buf, 27);
+            accelYMinus = ReadCalibrationInt16(buf, 29);
+            accelZPlus = ReadCalibrationInt16(buf, 31);
+            accelZMinus = ReadCalibrationInt16(buf, 33);
+            gyroCalibrationValid = true;
+
+            LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                "Gyro calibration OK: gyroBias=({0},{1},{2}) gyroPlusMinus=({3}/{4},{5}/{6},{7}/{8}) " +
+                "gyroSpeedPlusMinus=({9}/{10}) accelPlusMinus=({11}/{12},{13}/{14},{15}/{16})",
+                gyroPitchBias, gyroYawBias, gyroRollBias,
+                gyroPitchPlus, gyroPitchMinus, gyroYawPlus, gyroYawMinus, gyroRollPlus, gyroRollMinus,
+                gyroSpeedPlus, gyroSpeedMinus,
+                accelXPlus, accelXMinus, accelYPlus, accelYMinus, accelZPlus, accelZMinus));
+        }
+
+        private static short ReadCalibrationInt16(byte[] buf, int offset) {
+            return (short)(buf[offset] | (buf[offset + 1] << 8));
         }
 
         // Deliberately no override here (inherits Controller's no-op): the old Joycon.PowerOff()
@@ -251,7 +353,18 @@ namespace BetterJoyForCemu {
                 }
 
                 ParseDualSenseReport(dsBuf, reportOffset);
+                ExtractIMUValues(dsBuf, reportOffset);
                 DoThingsWithButtons();
+
+                // The actual acc_g/gyr_g -> mouse/stick conversion - ExtractIMUValues only
+                // computes calibrated sensor values and feeds the AHRS filter, it doesn't itself
+                // produce any output (see NintendoController.ReceiveRaw's identical call shape).
+                // flush=true unconditionally: DualSense's report carries one IMU sample, not
+                // Joy-Con's three sub-samples per report, so there's no partial-accumulation case
+                // to gate on.
+                ProcessGyroMouseSample(true);
+                ProcessGyroStickSample(true);
+
                 if (out_xbox != null) {
                     try { out_xbox.UpdateInput(MapToXbox360Input(this)); } catch (Exception) { }
                 }
@@ -308,9 +421,10 @@ namespace BetterJoyForCemu {
             // Raw 0-255, center ~128, run through the same CenterSticks/CalibrationState pipeline
             // Joy-Con uses (stick_cal/stick2_cal seeded with an identity default in Attach() since
             // there's no SPI factory data to read) - a DualSense can now be recalibrated with the
-            // existing double-click wizard exactly like a Pro controller's sticks, just skipping the
-            // gyro step (see HeadlessJoyconHost.StartCalibration's !HasGyro branch). AddStickSample is a no-op
-            // unless this controller is the one currently claimed by that wizard. Y is inverted
+            // existing double-click wizard exactly like a Pro controller's sticks, now including a
+            // gyro step too (see HeadlessJoyconHost.StartCalibration and ExtractIMUValues below).
+            // AddStickSample is a no-op unless this controller is the one currently claimed by
+            // that wizard. Y is inverted
             // after CenterSticks (not before, unlike the old fixed linear map) since CenterSticks'
             // raw subtraction/division doesn't know about BetterJoy's own "up is positive" stick
             // convention - only the sign needs flipping, not the calibration math.
@@ -392,6 +506,140 @@ namespace BetterJoyForCemu {
             battery = Math.Min(4, rawLevel / 2);
             if (newBattery != battery)
                 BatteryChanged();
+        }
+
+        // Gyro/accel byte offsets, cross-checked against three independent reference
+        // implementations (DS4Windows, nondebug/dualsense, JoyShockLibrary) - all three agree
+        // exactly. Wire order is gyroPitch, gyroYaw, gyroRoll (raw sensor channels 0/1/2, DS4
+        // Windows's own field names - not a claim about which is physically pitch/yaw/roll on
+        // the real controller), then accelX/Y/Z, then a 4-byte microsecond timestamp this
+        // implementation doesn't need. One IMU sample per report (unlike Joy-Con's three
+        // sub-samples per report), so this runs once per ReceiveRaw call, not in a sub-sample
+        // loop.
+        private void ExtractIMUValues(byte[] r, int o) {
+            EnsureGyroOrientationBasis();
+
+            gyr_r[0] = ReadCalibrationInt16(r, 15 + o); // gyroPitch (raw channel 0)
+            gyr_r[1] = ReadCalibrationInt16(r, 17 + o); // gyroYaw (raw channel 1)
+            gyr_r[2] = ReadCalibrationInt16(r, 19 + o); // gyroRoll (raw channel 2)
+            acc_r[0] = ReadCalibrationInt16(r, 21 + o);
+            acc_r[1] = ReadCalibrationInt16(r, 23 + o);
+            acc_r[2] = ReadCalibrationInt16(r, 25 + o);
+
+            if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
+                // Mirrors NintendoController.ExtractIMUValues's live-calibration branch exactly -
+                // the manual calibration wizard's gyro step (HeadlessJoyconHost.StartCalibration,
+                // now reachable for DualSense since HasGyro is true) and auto-calibration both
+                // depend on samples being collected here; CalibrationState later publishes them
+                // into activeData (already refreshed generically for every Controller, including
+                // this one - see Program.cs's post-connect getActiveData() call). Same shared
+                // mechanism Joy-Con already uses, not a DualSense-specific one - only the nominal
+                // scale below (16/8192, not Joy-Con's 18642/816 and 16384/4) is DualSense-specific.
+                CalibrationState.AddSample(this, CalibrationState.XA, CalibrationState.XG, acc_r[0], gyr_r[0]);
+                CalibrationState.AddSample(this, CalibrationState.YA, CalibrationState.YG, acc_r[1], gyr_r[1]);
+                CalibrationState.AddSample(this, CalibrationState.ZA, CalibrationState.ZG, acc_r[2], gyr_r[2]);
+            }
+
+            float gyroPitchDegPerSec, gyroYawDegPerSec, gyroRollDegPerSec;
+
+            if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"]) && activeData != null) {
+                // activeData[0-2] = gyro offsets, per-axis in wire-channel order - same indexing
+                // NintendoController.ExtractIMUValues uses, just against DualSense's own fixed
+                // nominal scale instead of Joy-Con's gyr_sen. Gyro's "zero" is orientation-
+                // independent (angular velocity genuinely is ~0 at rest regardless of how the
+                // controller is held), so re-deriving it from wherever the wizard's "hold still"
+                // step happened to run is valid - unlike accel below.
+                gyroPitchDegPerSec = (gyr_r[0] - activeData[0]) / GyroLsbPerDegPerSec;
+                gyroYawDegPerSec = (gyr_r[1] - activeData[1]) / GyroLsbPerDegPerSec;
+                gyroRollDegPerSec = (gyr_r[2] - activeData[2]) / GyroLsbPerDegPerSec;
+            } else {
+                gyroPitchDegPerSec = CorrectGyroSample(gyr_r[0], gyroPitchBias, gyroPitchPlus, gyroPitchMinus);
+                gyroYawDegPerSec = CorrectGyroSample(gyr_r[1], gyroYawBias, gyroYawPlus, gyroYawMinus);
+                gyroRollDegPerSec = CorrectGyroSample(gyr_r[2], gyroRollBias, gyroRollPlus, gyroRollMinus);
+            }
+
+            // Accelerometer deliberately NEVER uses activeData, unlike gyro above - the wizard's
+            // "hold still" step zero-references whatever raw value it captured at THAT pose,
+            // which is correct for gyro (rate is genuinely ~0 at rest in any orientation) but
+            // wrong for accel (gravity is NOT ~0 in any orientation - zero-referencing it there
+            // wipes out the real gravity vector UpdateCanonicalGyroMouseImu/Player Space need to
+            // determine "which way is down"). Confirmed on real hardware: with activeData driving
+            // accel, resting |acc_g| read ~0 instead of ~1g, and yaw was misprojected into a
+            // diagonal/vertical blend instead of horizontal cursor movement as a direct result.
+            // Always use the factory-calibrated (or nominal-fallback) formula instead.
+            float accelXG = CorrectAccelSample(acc_r[0], accelXPlus, accelXMinus);
+            float accelYG = CorrectAccelSample(acc_r[1], accelYPlus, accelYMinus);
+            float accelZG = CorrectAccelSample(acc_r[2], accelZPlus, accelZMinus);
+
+            // Axis/sign convention - fully verified on real hardware (see
+            // DOCS/CONTROLLERS-REFACTOR.md's DualSense-gyro entry for the investigation this
+            // resolved). UpdateCanonicalGyroMouseImu's fixed rotation reads gyr_g.Y as the
+            // horizontal-driving (yaw) component and gyr_g.Z as the vertical-driving (pitch)
+            // component; gyr_g.X (roll) only feeds AHRS's roll-compensation estimate, not cursor
+            // movement directly - confirmed empirically: rolling the controller left/right
+            // produces zero cursor movement (correct), yaw drives horizontal, pitch drives
+            // vertical, and GyroMouseRollCompensation's roll estimate stays flat during pure
+            // pitch motion instead of tracking it (see the acc_g note below for what fixed that).
+            gyr_g.X = gyroRollDegPerSec;
+            gyr_g.Y = gyroYawDegPerSec;
+            // Sign confirmed on real hardware (was -gyroPitchDegPerSec, produced inverted
+            // up/down - tilting up moved the cursor down and vice versa).
+            gyr_g.Z = gyroPitchDegPerSec;
+            // acc_g's channel order must match gyr_g's above, index-for-index - AHRS.Update below
+            // fuses gyro integration with gravity-based correction, and if the two sensors don't
+            // agree on which index is which physical axis, the fused orientation estimate gets
+            // internally confused (confirmed on real hardware: AHRS's "roll" output was tracking
+            // pitch motion, not actual roll, because acc_g was still in the old unswapped channel
+            // order after gyr_g's X/Z swap above - GyroMouseRollCompensation then misapplied that
+            // wrong roll estimate as a curve on straight vertical pitch motion). Same X<->Z swap
+            // as gyr_g, accelY (already index 1, already the confirmed gravity-dominant channel)
+            // untouched.
+            acc_g.X = accelZG;
+            acc_g.Y = -accelYG;
+            acc_g.Z = -accelXG;
+
+            UpdateCanonicalGyroMouseImu();
+
+            float deg_to_rad = 0.0174533f;
+            AHRS.Update(gyr_g.X * deg_to_rad, gyr_g.Y * deg_to_rad, gyr_g.Z * deg_to_rad, acc_g.X, acc_g.Y, acc_g.Z);
+
+            // Throttled the same ~4/sec as the raw hex dump (this runs every report, far more
+            // often) - lets axis-sign verification be read directly (rest flat -> which acc_g
+            // axis reads ~1g; rotate around one axis -> which gyr_g axis responds) instead of
+            // hand-decoding the raw hex dump for every sample.
+            long nowTicks = Stopwatch.GetTimestamp();
+            if ((nowTicks - lastDualSenseImuLogTimestamp) / (double)Stopwatch.Frequency >= 0.25) {
+                lastDualSenseImuLogTimestamp = nowTicks;
+                LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                    "IMU: raw gyro=({0},{1},{2}) raw accel=({3},{4},{5}) gyr_g=({6:F1},{7:F1},{8:F1})deg/s acc_g=({9:F2},{10:F2},{11:F2})g",
+                    gyr_r[0], gyr_r[1], gyr_r[2], acc_r[0], acc_r[1], acc_r[2],
+                    gyr_g.X, gyr_g.Y, gyr_g.Z, acc_g.X, acc_g.Y, acc_g.Z));
+            }
+        }
+
+        // Applies this specific unit's factory calibration (bias + real sensitivity rescaled onto
+        // the nominal GyroLsbPerDegPerSec scale) to one raw gyro sample - see ReadGyroCalibration.
+        // Falls back to the nominal scale with zero bias if calibration wasn't read successfully,
+        // or if a Plus/Minus pair is degenerate (would otherwise divide by zero).
+        private float CorrectGyroSample(Int16 raw, short bias, short plus, short minus) {
+            if (!gyroCalibrationValid || plus == minus)
+                return raw / GyroLsbPerDegPerSec;
+
+            float sensNumer = (gyroSpeedPlus + gyroSpeedMinus) * GyroLsbPerDegPerSec;
+            float sensDenom = plus - minus;
+            float corrected = (raw - bias) * (sensNumer / sensDenom);
+            return corrected / GyroLsbPerDegPerSec;
+        }
+
+        private float CorrectAccelSample(Int16 raw, short plus, short minus) {
+            if (!gyroCalibrationValid || plus == minus)
+                return raw / AccelLsbPerG;
+
+            float range = plus - minus;
+            float bias = plus - range / 2.0f;
+            float sensNumer = 2.0f * AccelLsbPerG;
+            float corrected = (raw - bias) * (sensNumer / range);
+            return corrected / AccelLsbPerG;
         }
 
         // Standard IEEE 802.3 CRC32 (polynomial 0xEDB88320, the same one zlib/most CRC32 libraries
