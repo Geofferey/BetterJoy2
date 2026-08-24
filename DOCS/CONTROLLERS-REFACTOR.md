@@ -1,9 +1,15 @@
 # Controller architecture refactor plan
 
-Status: **planned, not started**. Written after the DualSense baseline work
+Status: **steps 1-5 of 7 done and committed** (see "Suggested migration
+approach" below for the full breakdown, and `clever-wiggling-rocket.md` for
+step 5's sub-step-level plan). Written after the DualSense baseline work
 exposed real structural risk in how `Joycon.cs` shares code across device
-types. Nothing in this document has been implemented yet - it's the plan to
-review before touching any code.
+types - that risk is now resolved: `JoyconController`/`ProController`/
+`SnesController`/`N64Controller`/`DualSenseController` are real, independent
+types under `NintendoController`/`Controller`, and the `isPro`-superset-flag
+pattern that caused a real incident is gone from the type system. Steps 6
+(`GyroMath.cs` extraction) and 7 (the `connection`/`isUSB` staleness fix) are
+still open.
 
 ## Guiding principles for how this gets executed
 
@@ -57,6 +63,22 @@ review before touching any code.
   since fixing it is a real behavior change, not a mechanical move -
   worth fixing with a one-line gate change (`UsesNintendoProtocol` instead
   of `isUSB`) whenever DualSense-over-USB detach is actually exercised.
+- `SnesController.HasGyro`/`HasDualSticks` and `N64Controller.HasGyro`
+  answer `true` even though SNES has no gyro/accel hardware and no sticks
+  at all, and N64 has no gyro/accel hardware either - both leaf types
+  deliberately restate the exact (wrong-for-them) answers the old
+  `isPro`-superset-flag `Joycon` gave, rather than correcting them, when
+  they were split out in step 5. The real, currently-exercised gates
+  (`HasSticks`/`HasImuHardware` on `NintendoController`) are already
+  correct for both types - only the *public* capability contract is
+  inaccurate. `N64Controller.HasDualSticks` specifically can't just be
+  flipped to `false` without a closer look first: `Controller.
+  MapToXbox360Input`'s paired-button-population branch (inside
+  `NintendoController.ProcessButtonsAndStick`) is what actually populates
+  the `SHOULDER2_2`/`Y`/`MINUS` button bits N64's own `is64`-specific
+  output mapping reads, so that coupling needs untangling before
+  `HasDualSticks` can be made honest for N64 without breaking real N64
+  button output.
 
 ## Why this is needed
 
@@ -851,10 +873,22 @@ incremental and independently testable, not a single large rewrite:
    match as part of this step's scope. Verify the full checklist across
    *every* device type here, not just the DualSense-specific item - this
    step's blast radius is genuinely all seven files at once.
-5. Only then consider splitting Joy-Con/Pro/SNES/N64 apart into their own
-   subclasses under `NintendoController` - lower priority, since that
-   family isn't where new controller types are expected to land, and it's
-   the largest, most interleaved (isLeft/isPro/other) code in the file.
+5. **Done.** Split Joy-Con/Pro/SNES/N64 apart into their own subclasses
+   under `NintendoController` - completed as six sub-steps (A/B/C/D1/D2a/
+   D2b, one commit each), not the single step this line originally
+   described; full breakdown in `clever-wiggling-rocket.md`. By the time
+   this step started, steps 1-4 had already shrunk `Joycon.cs` from 4595
+   lines down to 910, so it was considerably less risky than "the largest,
+   most interleaved code in the file" implied when this line was written.
+   `Controller.other`/`gyroMouseOrientationPartner` now type as
+   `JoyconController` specifically (only Joy-Con pairs), not the wider
+   `NintendoController` an earlier code comment had suggested as the
+   "natural home." `Controller.MapToXbox360Input`/`MapToDualShock4Input`
+   deliberately kept their existing inline `is64`/pairing branches rather
+   than becoming per-leaf overridable hooks - not required for the split,
+   revisit only if it becomes an actual problem. See the "Known issues"
+   section above for the `HasGyro`/`HasDualSticks` SNES/N64 accuracy gap
+   this step found and deliberately didn't fix.
 6. Extract `GyroMath.cs` - after step 4 at the earliest (see the reasoning
    under that section: telling device quirk apart from base algorithm is
    easier once DualSense's own gyro data exists to compare against, not
