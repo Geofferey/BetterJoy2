@@ -876,12 +876,15 @@ namespace BetterJoyForCemu {
                 allowCalibration ? "activeData[1]" : "gyr_neutral[1]", neutralValue,
                 diagIntervalDx, diagIntervalDy, diagIntervalSampleCount);
             line += string.Format(
-                "  |  gravity trust={0,5:F3} yaw-dom={1,5:F3} error={2,6:F2}deg even-leak={3,7:F4} corr={4,7:F3}  |  timing[{5}]: HID ms avg={6,6:F2} min={7,6:F2} max={8,6:F2} n={9,3}; timer d avg={10,5:F2} min={11,3} max={12,3} unexpected={13,3}; phase ms/report HID-wait avg={14,6:F2} min={15,6:F2} max={16,6:F2}, outside-HID avg={17,6:F2} min={18,6:F2} max={19,6:F2} n={20,3}; pointer-request ms avg={21,6:F2} min={22,6:F2} max={23,6:F2} n={24,3}\r\n",
+                "  |  gravity trust={0,5:F3} yaw-dom={1,5:F3} pitch-dom={2,5:F3} error={3,6:F2}deg y-leak={4,7:F4} y-corr={5,7:F3} p-leak={6,7:F4} p-corr={7,7:F3}  |  timing[{8}]: HID ms avg={9,6:F2} min={10,6:F2} max={11,6:F2} n={12,3}; timer d avg={13,5:F2} min={14,3} max={15,3} unexpected={16,3}; phase ms/report HID-wait avg={17,6:F2} min={18,6:F2} max={19,6:F2}, outside-HID avg={20,6:F2} min={21,6:F2} max={22,6:F2} n={23,3}; pointer-request ms avg={24,6:F2} min={25,6:F2} max={26,6:F2} n={27,3}\r\n",
                 gyroMousePlayerSpace.GravityCorrectionTrust,
                 gyroMousePlayerSpace.YawDominance,
+                gyroMousePlayerSpace.PitchDominance,
                 gyroMousePlayerSpace.GravityErrorDegrees,
                 gyroMousePlayerSpace.EvenYawLeakRatio,
                 gyroMousePlayerSpace.EvenYawLeakCorrection,
+                gyroMousePlayerSpace.EvenPitchLeakRatio,
+                gyroMousePlayerSpace.EvenPitchLeakCorrection,
                 GyroMouseDiagnosticSource(),
                 reportDeltaAverage, reportDeltaMinimum, reportDeltaMaximum,
                 diagIntervalReportDeltaCount,

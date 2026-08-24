@@ -28,28 +28,33 @@ namespace BetterJoyForCemu {
         // plane becomes ill-conditioned, so its contribution is faded instead of amplified.
         private const float WorldPitchSideReductionThreshold = 0.125f;
         // Accelerometer direction is a useful gravity reference at rest, but sustained rotation
-        // around an off-centre IMU produces centripetal acceleration proportional to yaw squared.
-        // That makes the apparent tilt point the same way for left and right turns, matching the
-        // observed one-way mouse-Y crawl. Reduce accelerometer influence only when motion is both
-        // sustained-yaw-speed and strongly yaw-dominant. Keep a non-zero correction floor: fully
-        // removing the gravity anchor lets small gyro/reference-axis disagreement turn into a
-        // large periodic Y oscillation over repeated rotations.
-        private const float YawTrustReductionStartRate = 2.0f; // degrees/sec
-        private const float YawTrustReductionFullRate = 10.0f; // degrees/sec
-        private const float YawDominanceStart = 0.80f;
-        private const float YawDominanceFull = 0.95f;
-        private const float MinimumYawGravityTrust = 0.25f;
+        // around an off-centre IMU produces centripetal acceleration proportional to rotation
+        // speed squared, regardless of which axis is spinning. That makes the apparent tilt point
+        // the same way for both signs of that rotation, matching the observed one-way crawl on
+        // the OTHER output axis - originally seen as sustained yaw crawling pitch, later confirmed
+        // (DualSense, pure pitch motion on a table) as sustained pitch crawling yaw the same way.
+        // Reduce accelerometer influence whenever motion is both sustained-speed and strongly
+        // dominated by a single axis, whichever axis that is. Keep a non-zero correction floor:
+        // fully removing the gravity anchor lets small gyro/reference-axis disagreement turn into
+        // a large periodic oscillation over repeated rotations.
+        private const float TrustReductionStartRate = 2.0f; // degrees/sec
+        private const float TrustReductionFullRate = 10.0f; // degrees/sec
+        private const float DominanceStart = 0.80f;
+        private const float DominanceFull = 0.95f;
+        private const float MinimumGravityTrust = 0.25f;
         private const float TrustReductionHalfTime = 0.05f;
         private const float TrustRecoveryHalfTime = 0.35f;
-        // Residual leakage that points the same way for both yaw signs cannot be represented by
-        // a conventional signed cross-axis coefficient. Learn pitch / |yaw| instead. The narrow
-        // purity gate keeps ordinary diagonals and corner-to-corner gestures out of the learner;
-        // the cap is a safety bound, not a controller-specific correction value.
-        private const float EvenYawLeakPurityFull = 0.08f;
-        private const float EvenYawLeakPurityZero = 0.20f;
-        private const float MaximumEvenYawLeakRatio = 0.15f;
-        private const float EvenYawLeakAttackHalfTime = 0.04f;
-        private const float EvenYawLeakReleaseHalfTime = 0.50f;
+        // Residual leakage that points the same way for both signs of the dominant axis cannot be
+        // represented by a conventional signed cross-axis coefficient. Learn leaked-axis /
+        // |dominant-axis| instead. The narrow purity gate keeps ordinary diagonals and corner-to-
+        // corner gestures out of the learner; the cap is a safety bound, not a controller-specific
+        // correction value. Shared by both leak directions (yaw->pitch and pitch->yaw) since the
+        // underlying centripetal-error mechanism is the same either way.
+        private const float EvenLeakPurityFull = 0.08f;
+        private const float EvenLeakPurityZero = 0.20f;
+        private const float MaximumEvenLeakRatio = 0.15f;
+        private const float EvenLeakAttackHalfTime = 0.04f;
+        private const float EvenLeakReleaseHalfTime = 0.50f;
 
         private Vector3 gravity;
         private Vector3 smoothedAccel;
@@ -57,15 +62,21 @@ namespace BetterJoyForCemu {
         private bool gravityInitialized;
         private float gravityCorrectionTrust = 1.0f;
         private float yawDominance;
+        private float pitchDominance;
         private float gravityErrorDegrees;
         private float evenYawLeakRatio;
         private float evenYawLeakCorrection;
+        private float evenPitchLeakRatio;
+        private float evenPitchLeakCorrection;
 
         public float GravityCorrectionTrust => gravityCorrectionTrust;
         public float YawDominance => yawDominance;
+        public float PitchDominance => pitchDominance;
         public float GravityErrorDegrees => gravityErrorDegrees;
         public float EvenYawLeakRatio => evenYawLeakRatio;
         public float EvenYawLeakCorrection => evenYawLeakCorrection;
+        public float EvenPitchLeakRatio => evenPitchLeakRatio;
+        public float EvenPitchLeakCorrection => evenPitchLeakCorrection;
 
         public void Reset() {
             gravity = Vector3.Zero;
@@ -74,9 +85,12 @@ namespace BetterJoyForCemu {
             gravityInitialized = false;
             gravityCorrectionTrust = 1.0f;
             yawDominance = 0.0f;
+            pitchDominance = 0.0f;
             gravityErrorDegrees = 0.0f;
             evenYawLeakRatio = 0.0f;
             evenYawLeakCorrection = 0.0f;
+            evenPitchLeakRatio = 0.0f;
+            evenPitchLeakCorrection = 0.0f;
         }
 
         public void Update(Vector3 gyroDegPerSec, Vector3 accel, float deltaTime) {
@@ -96,8 +110,10 @@ namespace BetterJoyForCemu {
                 gravityInitialized = true;
                 gravityCorrectionTrust = 1.0f;
                 yawDominance = 0.0f;
+                pitchDominance = 0.0f;
                 gravityErrorDegrees = 0.0f;
                 evenYawLeakCorrection = 0.0f;
+                evenPitchLeakCorrection = 0.0f;
                 return;
             }
 
@@ -129,16 +145,38 @@ namespace BetterJoyForCemu {
                 ? Clamp01(yawSpeed / angularSpeedDegrees)
                 : 0.0f;
 
+            Vector3 worldPitchAxisForDominance = ComputeWorldPitchAxis(gravityDirection,
+                                                                        out float pitchSideReduction);
+            float pitchSpeed = worldPitchAxisForDominance.LengthSquared() > 0.0f
+                ? Math.Abs(Vector3.Dot(worldPitchAxisForDominance, gyroDegPerSec)) *
+                  pitchSideReduction
+                : 0.0f;
+            pitchDominance = angularSpeedDegrees > 1e-5f
+                ? Clamp01(pitchSpeed / angularSpeedDegrees)
+                : 0.0f;
+
             // Both factors use magnitudes deliberately. A centripetal/rectification error is
-            // even in yaw direction, so turning left and right must produce identical trust.
+            // even in the dominant axis's direction, so turning/tilting either way along it must
+            // produce identical trust. Whichever axis - yaw or pitch - is actually dominant right
+            // now drives the reduction; a controller resting flat while being pitched dominates on
+            // pitch, one held on its side while being yawed dominates on yaw, and either can
+            // produce the same kind of gravity-reference error.
             float yawSpeedConfidence = SmoothStep(Clamp01(
-                (yawSpeed - YawTrustReductionStartRate) /
-                (YawTrustReductionFullRate - YawTrustReductionStartRate)));
+                (yawSpeed - TrustReductionStartRate) /
+                (TrustReductionFullRate - TrustReductionStartRate)));
             float yawDominanceConfidence = SmoothStep(Clamp01(
-                (yawDominance - YawDominanceStart) /
-                (YawDominanceFull - YawDominanceStart)));
-            float targetTrust = 1.0f - yawSpeedConfidence * yawDominanceConfidence *
-                                (1.0f - MinimumYawGravityTrust);
+                (yawDominance - DominanceStart) /
+                (DominanceFull - DominanceStart)));
+            float pitchSpeedConfidence = SmoothStep(Clamp01(
+                (pitchSpeed - TrustReductionStartRate) /
+                (TrustReductionFullRate - TrustReductionStartRate)));
+            float pitchDominanceConfidence = SmoothStep(Clamp01(
+                (pitchDominance - DominanceStart) /
+                (DominanceFull - DominanceStart)));
+            float dominantAxisTrustReduction = Math.Max(
+                yawSpeedConfidence * yawDominanceConfidence,
+                pitchSpeedConfidence * pitchDominanceConfidence);
+            float targetTrust = 1.0f - dominantAxisTrustReduction * (1.0f - MinimumGravityTrust);
             float trustHalfTime = targetTrust < gravityCorrectionTrust
                 ? TrustReductionHalfTime
                 : TrustRecoveryHalfTime;
@@ -191,29 +229,43 @@ namespace BetterJoyForCemu {
             // the side-on pose and can redirect compound roll/yaw motion into one-way mouse Y.
             yawRate = Vector3.Dot(gravityDirection, gyroDegPerSec);
 
-            float gravityAlongLocalPitch = gravityDirection.X;
-            Vector3 worldPitchAxis = new Vector3(1.0f, 0.0f, 0.0f) -
-                                     gravityDirection * gravityAlongLocalPitch;
-            float pitchAxisLengthSquared = worldPitchAxis.LengthSquared();
-            if (pitchAxisLengthSquared > 0.0f) {
-                worldPitchAxis /= (float)Math.Sqrt(pitchAxisLengthSquared);
-
-                float flatness = Math.Abs(gravityDirection.Y);
-                float upness = Math.Abs(gravityDirection.Z);
-                float sideReduction = Clamp01(
-                    (Math.Max(flatness, upness) - WorldPitchSideReductionThreshold) /
-                    WorldPitchSideReductionThreshold);
-                pitchRate = sideReduction * Vector3.Dot(worldPitchAxis, gyroDegPerSec);
-            } else {
+            Vector3 worldPitchAxis = ComputeWorldPitchAxis(gravityDirection, out float sideReduction);
+            pitchRate = worldPitchAxis.LengthSquared() > 0.0f
+                ? sideReduction * Vector3.Dot(worldPitchAxis, gyroDegPerSec)
                 // Local pitch is exactly parallel to gravity, so world-relative pitch is
                 // undefined. The side reduction above smoothly approaches this zero.
-                pitchRate = 0.0f;
-            }
+                : 0.0f;
 
-            ApplyEvenYawLeakCorrection(ref pitchRate, yawRate, deltaTime);
+            float originalYawRate = yawRate;
+            float originalPitchRate = pitchRate;
+            ApplyEvenYawLeakCorrection(ref pitchRate, originalYawRate, deltaTime);
+            ApplyEvenPitchLeakCorrection(ref yawRate, originalPitchRate, deltaTime);
 
             // Diagnostic only: zero while the canonical controller frame is flat.
             rollRadians = (float)Math.Atan2(gravityDirection.X, -gravityDirection.Y);
+        }
+
+        // Match GamepadMotionHelpers::CalculateWorldSpaceGyro's vertical axis: the controller's
+        // LOCAL pitch axis (+X) projected onto the plane perpendicular to gravity. Shared between
+        // Update() (to judge pitch dominance for gravity-trust reduction) and Map() (to compute
+        // the actual pitch output), so both agree on what "pitch" means at a given gravity pose.
+        private static Vector3 ComputeWorldPitchAxis(Vector3 gravityDirection,
+                                                      out float sideReduction) {
+            float gravityAlongLocalPitch = gravityDirection.X;
+            Vector3 axis = new Vector3(1.0f, 0.0f, 0.0f) - gravityDirection * gravityAlongLocalPitch;
+            float lengthSquared = axis.LengthSquared();
+            if (lengthSquared <= 0.0f) {
+                sideReduction = 0.0f;
+                return Vector3.Zero;
+            }
+
+            axis /= (float)Math.Sqrt(lengthSquared);
+            float flatness = Math.Abs(gravityDirection.Y);
+            float upness = Math.Abs(gravityDirection.Z);
+            sideReduction = Clamp01(
+                (Math.Max(flatness, upness) - WorldPitchSideReductionThreshold) /
+                WorldPitchSideReductionThreshold);
+            return axis;
         }
 
         private void ApplyEvenYawLeakCorrection(ref float pitchRate, float yawRate,
@@ -221,17 +273,17 @@ namespace BetterJoyForCemu {
             float absoluteYaw = Math.Abs(yawRate);
             float absolutePitch = Math.Abs(pitchRate);
             float yawSpeedConfidence = SmoothStep(Clamp01(
-                (absoluteYaw - YawTrustReductionStartRate) /
-                (YawTrustReductionFullRate - YawTrustReductionStartRate)));
+                (absoluteYaw - TrustReductionStartRate) /
+                (TrustReductionFullRate - TrustReductionStartRate)));
             float yawDominanceConfidence = SmoothStep(Clamp01(
-                (yawDominance - YawDominanceStart) /
-                (YawDominanceFull - YawDominanceStart)));
+                (yawDominance - DominanceStart) /
+                (DominanceFull - DominanceStart)));
             float pitchToYaw = absoluteYaw > 1e-5f
                 ? absolutePitch / absoluteYaw
                 : float.MaxValue;
             float purityConfidence = 1.0f - SmoothStep(Clamp01(
-                (pitchToYaw - EvenYawLeakPurityFull) /
-                (EvenYawLeakPurityZero - EvenYawLeakPurityFull)));
+                (pitchToYaw - EvenLeakPurityFull) /
+                (EvenLeakPurityZero - EvenLeakPurityFull)));
             float learningConfidence = yawSpeedConfidence * yawDominanceConfidence *
                                        purityConfidence;
 
@@ -240,20 +292,64 @@ namespace BetterJoyForCemu {
                 // user reverses yaw. A signed divisor was the reason the first adaptive attempt
                 // learned mutually incompatible coefficients for left and right turns.
                 float observedRatio = Clamp(pitchRate / absoluteYaw,
-                                            -MaximumEvenYawLeakRatio,
-                                            MaximumEvenYawLeakRatio);
+                                            -MaximumEvenLeakRatio,
+                                            MaximumEvenLeakRatio);
                 float attackBlend = 1.0f -
-                    (float)Math.Pow(2.0, -deltaTime / EvenYawLeakAttackHalfTime);
+                    (float)Math.Pow(2.0, -deltaTime / EvenLeakAttackHalfTime);
                 evenYawLeakRatio += (observedRatio - evenYawLeakRatio) *
                                     attackBlend * learningConfidence;
             } else {
                 float releaseBlend = 1.0f -
-                    (float)Math.Pow(2.0, -deltaTime / EvenYawLeakReleaseHalfTime);
+                    (float)Math.Pow(2.0, -deltaTime / EvenLeakReleaseHalfTime);
                 evenYawLeakRatio += (0.0f - evenYawLeakRatio) * releaseBlend;
             }
 
             evenYawLeakCorrection = evenYawLeakRatio * absoluteYaw * learningConfidence;
             pitchRate -= evenYawLeakCorrection;
+        }
+
+        // Mirror of ApplyEvenYawLeakCorrection: sustained pitch-dominant rotation produces the
+        // same kind of even-order centripetal leak, just landing on yaw instead of pitch. Confirmed
+        // on real DualSense hardware - a controller rested flat and pitched cleanly up/down still
+        // produced a small, consistent (non-random, non-diminishing) left/right cursor drift; this
+        // is the same mechanism as the historical yaw->pitch crawl, just the other axis pair.
+        private void ApplyEvenPitchLeakCorrection(ref float yawRate, float pitchRate,
+                                                  float deltaTime) {
+            float absolutePitch = Math.Abs(pitchRate);
+            float absoluteYaw = Math.Abs(yawRate);
+            float pitchSpeedConfidence = SmoothStep(Clamp01(
+                (absolutePitch - TrustReductionStartRate) /
+                (TrustReductionFullRate - TrustReductionStartRate)));
+            float pitchDominanceConfidence = SmoothStep(Clamp01(
+                (pitchDominance - DominanceStart) /
+                (DominanceFull - DominanceStart)));
+            float yawToPitch = absolutePitch > 1e-5f
+                ? absoluteYaw / absolutePitch
+                : float.MaxValue;
+            float purityConfidence = 1.0f - SmoothStep(Clamp01(
+                (yawToPitch - EvenLeakPurityFull) /
+                (EvenLeakPurityZero - EvenLeakPurityFull)));
+            float learningConfidence = pitchSpeedConfidence * pitchDominanceConfidence *
+                                       purityConfidence;
+
+            if (learningConfidence > 0.0f && absolutePitch > 1e-5f) {
+                // |pitch| is deliberate, mirroring ApplyEvenYawLeakCorrection: a real even-order
+                // leak retains its yaw sign when the user reverses pitch direction.
+                float observedRatio = Clamp(yawRate / absolutePitch,
+                                            -MaximumEvenLeakRatio,
+                                            MaximumEvenLeakRatio);
+                float attackBlend = 1.0f -
+                    (float)Math.Pow(2.0, -deltaTime / EvenLeakAttackHalfTime);
+                evenPitchLeakRatio += (observedRatio - evenPitchLeakRatio) *
+                                      attackBlend * learningConfidence;
+            } else {
+                float releaseBlend = 1.0f -
+                    (float)Math.Pow(2.0, -deltaTime / EvenLeakReleaseHalfTime);
+                evenPitchLeakRatio += (0.0f - evenPitchLeakRatio) * releaseBlend;
+            }
+
+            evenPitchLeakCorrection = evenPitchLeakRatio * absolutePitch * learningConfidence;
+            yawRate -= evenPitchLeakCorrection;
         }
 
         private static Vector3 RotateByInverseLocalMotion(Vector3 value,
