@@ -160,6 +160,7 @@
     <Compile Include="InputHelper.cs" />
     <Compile Include="InputIpcProtocol.cs" />
     <Compile Include="InputState.cs" />
+    <Compile Include="GyroMath.cs" />
     <Compile Include="GyroMouseOrientation.cs" />
     <Compile Include="GyroMousePlayerSpace.cs" />
     <Compile Include="BluetoothRadio.cs" />
