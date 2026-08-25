@@ -444,7 +444,10 @@ namespace BetterJoyForCemu {
         }
 
         public void SimulateMoveToScreenCenter() => SendMessage(InputMessageType.SimulateMoveToScreenCenter);
-        public void SimulateScroll(bool up) => SendMessage(InputMessageType.SimulateScroll, up ? 1 : 0);
+        public void SimulateScroll(bool up) {
+            if (!bindingCaptureSuppressesMappedOutput)
+                SendMessage(InputMessageType.SimulateScroll, up ? 1 : 0);
+        }
 
         // ---------------------------------------------------------------------------------
         // GUI control pipe (live status + rumble test/join-split/calibration commands) - see

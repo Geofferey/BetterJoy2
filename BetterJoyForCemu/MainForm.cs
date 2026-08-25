@@ -29,6 +29,7 @@ namespace BetterJoyForCemu {
                 "HomeLongPowerOff", "GyroHoldToggle", "GyroMouseInhibitButtons",
                 "DragToggle", "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
                 "TouchpadTapAndHold", "TouchpadClickMovementLockout",
+                "TouchpadTwoFingerScroll",
                 "SwapAB", "SwapXY", "HomeLEDOn",
             };
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/

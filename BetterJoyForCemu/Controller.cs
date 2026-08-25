@@ -75,8 +75,11 @@ namespace BetterJoyForCemu {
             // same bindings and chords as every physical control (for example PS + Tap), while
             // TOUCHPAD above remains the pad's mechanical click.
             TOUCHPAD_TAP = 21,
+            TOUCHPAD_TWO_FINGER_TAP = 22,
+            TOUCHPAD_TWO_FINGER_SCROLL_UP = 23,
+            TOUCHPAD_TWO_FINGER_SCROLL_DOWN = 24,
         };
-        protected const int ButtonCount = (int)Button.TOUCHPAD_TAP + 1;
+        protected const int ButtonCount = (int)Button.TOUCHPAD_TWO_FINGER_SCROLL_DOWN + 1;
 
         // For UdpServer
         public int PadId = 0;
@@ -750,6 +753,12 @@ namespace BetterJoyForCemu {
             // down/up edges and can be consumed by IsComboHeld and remote binding capture.
             buttons[(int)Button.TOUCHPAD_TAP] = HasTouchpad &&
                 timestamp < touchpadTapInputUntilTimestamp;
+            buttons[(int)Button.TOUCHPAD_TWO_FINGER_TAP] = HasTouchpad &&
+                timestamp < touchpadTwoFingerTapInputUntilTimestamp;
+            buttons[(int)Button.TOUCHPAD_TWO_FINGER_SCROLL_UP] = HasTouchpad &&
+                timestamp < touchpadTwoFingerScrollUpInputUntilTimestamp;
+            buttons[(int)Button.TOUCHPAD_TWO_FINGER_SCROLL_DOWN] = HasTouchpad &&
+                timestamp < touchpadTwoFingerScrollDownInputUntilTimestamp;
 
             lock (buttons_up) {
                 lock (buttons_down) {
@@ -928,10 +937,27 @@ namespace BetterJoyForCemu {
         protected bool touchpadTapHoldActive;
         protected byte touchpadTapHoldContactId;
         protected string touchpadTapHoldMapping;
+        protected bool touchpadTwoFingerTapTracking;
+        protected bool touchpadTwoFingerTapRejected;
+        protected byte touchpadTwoFingerTapFirstId;
+        protected byte touchpadTwoFingerTapSecondId;
+        protected int touchpadTwoFingerTapFirstStartX;
+        protected int touchpadTwoFingerTapFirstStartY;
+        protected int touchpadTwoFingerTapSecondStartX;
+        protected int touchpadTwoFingerTapSecondStartY;
+        protected long touchpadTwoFingerTapStartTimestamp;
+        protected bool touchpadTwoFingerScrolling;
+        protected int touchpadTwoFingerScrollStartXSum;
+        protected int touchpadTwoFingerScrollStartYSum;
+        protected int touchpadTwoFingerScrollLastYSum;
+        protected float touchpadTwoFingerScrollRemainder;
         // Gesture recognition happens after the raw report's ordinary button-edge commit. Hold
         // the resulting synthetic input across subsequent reports long enough for both runtime
         // chord evaluation and the service's 30 ms binding-capture poll to observe it.
         protected long touchpadTapInputUntilTimestamp;
+        protected long touchpadTwoFingerTapInputUntilTimestamp;
+        protected long touchpadTwoFingerScrollUpInputUntilTimestamp;
+        protected long touchpadTwoFingerScrollDownInputUntilTimestamp;
 
         // Both Sony pads use roughly 1,920 horizontal coordinate units. This permits normal
         // fingertip jitter while rejecting a deliberate drag before it can become a tap action.
@@ -941,6 +967,10 @@ namespace BetterJoyForCemu {
         protected const int TouchpadDoubleTapMaxDistance = 96;
         protected const double TouchpadDoubleTapWindowSeconds = 0.35;
         protected const double TouchpadTapInputPulseSeconds = 0.10;
+        // Sony touch coordinates span roughly 0-942 vertically. One conventional wheel detent
+        // per 72 average contact units gives a controllable full-pad swipe without flooding the
+        // desktop-input pipe with a wheel event for every HID report.
+        protected const float TouchpadScrollUnitsPerTick = 72.0f;
 
         protected static TouchContact ReadPackedTouchContact(byte[] report, int offset) {
             byte status = report[offset];
@@ -964,6 +994,13 @@ namespace BetterJoyForCemu {
             touchpadPreviousContactCount = 0;
             touchpadLastTapTimestamp = 0;
             touchpadTapInputUntilTimestamp = 0;
+            touchpadTwoFingerTapInputUntilTimestamp = 0;
+            touchpadTwoFingerScrollUpInputUntilTimestamp = 0;
+            touchpadTwoFingerScrollDownInputUntilTimestamp = 0;
+            touchpadTwoFingerTapTracking = false;
+            touchpadTwoFingerTapRejected = false;
+            touchpadTwoFingerScrolling = false;
+            touchpadTwoFingerScrollRemainder = 0.0f;
             touchpadMovementRemainderX = 0.0f;
             touchpadMovementRemainderY = 0.0f;
         }
@@ -981,6 +1018,66 @@ namespace BetterJoyForCemu {
 
             // Key/mouse targets are discrete clicks. Controller targets become a one-report
             // virtual-button pulse, using the same joy_N output convention as physical remaps.
+            Simulate(mapping);
+            foreach (string part in mapping.Split('+')) {
+                if (!part.StartsWith("joy_"))
+                    continue;
+
+                int buttonIndex;
+                if (Int32.TryParse(part.Substring(4), out buttonIndex) &&
+                    buttonIndex >= 0 && buttonIndex < buttons.Length)
+                    buttons[buttonIndex] = true;
+            }
+        }
+
+        protected void TriggerTouchpadTwoFingerTap() {
+            touchpadTwoFingerTapInputUntilTimestamp = Stopwatch.GetTimestamp() +
+                (long)(TouchpadTapInputPulseSeconds * Stopwatch.Frequency);
+
+            string mapping = MappingValue("touchpad_two_finger_tap");
+            if (mapping == "default") {
+                if (touchpadMouseEnabledThisReport && form != null)
+                    form.SimulateButtonClick((int)WindowsInput.Events.ButtonCode.Right);
+                return;
+            }
+            if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return;
+
+            Simulate(mapping);
+            foreach (string part in mapping.Split('+')) {
+                if (!part.StartsWith("joy_"))
+                    continue;
+
+                int buttonIndex;
+                if (Int32.TryParse(part.Substring(4), out buttonIndex) &&
+                    buttonIndex >= 0 && buttonIndex < buttons.Length)
+                    buttons[buttonIndex] = true;
+            }
+        }
+
+        protected void TriggerTouchpadTwoFingerScroll(bool up) {
+            long pulseUntil = Stopwatch.GetTimestamp() +
+                (long)(TouchpadTapInputPulseSeconds * Stopwatch.Frequency);
+            if (up)
+                touchpadTwoFingerScrollUpInputUntilTimestamp = pulseUntil;
+            else
+                touchpadTwoFingerScrollDownInputUntilTimestamp = pulseUntil;
+
+            string mappingKey = up
+                ? "touchpad_two_finger_scroll_up"
+                : "touchpad_two_finger_scroll_down";
+            string mapping = MappingValue(mappingKey);
+            if (mapping == "default") {
+                if (touchpadMouseEnabledThisReport && form != null)
+                    form.SimulateScroll(up);
+                return;
+            }
+            if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return;
+
+            // Like Tap, each wheel detent is also a first-class physical gesture. A custom
+            // mapping replaces the default wheel output without hiding that gesture from bind
+            // capture or preventing it from participating in a larger controller chord.
             Simulate(mapping);
             foreach (string part in mapping.Split('+')) {
                 if (!part.StartsWith("joy_"))
@@ -1040,6 +1137,136 @@ namespace BetterJoyForCemu {
             touchpadTapHoldMapping = null;
         }
 
+        protected bool TryGetActiveTouchContact(byte id, out TouchContact contact) {
+            if (touchpadFirstContact.Active && touchpadFirstContact.Id == id) {
+                contact = touchpadFirstContact;
+                return true;
+            }
+            if (touchpadSecondContact.Active && touchpadSecondContact.Id == id) {
+                contact = touchpadSecondContact;
+                return true;
+            }
+
+            contact = new TouchContact();
+            return false;
+        }
+
+        protected void StartTwoFingerTap(long timestamp) {
+            touchpadTwoFingerTapTracking = true;
+            // A second finger must not turn an existing one-finger drag into a click when the
+            // drag is released. It may still end that drag below, but this contact sequence is
+            // permanently ineligible for the two-finger action.
+            touchpadTwoFingerTapRejected = buttons[(int)Button.TOUCHPAD] ||
+                touchpadTapHoldActive;
+            touchpadTwoFingerTapFirstId = touchpadFirstContact.Id;
+            touchpadTwoFingerTapSecondId = touchpadSecondContact.Id;
+
+            // If the first finger arrived one report earlier, retain its real touchdown point
+            // and time. That keeps a one-finger drag followed by a second finger from being
+            // mistaken for a stationary two-finger tap merely because finger two arrived late.
+            bool firstWasTracked = touchpadTapTracking &&
+                touchpadTapContactId == touchpadFirstContact.Id;
+            bool secondWasTracked = touchpadTapTracking &&
+                touchpadTapContactId == touchpadSecondContact.Id;
+            touchpadTwoFingerTapFirstStartX = firstWasTracked
+                ? touchpadTapStartX : touchpadFirstContact.X;
+            touchpadTwoFingerTapFirstStartY = firstWasTracked
+                ? touchpadTapStartY : touchpadFirstContact.Y;
+            touchpadTwoFingerTapSecondStartX = secondWasTracked
+                ? touchpadTapStartX : touchpadSecondContact.X;
+            touchpadTwoFingerTapSecondStartY = secondWasTracked
+                ? touchpadTapStartY : touchpadSecondContact.Y;
+            touchpadTwoFingerTapStartTimestamp = (firstWasTracked || secondWasTracked)
+                ? touchpadTapStartTimestamp : timestamp;
+            touchpadTwoFingerScrolling = false;
+            touchpadTwoFingerScrollStartXSum =
+                touchpadFirstContact.X + touchpadSecondContact.X;
+            touchpadTwoFingerScrollStartYSum =
+                touchpadFirstContact.Y + touchpadSecondContact.Y;
+            touchpadTwoFingerScrollLastYSum = touchpadTwoFingerScrollStartYSum;
+            touchpadTwoFingerScrollRemainder = 0.0f;
+
+            if ((timestamp - touchpadTwoFingerTapStartTimestamp) /
+                    (double)Stopwatch.Frequency > TouchpadTapMaxSeconds)
+                touchpadTwoFingerTapRejected = true;
+
+            // This contact sequence now belongs to the two-finger recognizer. The one-finger
+            // recognizer stays alive only long enough to observe both contacts lifting, but may
+            // no longer emit Tap or become a double-tap drag.
+            touchpadTapRejected = true;
+            touchpadLastTapTimestamp = 0;
+        }
+
+        protected void UpdateTwoFingerTap(long timestamp, int contactCount) {
+            if (!touchpadTwoFingerTapTracking)
+                return;
+
+            TouchContact first;
+            TouchContact second;
+            bool firstActive = TryGetActiveTouchContact(
+                touchpadTwoFingerTapFirstId, out first);
+            bool secondActive = TryGetActiveTouchContact(
+                touchpadTwoFingerTapSecondId, out second);
+
+            // An active contact with neither original ID is a finger handoff/new gesture, not
+            // the staggered lift of the same two fingers.
+            int originalContactsActive = (firstActive ? 1 : 0) + (secondActive ? 1 : 0);
+            if (contactCount > originalContactsActive || buttons[(int)Button.TOUCHPAD])
+                touchpadTwoFingerTapRejected = true;
+
+            if (firstActive) {
+                int dx = first.X - touchpadTwoFingerTapFirstStartX;
+                int dy = first.Y - touchpadTwoFingerTapFirstStartY;
+                if (dx * dx + dy * dy > TouchpadTapMaxTravel * TouchpadTapMaxTravel)
+                    touchpadTwoFingerTapRejected = true;
+            }
+            if (secondActive) {
+                int dx = second.X - touchpadTwoFingerTapSecondStartX;
+                int dy = second.Y - touchpadTwoFingerTapSecondStartY;
+                if (dx * dx + dy * dy > TouchpadTapMaxTravel * TouchpadTapMaxTravel)
+                    touchpadTwoFingerTapRejected = true;
+            }
+
+            bool twoFingerScrollEnabled =
+                ProfileBoolOption("TouchpadTwoFingerScroll");
+            if (!twoFingerScrollEnabled) {
+                touchpadTwoFingerScrolling = false;
+                touchpadTwoFingerScrollRemainder = 0.0f;
+            } else if (firstActive && secondActive && !touchpadTwoFingerScrolling) {
+                // Track the center of both contacts rather than either finger independently.
+                // This recognizes parallel vertical travel while rejecting a pinch/spread as
+                // scroll. Values are kept as sums to avoid throwing away half-unit movement.
+                int centerDxSum = first.X + second.X - touchpadTwoFingerScrollStartXSum;
+                int centerDySum = first.Y + second.Y - touchpadTwoFingerScrollStartYSum;
+                int scrollStartThresholdSum = TouchpadTapMaxTravel * 2;
+                if (Math.Abs(centerDySum) > scrollStartThresholdSum &&
+                    Math.Abs(centerDySum) > Math.Abs(centerDxSum)) {
+                    touchpadTwoFingerScrolling = true;
+                    touchpadTwoFingerTapRejected = true;
+                }
+            }
+            if (twoFingerScrollEnabled && firstActive && secondActive &&
+                touchpadTwoFingerScrolling)
+                UpdateTouchpadTwoFingerScroll(first, second);
+
+            double elapsed = (timestamp - touchpadTwoFingerTapStartTimestamp) /
+                             (double)Stopwatch.Frequency;
+            if (elapsed > TouchpadTapMaxSeconds)
+                touchpadTwoFingerTapRejected = true;
+
+            // Fingers rarely leave on the exact same HID report. Wait until both original IDs
+            // are up, accepting a brief one-finger tail, then emit one canonical gesture pulse.
+            if (!firstActive && !secondActive) {
+                if (!touchpadTwoFingerTapRejected)
+                    TriggerTouchpadTwoFingerTap();
+
+                touchpadTwoFingerTapTracking = false;
+                touchpadTwoFingerTapRejected = false;
+                touchpadTwoFingerScrolling = false;
+                touchpadTwoFingerScrollRemainder = 0.0f;
+            }
+        }
+
         protected void ProcessTouchpadGestures() {
             int contactCount = (touchpadFirstContact.Active ? 1 : 0) +
                                (touchpadSecondContact.Active ? 1 : 0);
@@ -1053,6 +1280,11 @@ namespace BetterJoyForCemu {
                 tapHoldMode = "disabled";
             bool holdToDrag = tapHoldMode == "hold";
             bool doubleTapToDrag = tapHoldMode == "double_tap";
+
+            if (!touchpadTwoFingerTapTracking &&
+                touchpadPreviousContactCount < 2 && contactCount == 2)
+                StartTwoFingerTap(timestamp);
+            UpdateTwoFingerTap(timestamp, contactCount);
 
             if (!holdToDrag && !doubleTapToDrag) {
                 ReleaseTouchpadTapHold();
@@ -1070,9 +1302,9 @@ namespace BetterJoyForCemu {
                     ReleaseTouchpadTapHold();
                 } else {
                     ApplyTouchpadTapHoldControllerButtons();
+                    touchpadPreviousContactCount = contactCount;
+                    return;
                 }
-                touchpadPreviousContactCount = contactCount;
-                return;
             }
 
             if (!doubleTapToDrag) {
@@ -1391,6 +1623,38 @@ namespace BetterJoyForCemu {
             }
         }
 
+        protected bool IsTouchpadMovementLocked() {
+            string pointerLock = MappingValue("touchpad_pointer_lock");
+            bool bindingLocked = !String.IsNullOrEmpty(pointerLock) &&
+                pointerLock != "0" && IsComboHeld(pointerLock);
+            bool clickLocked = ProfileBoolOption("TouchpadClickMovementLockout") &&
+                buttons[(int)Button.TOUCHPAD];
+            return bindingLocked || clickLocked;
+        }
+
+        protected void UpdateTouchpadTwoFingerScroll(TouchContact first, TouchContact second) {
+            int currentYSum = first.Y + second.Y;
+            int deltaYSum = currentYSum - touchpadTwoFingerScrollLastYSum;
+            touchpadTwoFingerScrollLastYSum = currentYSum;
+
+            if (touchpadMouseEnabledThisReport && IsTouchpadMovementLocked()) {
+                touchpadTwoFingerScrollRemainder = 0.0f;
+                return;
+            }
+
+            // Divide the summed contact delta by two to get centroid travel. Moving fingers up
+            // emits wheel-up; moving them down emits wheel-down, matching Windows touchpads.
+            touchpadTwoFingerScrollRemainder += deltaYSum * 0.5f;
+            while (touchpadTwoFingerScrollRemainder <= -TouchpadScrollUnitsPerTick) {
+                TriggerTouchpadTwoFingerScroll(true);
+                touchpadTwoFingerScrollRemainder += TouchpadScrollUnitsPerTick;
+            }
+            while (touchpadTwoFingerScrollRemainder >= TouchpadScrollUnitsPerTick) {
+                TriggerTouchpadTwoFingerScroll(false);
+                touchpadTwoFingerScrollRemainder -= TouchpadScrollUnitsPerTick;
+            }
+        }
+
         protected void ProcessTouchpadMouse() {
             bool enabled = HasTouchpad && touchpadMouseEnabledThisReport;
             if (!enabled) {
@@ -1406,6 +1670,16 @@ namespace BetterJoyForCemu {
                 (int)WindowsInput.Events.ButtonCode.Middle, true);
             SimulateMouseActionScroll("touchpad_scroll_up", true, true);
             SimulateMouseActionScroll("touchpad_scroll_down", false, true);
+
+            // Until its centroid moves far enough, this remains a stationary tap candidate. If
+            // it crosses the threshold, the recognizer permanently converts it to scrolling.
+            // Either way, two contacts own the surface and must never also move the pointer.
+            if (touchpadTwoFingerTapTracking) {
+                touchpadContactActive = false;
+                touchpadMovementRemainderX = 0.0f;
+                touchpadMovementRemainderY = 0.0f;
+                return;
+            }
 
             TouchContact current = touchpadFirstContact;
             bool hasContact = touchpadFirstContact.Active;
@@ -1452,12 +1726,7 @@ namespace BetterJoyForCemu {
             touchpadLastX = current.X;
             touchpadLastY = current.Y;
 
-            string pointerLock = MappingValue("touchpad_pointer_lock");
-            bool bindingLocked = !String.IsNullOrEmpty(pointerLock) &&
-                pointerLock != "0" && IsComboHeld(pointerLock);
-            bool clickLocked = ProfileBoolOption("TouchpadClickMovementLockout") &&
-                buttons[(int)Button.TOUCHPAD];
-            if (bindingLocked || clickLocked) {
+            if (IsTouchpadMovementLocked()) {
                 touchpadMovementRemainderX = 0.0f;
                 touchpadMovementRemainderY = 0.0f;
                 return;

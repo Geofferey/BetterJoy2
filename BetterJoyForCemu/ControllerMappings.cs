@@ -40,7 +40,9 @@ namespace BetterJoyForCemu {
             "active_gyro_left_stick", "active_gyro_right_stick",
             "left_click", "right_click",
             "center_click", "scroll_up", "scroll_down", "clench_gyro", "ratchet_gyro",
-            "touchpad_click", "touchpad_tap", "active_touchpad_mouse",
+            "touchpad_click", "touchpad_tap", "touchpad_two_finger_tap",
+            "touchpad_two_finger_scroll_up", "touchpad_two_finger_scroll_down",
+            "active_touchpad_mouse",
             "touchpad_left_click", "touchpad_right_click", "touchpad_center_click",
             "touchpad_scroll_up", "touchpad_scroll_down", "touchpad_pointer_lock",
         };
@@ -53,6 +55,7 @@ namespace BetterJoyForCemu {
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
+            "TouchpadTwoFingerScroll",
             "SwapAB", "SwapXY", "HomeLEDOn",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
@@ -396,6 +399,10 @@ namespace BetterJoyForCemu {
                 return LegacyGyroActivationValue(key);
             if (key == "active_touchpad_mouse")
                 return "0";
+            if (key == "touchpad_two_finger_tap" ||
+                key == "touchpad_two_finger_scroll_up" ||
+                key == "touchpad_two_finger_scroll_down")
+                return "default";
             return AppConfigBackedKeys.Contains(key) ? "0" : Config.GetDefaultValue(key);
         }
 
@@ -718,6 +725,10 @@ namespace BetterJoyForCemu {
                 return LegacyGyroActivationValue(key);
             if (key == "active_touchpad_mouse")
                 return "0";
+            if (key == "touchpad_two_finger_tap" ||
+                key == "touchpad_two_finger_scroll_up" ||
+                key == "touchpad_two_finger_scroll_down")
+                return "default";
 
             string value = AppConfigBackedKeys.Contains(key)
                 ? ConfigurationManager.AppSettings[key]
