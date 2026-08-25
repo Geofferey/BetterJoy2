@@ -21,6 +21,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_gyro_mouse_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_sensitivity = new ContextMenuStrip();
+        ContextMenuStrip menu_touchpad_axis_scale = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_click_lockout = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_two_finger_scroll = new ContextMenuStrip();
@@ -189,6 +190,11 @@ namespace BetterJoyForCemu {
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
             menu_touchpad_sensitivity.ItemClicked += TouchpadSensitivityMenu_ItemClicked;
 
+            foreach (int percent in new[] { 0, 25, 50, 75, 100 })
+                menu_touchpad_axis_scale.Items.Add(
+                    new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
+            menu_touchpad_axis_scale.ItemClicked += TouchpadAxisScaleMenu_ItemClicked;
+
             menu_touchpad_tap_hold.Items.Add(
                 new ToolStripMenuItem("Disabled") { Tag = "disabled" });
             menu_touchpad_tap_hold.Items.Add(
@@ -263,6 +269,8 @@ namespace BetterJoyForCemu {
         private SplitButton btn_active_touchpad_mouse;
         private SplitButton btn_touchpad_inhibit;
         private SplitButton btn_touchpad_sensitivity;
+        private SplitButton btn_touchpad_horizontal_scale;
+        private SplitButton btn_touchpad_vertical_scale;
         private SplitButton btn_touchpad_tap_hold;
         private SplitButton btn_touchpad_click_lockout;
         private List<SplitButton> specialButtons;
@@ -391,6 +399,17 @@ namespace BetterJoyForCemu {
                     btn_touchpad_sensitivity.Height);
             btn_touchpad_sensitivity.RightClickHandler = (sender, e) =>
                 PromptTouchpadSensitivity();
+
+            btn_touchpad_horizontal_scale = CreateChoiceSplitButton(
+                "btn_touchpad_horizontal_scale", menu_touchpad_axis_scale);
+            btn_touchpad_horizontal_scale.RightClickHandler = (sender, e) =>
+                PromptTouchpadAxisScale(btn_touchpad_horizontal_scale,
+                    "TouchpadHorizontalScale", "Horizontal scale");
+            btn_touchpad_vertical_scale = CreateChoiceSplitButton(
+                "btn_touchpad_vertical_scale", menu_touchpad_axis_scale);
+            btn_touchpad_vertical_scale.RightClickHandler = (sender, e) =>
+                PromptTouchpadAxisScale(btn_touchpad_vertical_scale,
+                    "TouchpadVerticalScale", "Vertical scale");
 
             btn_touchpad_tap_hold = new SplitButton { Name = "btn_touchpad_tap_hold" };
             btn_touchpad_tap_hold.Menu = menu_touchpad_tap_hold;
@@ -854,11 +873,19 @@ namespace BetterJoyForCemu {
                 527, 24, 232, 362);
             tip_reassign.SetToolTip(btn_touchpad_sensitivity,
                 "Choose a preset or right-click to enter a custom value from 10% to 400%.");
+            AddMappingRow(page, null, btn_touchpad_horizontal_scale, "Horizontal scale",
+                564, 24, 114, 181);
+            AddMappingRow(page, null, btn_touchpad_vertical_scale, "Vertical scale",
+                564, 323, 423, 171);
+            tip_reassign.SetToolTip(btn_touchpad_horizontal_scale,
+                "Scale horizontal pointer output from 0% to 100%. Zero locks the axis. Right-click for a custom value.");
+            tip_reassign.SetToolTip(btn_touchpad_vertical_scale,
+                "Scale vertical pointer output from 0% to 100%. Zero locks the axis. Right-click for a custom value.");
 
-            page.Controls.Add(CreateDivider(24, 575));
-            AddSectionHeading(page, "Mouse actions", 590,
+            page.Controls.Add(CreateDivider(24, 612));
+            AddSectionHeading(page, "Mouse actions", 627,
                 "Optional controller inputs available while touchpad mouse is active.");
-            const int actionTop = 642;
+            const int actionTop = 679;
             const int actionSpacing = 34;
             string[] labels = {
                 "Left click", "Right click", "Middle click", "Clench touchpad",
@@ -882,7 +909,7 @@ namespace BetterJoyForCemu {
                 actionTop + 3 * actionSpacing, 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_click_lockout,
                 "Prevent pointer movement while the physical touchpad is pressed.");
-            page.AutoScrollMinSize = new Size(0, 810);
+            page.AutoScrollMinSize = new Size(0, 847);
             return page;
         }
 
@@ -1259,6 +1286,7 @@ namespace BetterJoyForCemu {
                 btn_gyro_analog_sliders, btn_gyro_mouse_inhibit, btn_default_orientation,
                 btn_touchpad_inhibit, btn_touchpad_sensitivity, btn_touchpad_tap_hold,
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
+                btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
                 gyroStickModeSelector, gyroStickModeRightSelector,
@@ -1312,6 +1340,10 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "TouchpadMouseInhibitButtons") ? "Enabled" : "Disabled";
                 btn_touchpad_sensitivity.Text = ControllerMappings.IntOption(
                     SelectedProfileId, "TouchpadSensitivity", 100) + "%";
+                btn_touchpad_horizontal_scale.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "TouchpadHorizontalScale", 100) + "%";
+                btn_touchpad_vertical_scale.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "TouchpadVerticalScale", 100) + "%";
                 btn_touchpad_tap_hold.Text = TouchpadTapHoldDisplayText(
                     ControllerMappings.OptionValue(SelectedProfileId, "TouchpadTapAndHold"));
                 btn_touchpad_click_lockout.Text = ControllerMappings.BoolOption(
@@ -1421,6 +1453,7 @@ namespace BetterJoyForCemu {
             foreach (ContextMenuStrip menu in new[] {
                      menu_joy_buttons, menu_gyro_activation, menu_gyro_analog_sliders,
                      menu_gyro_mouse_inhibit, menu_touchpad_inhibit, menu_touchpad_sensitivity,
+                     menu_touchpad_axis_scale,
                      menu_touchpad_tap_hold, menu_touchpad_click_lockout,
                      menu_touchpad_two_finger_scroll,
                      menu_gyro_stick_mode, menu_gyro_stick_axis,
@@ -1749,12 +1782,38 @@ namespace BetterJoyForCemu {
             btn_touchpad_sensitivity.Text = value + "%";
         }
 
+        private void TouchpadAxisScaleMenu_ItemClicked(
+            object sender, ToolStripItemClickedEventArgs e) {
+            SplitButton button = menu_touchpad_axis_scale.Tag as SplitButton;
+            if (button == null || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string key = button == btn_touchpad_horizontal_scale
+                ? "TouchpadHorizontalScale"
+                : "TouchpadVerticalScale";
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(SelectedProfileId, key, value);
+            button.Text = value + "%";
+        }
+
         private void PromptTouchpadSensitivity() {
+            PromptTouchpadPercentage(btn_touchpad_sensitivity, "TouchpadSensitivity",
+                "Touchpad sensitivity", "pointer sensitivity", 10, 400);
+        }
+
+        private void PromptTouchpadAxisScale(
+            SplitButton button, string key, string description) {
+            PromptTouchpadPercentage(button, key, description,
+                description.ToLowerInvariant(), 0, 100);
+        }
+
+        private void PromptTouchpadPercentage(SplitButton button, string key,
+            string title, string description, int minimum, int maximum) {
             if (String.IsNullOrEmpty(SelectedProfileId))
                 return;
 
             using (var prompt = new Form()) {
-                prompt.Text = "Touchpad sensitivity";
+                prompt.Text = title;
                 prompt.FormBorderStyle = FormBorderStyle.FixedDialog;
                 prompt.StartPosition = FormStartPosition.CenterParent;
                 prompt.MinimizeBox = false;
@@ -1768,7 +1827,8 @@ namespace BetterJoyForCemu {
                 var label = new Label {
                     AutoSize = true,
                     Location = new Point(18, 18),
-                    Text = "Enter pointer sensitivity (10%–400%):",
+                    Text = String.Format("Enter {0} ({1}%–{2}%):",
+                        description, minimum, maximum),
                     ForeColor = ProfileText,
                 };
                 var input = new TextBox {
@@ -1777,8 +1837,7 @@ namespace BetterJoyForCemu {
                     BackColor = ProfileSurface,
                     ForeColor = ProfileText,
                     BorderStyle = BorderStyle.FixedSingle,
-                    Text = ControllerMappings.IntOption(
-                        SelectedProfileId, "TouchpadSensitivity", 100) + "%",
+                    Text = ControllerMappings.IntOption(SelectedProfileId, key, 100) + "%",
                     TextAlign = HorizontalAlignment.Center,
                 };
                 var cancel = new Button {
@@ -1818,15 +1877,16 @@ namespace BetterJoyForCemu {
                         text = text.Substring(0, text.Length - 1).Trim();
 
                     int value;
-                    if (Int32.TryParse(text, out value) && value >= 10 && value <= 400) {
-                        ControllerMappings.SetOptionValue(
-                            SelectedProfileId, "TouchpadSensitivity", value.ToString());
-                        btn_touchpad_sensitivity.Text = value + "%";
+                    if (Int32.TryParse(text, out value) &&
+                        value >= minimum && value <= maximum) {
+                        ControllerMappings.SetOptionValue(SelectedProfileId, key, value.ToString());
+                        button.Text = value + "%";
                         return;
                     }
 
-                    MessageBox.Show(prompt, "Enter a whole number from 10 to 400.",
-                        "Touchpad sensitivity", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(prompt,
+                        String.Format("Enter a whole number from {0} to {1}.", minimum, maximum),
+                        title, MessageBoxButtons.OK, MessageBoxIcon.Information);
                     input.SelectAll();
                     input.Focus();
                 }

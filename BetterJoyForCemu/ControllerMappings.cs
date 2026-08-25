@@ -54,6 +54,7 @@ namespace BetterJoyForCemu {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
+            "TouchpadHorizontalScale", "TouchpadVerticalScale",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
             "SwapAB", "SwapXY", "HomeLEDOn",

@@ -1734,8 +1734,18 @@ namespace BetterJoyForCemu {
 
             int sensitivity = Math.Max(10, Math.Min(400,
                 ProfileIntOption("TouchpadSensitivity", 100)));
-            float scaledX = dx * sensitivity / 100.0f + touchpadMovementRemainderX;
-            float scaledY = dy * sensitivity / 100.0f + touchpadMovementRemainderY;
+            int horizontalScale = Math.Max(0, Math.Min(100,
+                ProfileIntOption("TouchpadHorizontalScale", 100)));
+            int verticalScale = Math.Max(0, Math.Min(100,
+                ProfileIntOption("TouchpadVerticalScale", 100)));
+            float scaledX = horizontalScale == 0
+                ? 0.0f
+                : dx * sensitivity * horizontalScale / 10000.0f +
+                    touchpadMovementRemainderX;
+            float scaledY = verticalScale == 0
+                ? 0.0f
+                : dy * sensitivity * verticalScale / 10000.0f +
+                    touchpadMovementRemainderY;
             int moveX = (int)scaledX;
             int moveY = (int)scaledY;
             touchpadMovementRemainderX = scaledX - moveX;
