@@ -61,6 +61,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
+        private CheckBox rumbleEnabledCheckBox;
         private CheckBox dragToggleCheckBox;
         private CheckBox swapAbCheckBox;
         private CheckBox swapXyCheckBox;
@@ -980,11 +981,16 @@ namespace BetterJoyForCemu {
             page.Controls.Add(gyroHelp);
 
             page.Controls.Add(CreateDivider(24, 440));
-            AddSectionHeading(page, "Lighting", 457,
-                "Control the Home-button ring light for this controller.");
+            AddSectionHeading(page, "Feedback", 457,
+                "Control vibration and controller lighting for this profile.");
+            rumbleEnabledCheckBox = CreateProfileCheckBox(
+                "Enable rumble", 24, 514, "EnableRumble");
             homeLedCheckBox = CreateProfileCheckBox(
-                "Keep the Home LED on", 24, 514, "HomeLEDOn");
+                "Keep the Home LED on", 315, 514, "HomeLEDOn");
+            page.Controls.Add(rumbleEnabledCheckBox);
             page.Controls.Add(homeLedCheckBox);
+            tip_reassign.SetToolTip(rumbleEnabledCheckBox,
+                "Allow games and BetterJoy's controller test to vibrate this controller.");
 
             page.Controls.Add(CreateDivider(24, 560));
             AddSectionHeading(page, "Orientation", 577,
@@ -1313,7 +1319,7 @@ namespace BetterJoyForCemu {
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
-                swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
+                swapAbCheckBox, swapXyCheckBox, rumbleEnabledCheckBox, homeLedCheckBox,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1356,6 +1362,8 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
                 swapXyCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapXY");
+                rumbleEnabledCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "EnableRumble");
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;

@@ -228,6 +228,16 @@ namespace BetterJoyForCemu {
         protected int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
         protected int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
 
+        public bool RumbleEnabled => ControllerMappings.BoolOption(
+            ControllerMappings.ProfileIdFor(this), "EnableRumble");
+
+        // Profile changes are applied while a controller may already be vibrating. Queue an
+        // explicit stop when rumble is disabled so removing the virtual feedback subscription
+        // alone cannot strand the motors at their last nonzero command.
+        public void StopRumble() {
+            SetRumble(lowFreq, highFreq, 0.0f);
+        }
+
         // ViGEmBus feedback (rumble commanded by a game through the virtual controller) - generic
         // across every device kind, since it just forwards into the same SetRumble/rumble_obj queue
         // every subclass's own SendQueuedRumbleIfAny already reads from. A joined pair's passive
@@ -236,6 +246,9 @@ namespace BetterJoyForCemu {
         // DualSenseController never gets a DS4 output target by design (see DOCS/
         // CONTROLLERS-REFACTOR.md's Tier-3 note) - harmless no-op for anything that never wires it.
         public void ReceiveRumble(Xbox360FeedbackReceivedEventArgs e) {
+            if (!RumbleEnabled)
+                return;
+
             DebugPrint("Rumble data Recived: XInput", DebugType.RUMBLE);
             SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
 
@@ -244,6 +257,9 @@ namespace BetterJoyForCemu {
         }
 
         public void Ds4_FeedbackReceived(DualShock4FeedbackReceivedEventArgs e) {
+            if (!RumbleEnabled)
+                return;
+
             DebugPrint("Rumble data Recived: DS4", DebugType.RUMBLE);
             SetRumble(lowFreq, highFreq, (float)Math.Max(e.LargeMotor, e.SmallMotor) / (float)255);
 

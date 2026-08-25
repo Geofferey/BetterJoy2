@@ -26,7 +26,8 @@ namespace BetterJoyForCemu {
         private static readonly HashSet<string> ProfileOwnedConfigKeys =
             new HashSet<string>(StringComparer.Ordinal) {
                 "ShowAsXInput", "ShowAsDS4", "AutoPowerOff", "PowerOffInactivity",
-                "HomeLongPowerOff", "GyroHoldToggle", "GyroMouseInhibitButtons",
+                "HomeLongPowerOff", "EnableRumble", "GyroHoldToggle",
+                "GyroMouseInhibitButtons",
                 "DragToggle", "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
                 "TouchpadStickSensitivity",
                 "TouchpadHorizontalScale", "TouchpadVerticalScale",
@@ -825,7 +826,7 @@ namespace BetterJoyForCemu {
                 var valCtl = settingsTable.GetControlFromPosition(1, row);
                 var KeyCtl = settingsTable.GetControlFromPosition(0, row).Text;
 
-                if (valCtl.GetType() == typeof(CheckBox) && settings[KeyCtl] != null) {
+                if (valCtl is CheckBox && settings[KeyCtl] != null) {
                     settings[KeyCtl].Value = ((CheckBox)valCtl).Checked.ToString().ToLower();
                 } else if (valCtl.GetType() == typeof(ComboBox) && settings[KeyCtl] != null) {
                     settings[KeyCtl].Value = ((ComboBox)valCtl).SelectedItem.ToString();
@@ -891,7 +892,7 @@ namespace BetterJoyForCemu {
 
             try {
                 string value = null;
-                if (valCtl.GetType() == typeof(CheckBox)) {
+                if (valCtl is CheckBox) {
                     value = ((CheckBox)valCtl).Checked.ToString().ToLowerInvariant();
                 } else if (valCtl.GetType() == typeof(ComboBox)) {
                     value = ((ComboBox)valCtl).SelectedItem.ToString();

@@ -53,6 +53,7 @@ namespace BetterJoyForCemu {
         // persisted beside bindings once a profile is edited.
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
+            "EnableRumble",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
             "TouchpadStickSensitivity",

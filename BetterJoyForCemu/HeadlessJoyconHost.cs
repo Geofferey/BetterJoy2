@@ -586,7 +586,7 @@ namespace BetterJoyForCemu {
 
         private void TestRumble(int padId) {
             Controller jc = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
-            if (jc == null)
+            if (jc == null || !jc.RumbleEnabled)
                 return;
 
             jc.SetRumble(160.0f, 320.0f, 1.0f);
