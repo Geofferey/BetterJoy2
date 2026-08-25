@@ -508,9 +508,7 @@ namespace BetterJoyForCemu {
             switch (record.Kind) {
                 case ControllerKind.Pro: return Properties.Resources.pro;
                 case ControllerKind.DualSense: return Properties.Resources.dualsense;
-                // No dedicated DualShock 4 icon asset yet - reuses Pro's generic single-unit
-                // gamepad shape rather than falling through to the Joy-Con icon below.
-                case ControllerKind.DualShock4: return Properties.Resources.pro;
+                case ControllerKind.DualShock4: return Properties.Resources.ds4;
                 case ControllerKind.Snes: return Properties.Resources.snes;
                 case ControllerKind.N64: return Properties.Resources.ultra;
                 case ControllerKind.Left:

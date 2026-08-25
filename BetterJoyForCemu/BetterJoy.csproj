@@ -245,6 +245,7 @@
     <Resource Include="Icons\jc_right.png" />
     <Resource Include="Icons\pro.png" />
     <Resource Include="Icons\dualsense.png" />
+    <Resource Include="Icons\ds4.png" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="3rdPartyControllers.resx">
