@@ -1713,14 +1713,19 @@ namespace BetterJoyForCemu {
             float outputX = 0.0f;
             float outputY = 0.0f;
             if (distance > TouchpadStickDeadzoneUnits) {
-                float magnitude = Math.Min(1.0f,
-                    (distance - TouchpadStickDeadzoneUnits) /
-                    (TouchpadStickFullDeflectionUnits - TouchpadStickDeadzoneUnits));
                 float sensitivity = Math.Max(10, Math.Min(400,
                     ProfileIntOption("TouchpadStickSensitivity", 100))) / 100.0f;
-                float normalizedX = rawX / distance * magnitude * sensitivity;
+                // Stick sensitivity controls how much physical travel is required, not the
+                // maximum virtual deflection. Apply it before the clamp so (for example) 75%
+                // can still reach a full stick after a longer swipe; the per-axis scales below
+                // are the controls which intentionally cap deflection.
+                float magnitude = Math.Min(1.0f,
+                    (distance - TouchpadStickDeadzoneUnits) /
+                    (TouchpadStickFullDeflectionUnits - TouchpadStickDeadzoneUnits) *
+                    sensitivity);
+                float normalizedX = rawX / distance * magnitude;
                 // Touch coordinates grow downward; BetterJoy's canonical stick Y grows upward.
-                float normalizedY = -rawY / distance * magnitude * sensitivity;
+                float normalizedY = -rawY / distance * magnitude;
                 int horizontalScale = Math.Max(0, Math.Min(100,
                     ProfileIntOption("TouchpadHorizontalScale", 100)));
                 int verticalScale = Math.Max(0, Math.Min(100,
