@@ -7,6 +7,40 @@ Allows the Nintendo Switch Pro Controller, Joycons, and Switch SNES controller t
 
 It also allows using the gyro to control your mouse and remap the special buttons (SL, SR, Capture) to key bindings of your choice.
 
+# Features
+
+This fork (BetterJoy2) builds heavily on the original BetterJoy - see
+[Acknowledgements](#acknowledgements) for the foundation it's built on. The following are unique
+to this fork:
+
+* **DualSense (PS5 controller) support** - buttons, sticks, triggers, rumble, lightbar, and full
+  gyro/accelerometer motion, reading DualSense's own hardware calibration and driving the same
+  gyro-mouse and gyro-to-stick pipeline as Joy-Cons/Pro Controller, not a second implementation.
+* **Gravity-referenced filtered gyro mouse** - a full rework around "Player Space" motion math
+  (adapted from GamepadMotionHelpers): yaw/pitch tracked relative to true gravity instead of the
+  controller's raw local axes, so aiming stays consistent no matter how the controller is tilted
+  or rolled. Includes low-speed tightening, adaptive smoothing, stationary-bias drift correction,
+  and orientation-aware grip recentering.
+* **Gyro-to-stick** - turn gyro rotation into virtual analog stick input, with three selectable
+  modes (Rate, Absolute tilt, Hybrid), per-stick axis source and invert, configurable deflection
+  limits, and a ratchet bind for repositioning your wrist mid-turn without it registering as
+  reverse input.
+* **Silent auto-calibration** - gyro, accelerometer, and stick centers are recalibrated
+  automatically in the background the moment a controller is detected sitting genuinely still, no
+  wizard or user action required. A guided manual recalibration wizard is still available for
+  when it's needed.
+* **Runs as a Windows Service** - the core controller pipeline can run independent of the GUI,
+  surviving sign-out/sign-in and working from elevated windows and the Windows lock screen, with
+  crash recovery and a session-launched helper so keyboard/mouse remapping still works across the
+  service boundary.
+* **Per-controller profiles** - multiple named special-button mapping profiles per controller
+  (not just one), with button-combo bindings, a mappable shake input, and reassignable virtual
+  Guide/PS button output.
+* **Optional virtual HID mouse backend** (via FakerInput) - lets gyro mouse work across elevated
+  windows, the Windows sign-in screen, and service/session boundaries where the standard approach
+  can't reach.
+* **Controller blacklist** - block specific controllers from being auto-added over USB/Bluetooth.
+
 If anyone would like to donate (for whatever reason), [you can do so here](https://www.paypal.me/DavidKhachaturov/5). 
 
 #### Personal note
