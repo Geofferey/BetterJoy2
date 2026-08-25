@@ -36,6 +36,15 @@ namespace BetterJoyForCemu {
         private const ushort vendor_sony = 0x054C;
         private const ushort product_dualsense = 0x0CE6;
         private const ushort product_dualsense_edge = 0x0DF2;
+        // DualShock 4 v2 (CUH-ZCT2x) only - v1 (CUH-ZCT1x, PID 0x05C4) is deliberately not
+        // detected here: that PID is identical to vigemDs4ProductId below, ViGEmBus's own default
+        // emulated DS4 identity. A real v1 controller would be indistinguishable from BetterJoy's
+        // own virtual DS4 output at the VID/PID level with the check below, so it's excluded
+        // rather than risk either mis-adding our own output as a new physical controller or
+        // silently failing to filter it. Needs a real disambiguator (interface path, bus type, or
+        // a verified manufacturer/product string difference) confirmed on real hardware before v1
+        // can be added safely.
+        private const ushort product_dualshock4_v2 = 0x09CC;
 
         // ViGEmBus's default emulated identities (CreateXbox360Controller()/CreateDS4Controller()
         // are called with no VID/PID override anywhere in this codebase - see
@@ -318,11 +327,13 @@ namespace BetterJoyForCemu {
                 // engages.
                 bool isDualSenseDevice = enumerate.vendor_id == vendor_sony &&
                     (enumerate.product_id == product_dualsense || enumerate.product_id == product_dualsense_edge);
-                bool validController = isDualSenseDevice ||
+                bool isDualShock4Device = enumerate.vendor_id == vendor_sony &&
+                    enumerate.product_id == product_dualshock4_v2;
+                bool validController = isDualSenseDevice || isDualShock4Device ||
                     ((enumerate.product_id == product_l || enumerate.product_id == product_r ||
                       enumerate.product_id == product_pro || enumerate.product_id == product_snes || enumerate.product_id == product_n64) && enumerate.vendor_id == vendor_id);
                 // check list of custom controllers specified
-                foreach (SController v in isDualSenseDevice ? Enumerable.Empty<SController>() : Program.thirdPartyCons) {
+                foreach (SController v in (isDualSenseDevice || isDualShock4Device) ? Enumerable.Empty<SController>() : Program.thirdPartyCons) {
                     if (enumerate.vendor_id == v.vendor_id && enumerate.product_id == v.product_id && enumerate.serial_number == v.serial_number) {
                         validController = true;
                         thirdParty = v;
@@ -386,6 +397,9 @@ namespace BetterJoyForCemu {
                         case product_dualsense_edge:
                             isLeft = true;
                             form.AppendTextBox("DualSense controller connected.\r\n"); break;
+                        case product_dualshock4_v2:
+                            isLeft = true;
+                            form.AppendTextBox("DualShock 4 controller connected.\r\n"); break;
                         default:
                             form.AppendTextBox("Non Joy-Con Nintendo input device skipped.\r\n"); break;
                     }
@@ -423,6 +437,7 @@ namespace BetterJoyForCemu {
                     bool isSnes = prod_id == product_snes;
                     bool is64 = prod_id == product_n64;
                     bool isDualSense = prod_id == product_dualsense || prod_id == product_dualsense_edge;
+                    bool isDualShock4 = prod_id == product_dualshock4_v2;
                     // j.Count (list size, not a stable slot) duplicates an existing PadId the
                     // moment a middle controller disconnects and a new one connects afterward -
                     // e.g. with PadIds 0/1/2 connected, 1 drops, the next new controller would
@@ -432,6 +447,8 @@ namespace BetterJoyForCemu {
                     // wrong physical controller, not just misrender a GUI slot.
                     if (isDualSense) {
                         j.Add(new DualSenseController(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId()));
+                    } else if (isDualShock4) {
+                        j.Add(new DualShock4Controller(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId()));
                     } else if (isSnes) {
                         j.Add(new SnesController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null));
                     } else if (is64) {

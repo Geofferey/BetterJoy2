@@ -152,6 +152,7 @@
     <Compile Include="DarkCheckBox.cs" />
     <Compile Include="DebugLog.cs" />
     <Compile Include="DualSense.cs" />
+    <Compile Include="DualShock4.cs" />
     <Compile Include="VirtualOutput\OutputControllerDualShock4.cs" />
     <Compile Include="VirtualOutput\OutputControllerXbox360.cs" />
     <Compile Include="DesktopInputBackend.cs" />

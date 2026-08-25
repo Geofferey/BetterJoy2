@@ -485,7 +485,8 @@ namespace BetterJoyForCemu {
                     SetConnectionTooltip(button, false);
                 } else {
                     button.BackgroundImage = IconFor(record);
-                    SetConnectionTooltip(button, record.Kind == ControllerKind.Pro || record.Kind == ControllerKind.DualSense);
+                    SetConnectionTooltip(button, record.Kind == ControllerKind.Pro ||
+                        record.Kind == ControllerKind.DualSense || record.Kind == ControllerKind.DualShock4);
                 }
 
                 button.Tag = (int)record.PadId;
@@ -507,6 +508,9 @@ namespace BetterJoyForCemu {
             switch (record.Kind) {
                 case ControllerKind.Pro: return Properties.Resources.pro;
                 case ControllerKind.DualSense: return Properties.Resources.dualsense;
+                // No dedicated DualShock 4 icon asset yet - reuses Pro's generic single-unit
+                // gamepad shape rather than falling through to the Joy-Con icon below.
+                case ControllerKind.DualShock4: return Properties.Resources.pro;
                 case ControllerKind.Snes: return Properties.Resources.snes;
                 case ControllerKind.N64: return Properties.Resources.ultra;
                 case ControllerKind.Left:
@@ -776,6 +780,7 @@ namespace BetterJoyForCemu {
         private static string ControllerKindLabel(ControllerKind kind) {
             switch (kind) {
                 case ControllerKind.DualSense: return "DualSense Controller";
+                case ControllerKind.DualShock4: return "DualShock 4 Controller";
                 case ControllerKind.Snes: return "SNES Controller";
                 case ControllerKind.N64: return "N64 Controller";
                 case ControllerKind.Pro: return "Pro Controller";

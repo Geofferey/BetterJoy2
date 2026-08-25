@@ -569,6 +569,7 @@ namespace BetterJoyForCemu {
                 case ControllerKind.Snes: return "snes:" + ownId;
                 case ControllerKind.N64: return "n64:" + ownId;
                 case ControllerKind.DualSense: return "dualsense:" + ownId;
+                case ControllerKind.DualShock4: return "dualshock4:" + ownId;
                 case ControllerKind.Pro: return "pro:" + ownId;
             }
 
@@ -609,6 +610,7 @@ namespace BetterJoyForCemu {
                 case ControllerKind.Snes: type = "SNES Controller"; break;
                 case ControllerKind.N64: type = "N64 Controller"; break;
                 case ControllerKind.DualSense: type = "DualSense Controller"; break;
+                case ControllerKind.DualShock4: type = "DualShock 4 Controller"; break;
                 case ControllerKind.Pro: type = "Pro Controller"; break;
                 default:
                     // Unreachable for any Kind except Left/Right today (see ProfileIdFor's same
