@@ -42,7 +42,8 @@ namespace BetterJoyForCemu {
             "center_click", "scroll_up", "scroll_down", "clench_gyro", "ratchet_gyro",
             "touchpad_click", "touchpad_tap", "touchpad_two_finger_tap",
             "touchpad_two_finger_scroll_up", "touchpad_two_finger_scroll_down",
-            "active_touchpad_mouse",
+            "active_touchpad_mouse", "active_touchpad_left_stick",
+            "active_touchpad_right_stick",
             "touchpad_left_click", "touchpad_right_click", "touchpad_center_click",
             "touchpad_scroll_up", "touchpad_scroll_down", "touchpad_pointer_lock",
         };
@@ -54,6 +55,7 @@ namespace BetterJoyForCemu {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
+            "TouchpadStickSensitivity",
             "TouchpadHorizontalScale", "TouchpadVerticalScale",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
@@ -90,6 +92,11 @@ namespace BetterJoyForCemu {
         private static readonly HashSet<string> GyroActivationKeys = new HashSet<string>(StringComparer.Ordinal) {
             "active_gyro_mouse", "active_gyro_left_stick", "active_gyro_right_stick",
         };
+        private static readonly HashSet<string> TouchpadActivationKeys =
+            new HashSet<string>(StringComparer.Ordinal) {
+                "active_touchpad_mouse", "active_touchpad_left_stick",
+                "active_touchpad_right_stick",
+            };
         private static readonly object writeLock = new object();
         private static volatile Dictionary<string, Dictionary<string, string>> profiles =
             new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
@@ -398,7 +405,7 @@ namespace BetterJoyForCemu {
                 return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
-            if (key == "active_touchpad_mouse")
+            if (TouchpadActivationKeys.Contains(key))
                 return "0";
             if (key == "touchpad_two_finger_tap" ||
                 key == "touchpad_two_finger_scroll_up" ||
@@ -724,7 +731,7 @@ namespace BetterJoyForCemu {
                 return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
-            if (key == "active_touchpad_mouse")
+            if (TouchpadActivationKeys.Contains(key))
                 return "0";
             if (key == "touchpad_two_finger_tap" ||
                 key == "touchpad_two_finger_scroll_up" ||

@@ -28,6 +28,7 @@ namespace BetterJoyForCemu {
                 "ShowAsXInput", "ShowAsDS4", "AutoPowerOff", "PowerOffInactivity",
                 "HomeLongPowerOff", "GyroHoldToggle", "GyroMouseInhibitButtons",
                 "DragToggle", "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
+                "TouchpadStickSensitivity",
                 "TouchpadHorizontalScale", "TouchpadVerticalScale",
                 "TouchpadTapAndHold", "TouchpadClickMovementLockout",
                 "TouchpadTwoFingerScroll",

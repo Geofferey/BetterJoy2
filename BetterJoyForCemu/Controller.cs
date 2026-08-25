@@ -855,6 +855,8 @@ namespace BetterJoyForCemu {
         protected bool activeGyroLeftStick = false;
         protected bool activeGyroRightStick = false;
         protected bool activeTouchpadMouse = false;
+        protected bool activeTouchpadLeftStick = false;
+        protected bool activeTouchpadRightStick = false;
 
         // Real elapsed time since the last DoThingsWithButtons call, used to scale raw angular
         // velocity (gyr_g) into a per-packet rotation amount - previously a hardcoded 0.015f
@@ -874,6 +876,10 @@ namespace BetterJoyForCemu {
         protected bool gyroMouseEnabledThisReport = false;
         protected bool prevActiveTouchpadMouseComboHeld = false;
         protected bool touchpadMouseEnabledThisReport = false;
+        protected bool prevActiveTouchpadLeftStickComboHeld = false;
+        protected bool prevActiveTouchpadRightStickComboHeld = false;
+        protected bool touchpadLeftStickEnabledThisReport = false;
+        protected bool touchpadRightStickEnabledThisReport = false;
 
         // Same idea for reset_mouse - a one-shot action needs the rising edge only, or it would
         // keep re-centering every packet for as long as the bind stays held.
@@ -924,6 +930,10 @@ namespace BetterJoyForCemu {
         protected int touchpadLastY;
         protected float touchpadMovementRemainderX;
         protected float touchpadMovementRemainderY;
+        protected bool touchpadStickContactActive;
+        protected byte touchpadStickContactId;
+        protected int touchpadStickOriginX;
+        protected int touchpadStickOriginY;
         protected bool touchpadTapTracking;
         protected bool touchpadTapRejected;
         protected byte touchpadTapContactId;
@@ -971,6 +981,11 @@ namespace BetterJoyForCemu {
         // per 72 average contact units gives a controllable full-pad swipe without flooding the
         // desktop-input pipe with a wheel event for every HID report.
         protected const float TouchpadScrollUnitsPerTick = 72.0f;
+        // A floating stick reaches full deflection after roughly one third of the pad's short
+        // axis. The landing point is always neutral, so this is travel from that point rather
+        // than a fixed absolute region on the controller.
+        protected const float TouchpadStickFullDeflectionUnits = 320.0f;
+        protected const float TouchpadStickDeadzoneUnits = 16.0f;
 
         protected static TouchContact ReadPackedTouchContact(byte[] report, int offset) {
             byte status = report[offset];
@@ -1001,6 +1016,7 @@ namespace BetterJoyForCemu {
             touchpadTwoFingerTapRejected = false;
             touchpadTwoFingerScrolling = false;
             touchpadTwoFingerScrollRemainder = 0.0f;
+            touchpadStickContactActive = false;
             touchpadMovementRemainderX = 0.0f;
             touchpadMovementRemainderY = 0.0f;
         }
@@ -1455,12 +1471,18 @@ namespace BetterJoyForCemu {
             activeGyroLeftStick = false;
             activeGyroRightStick = false;
             activeTouchpadMouse = false;
+            activeTouchpadLeftStick = false;
+            activeTouchpadRightStick = false;
             prevActiveGyroMouseComboHeld = false;
             prevActiveGyroLeftStickComboHeld = false;
             prevActiveGyroRightStickComboHeld = false;
             prevActiveTouchpadMouseComboHeld = false;
+            prevActiveTouchpadLeftStickComboHeld = false;
+            prevActiveTouchpadRightStickComboHeld = false;
             gyroMouseEnabledThisReport = false;
             touchpadMouseEnabledThisReport = false;
+            touchpadLeftStickEnabledThisReport = false;
+            touchpadRightStickEnabledThisReport = false;
             ResetTouchpadGestureState();
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
@@ -1652,6 +1674,73 @@ namespace BetterJoyForCemu {
             while (touchpadTwoFingerScrollRemainder >= TouchpadScrollUnitsPerTick) {
                 TriggerTouchpadTwoFingerScroll(false);
                 touchpadTwoFingerScrollRemainder -= TouchpadScrollUnitsPerTick;
+            }
+        }
+
+        protected void ProcessTouchpadStick() {
+            bool leftEnabled = HasTouchpad && touchpadLeftStickEnabledThisReport;
+            bool rightEnabled = HasTouchpad && touchpadRightStickEnabledThisReport;
+            int contactCount = (touchpadFirstContact.Active ? 1 : 0) +
+                               (touchpadSecondContact.Active ? 1 : 0);
+            if ((!leftEnabled && !rightEnabled) || contactCount != 1) {
+                touchpadStickContactActive = false;
+                return;
+            }
+
+            TouchContact current = touchpadFirstContact.Active
+                ? touchpadFirstContact : touchpadSecondContact;
+            if (!touchpadStickContactActive || current.Id != touchpadStickContactId) {
+                // Floating origin: the first report for every new contact is always neutral,
+                // regardless of where the finger landed on the physical pad.
+                touchpadStickContactActive = true;
+                touchpadStickContactId = current.Id;
+                touchpadStickOriginX = current.X;
+                touchpadStickOriginY = current.Y;
+                return;
+            }
+
+            if (IsTouchpadMovementLocked()) {
+                // Locking is a ratchet, not a pause: resume from the finger's current location
+                // so releasing the lock cannot replay all movement made while it was clenched.
+                touchpadStickOriginX = current.X;
+                touchpadStickOriginY = current.Y;
+                return;
+            }
+
+            float rawX = current.X - touchpadStickOriginX;
+            float rawY = current.Y - touchpadStickOriginY;
+            float distance = (float)Math.Sqrt(rawX * rawX + rawY * rawY);
+            float outputX = 0.0f;
+            float outputY = 0.0f;
+            if (distance > TouchpadStickDeadzoneUnits) {
+                float magnitude = Math.Min(1.0f,
+                    (distance - TouchpadStickDeadzoneUnits) /
+                    (TouchpadStickFullDeflectionUnits - TouchpadStickDeadzoneUnits));
+                float sensitivity = Math.Max(10, Math.Min(400,
+                    ProfileIntOption("TouchpadStickSensitivity", 100))) / 100.0f;
+                float normalizedX = rawX / distance * magnitude * sensitivity;
+                // Touch coordinates grow downward; BetterJoy's canonical stick Y grows upward.
+                float normalizedY = -rawY / distance * magnitude * sensitivity;
+                int horizontalScale = Math.Max(0, Math.Min(100,
+                    ProfileIntOption("TouchpadHorizontalScale", 100)));
+                int verticalScale = Math.Max(0, Math.Min(100,
+                    ProfileIntOption("TouchpadVerticalScale", 100)));
+                outputX = Math.Max(-1.0f, Math.Min(1.0f, normalizedX)) *
+                    horizontalScale / 100.0f;
+                outputY = Math.Max(-1.0f, Math.Min(1.0f, normalizedY)) *
+                    verticalScale / 100.0f;
+            }
+
+            // Preserve the physical stick and layer the floating touch stick onto it, matching
+            // gyro-to-stick's additive behavior. The next HID report reparses the physical
+            // values first, so lifting the finger removes this contribution immediately.
+            if (leftEnabled) {
+                stick[0] = Math.Max(-1.0f, Math.Min(1.0f, stick[0] + outputX));
+                stick[1] = Math.Max(-1.0f, Math.Min(1.0f, stick[1] + outputY));
+            }
+            if (rightEnabled) {
+                stick2[0] = Math.Max(-1.0f, Math.Min(1.0f, stick2[0] + outputX));
+                stick2[1] = Math.Max(-1.0f, Math.Min(1.0f, stick2[1] + outputY));
             }
         }
 
@@ -2125,6 +2214,14 @@ namespace BetterJoyForCemu {
             touchpadMouseEnabledThisReport = HasTouchpad && UpdateOutputActivation(
                 "active_touchpad_mouse", ref activeTouchpadMouse,
                 ref prevActiveTouchpadMouseComboHeld, out touchpadMouseJustEnabled);
+            bool touchpadLeftStickJustEnabled;
+            touchpadLeftStickEnabledThisReport = HasTouchpad && UpdateOutputActivation(
+                "active_touchpad_left_stick", ref activeTouchpadLeftStick,
+                ref prevActiveTouchpadLeftStickComboHeld, out touchpadLeftStickJustEnabled);
+            bool touchpadRightStickJustEnabled;
+            touchpadRightStickEnabledThisReport = HasTouchpad && UpdateOutputActivation(
+                "active_touchpad_right_stick", ref activeTouchpadRightStick,
+                ref prevActiveTouchpadRightStickComboHeld, out touchpadRightStickJustEnabled);
             gyroStickReportDt = dt;
 
             RefreshGyroOnlyButtonReservations();
@@ -2266,6 +2363,7 @@ namespace BetterJoyForCemu {
                                       gyroMouseActionsEnabled);
             SimulateMouseActionScroll("scroll_up", true, gyroMouseActionsEnabled);
             SimulateMouseActionScroll("scroll_down", false, gyroMouseActionsEnabled);
+            ProcessTouchpadStick();
             ProcessTouchpadMouse();
         }
 
