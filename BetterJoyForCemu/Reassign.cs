@@ -144,11 +144,12 @@ namespace BetterJoyForCemu {
             BuildProfileInterface();
 
             foreach (int i in Enum.GetValues(typeof(Controller.Button))) {
-                ToolStripMenuItem temp = new ToolStripMenuItem(Enum.GetName(typeof(Controller.Button), i));
+                string buttonName = ControllerButtonDisplayName(i);
+                ToolStripMenuItem temp = new ToolStripMenuItem(buttonName);
                 temp.Tag = i;
                 menu_joy_buttons.Items.Add(temp);
 
-                ToolStripMenuItem activationItem = new ToolStripMenuItem(Enum.GetName(typeof(Controller.Button), i));
+                ToolStripMenuItem activationItem = new ToolStripMenuItem(buttonName);
                 activationItem.Tag = i;
                 menu_gyro_activation.Items.Add(activationItem);
             }
@@ -2111,7 +2112,16 @@ namespace BetterJoyForCemu {
 
         private static string DescribeBindPart(string part) {
             Type t = part.StartsWith("joy_") ? typeof(Controller.Button) : (part.StartsWith("key_") ? typeof(WindowsInput.Events.KeyCode) : typeof(WindowsInput.Events.ButtonCode));
-            return Enum.GetName(t, Int32.Parse(part.Substring(4)));
+            int value = Int32.Parse(part.Substring(4));
+            return t == typeof(Controller.Button)
+                ? ControllerButtonDisplayName(value)
+                : Enum.GetName(t, value);
+        }
+
+        private static string ControllerButtonDisplayName(int value) {
+            return value == (int)Controller.Button.TOUCHPAD_TAP
+                ? "TOUCHPAD_TAP"
+                : Enum.GetName(typeof(Controller.Button), value);
         }
 
         private void btn_apply_Click(object sender, EventArgs e) {

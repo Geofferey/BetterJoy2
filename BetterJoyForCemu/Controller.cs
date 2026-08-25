@@ -70,8 +70,13 @@ namespace BetterJoyForCemu {
             SHOULDER2_1 = 18,
             SHOULDER2_2 = 19,
             TOUCHPAD = 20,
+            // A completed one-finger tap is a gesture-derived input rather than a physical
+            // report bit. Keeping it in the canonical button space lets it participate in the
+            // same bindings and chords as every physical control (for example PS + Tap), while
+            // TOUCHPAD above remains the pad's mechanical click.
+            TOUCHPAD_TAP = 21,
         };
-        protected const int ButtonCount = (int)Button.TOUCHPAD + 1;
+        protected const int ButtonCount = (int)Button.TOUCHPAD_TAP + 1;
 
         // For UdpServer
         public int PadId = 0;
@@ -740,6 +745,12 @@ namespace BetterJoyForCemu {
         protected void CommitButtonState() {
             long timestamp = Stopwatch.GetTimestamp();
 
+            // Device parsers replace buttons[] with a freshly decoded physical snapshot every
+            // report. Restore the gesture-derived Tap pulse before diffing so it produces normal
+            // down/up edges and can be consumed by IsComboHeld and remote binding capture.
+            buttons[(int)Button.TOUCHPAD_TAP] = HasTouchpad &&
+                timestamp < touchpadTapInputUntilTimestamp;
+
             lock (buttons_up) {
                 lock (buttons_down) {
                     bool changed = false;
@@ -917,6 +928,10 @@ namespace BetterJoyForCemu {
         protected bool touchpadTapHoldActive;
         protected byte touchpadTapHoldContactId;
         protected string touchpadTapHoldMapping;
+        // Gesture recognition happens after the raw report's ordinary button-edge commit. Hold
+        // the resulting synthetic input across subsequent reports long enough for both runtime
+        // chord evaluation and the service's 30 ms binding-capture poll to observe it.
+        protected long touchpadTapInputUntilTimestamp;
 
         // Both Sony pads use roughly 1,920 horizontal coordinate units. This permits normal
         // fingertip jitter while rejecting a deliberate drag before it can become a tap action.
@@ -925,6 +940,7 @@ namespace BetterJoyForCemu {
         protected const double TouchpadTapHoldDelaySeconds = 0.25;
         protected const int TouchpadDoubleTapMaxDistance = 96;
         protected const double TouchpadDoubleTapWindowSeconds = 0.35;
+        protected const double TouchpadTapInputPulseSeconds = 0.10;
 
         protected static TouchContact ReadPackedTouchContact(byte[] report, int offset) {
             byte status = report[offset];
@@ -947,11 +963,18 @@ namespace BetterJoyForCemu {
             touchpadTapRejected = false;
             touchpadPreviousContactCount = 0;
             touchpadLastTapTimestamp = 0;
+            touchpadTapInputUntilTimestamp = 0;
             touchpadMovementRemainderX = 0.0f;
             touchpadMovementRemainderY = 0.0f;
         }
 
         protected void TriggerTouchpadTap() {
+            // Publish Tap as an input even when its output mapping is Disabled. Bind capture and
+            // activation chords are input-side consumers and must not depend on what Tap itself
+            // happens to be mapped to.
+            touchpadTapInputUntilTimestamp = Stopwatch.GetTimestamp() +
+                (long)(TouchpadTapInputPulseSeconds * Stopwatch.Frequency);
+
             string mapping = MappingValue("touchpad_tap");
             if (String.IsNullOrEmpty(mapping) || mapping == "0")
                 return;
