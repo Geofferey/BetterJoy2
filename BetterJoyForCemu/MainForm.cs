@@ -26,10 +26,9 @@ namespace BetterJoyForCemu {
         private static readonly HashSet<string> ProfileOwnedConfigKeys =
             new HashSet<string>(StringComparer.Ordinal) {
                 "ShowAsXInput", "ShowAsDS4", "AutoPowerOff", "PowerOffInactivity",
-                "HomeLongPowerOff", "GyroHoldToggle", "DragToggle", "SwapAB", "SwapXY",
-                "HomeLEDOn",
+                "HomeLongPowerOff", "GyroHoldToggle", "GyroMouseInhibitButtons",
+                "DragToggle", "SwapAB", "SwapXY", "HomeLEDOn",
             };
-
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/
         // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just
         // shows live status pushed over ServiceControlClient and forwards a handful of commands
@@ -85,7 +84,9 @@ namespace BetterJoyForCemu {
             // key in App.config only as a one-time compatibility hint for legacy mappings; it is
             // no longer a runtime setting and should not be editable here.
             displayedConfigKeys = ConfigurationManager.AppSettings.AllKeys
-                .Where(key => key != "GyroToJoyOrMouse" && !ProfileOwnedConfigKeys.Contains(key))
+                .Where(key => key != "GyroToJoyOrMouse" &&
+                              !ProfileOwnedConfigKeys.Contains(key) &&
+                              !ApplicationSettings.IsGlobalOption(key))
                 .ToArray();
             Size childSize = new Size(150, 20);
             for (int i = 0; i != displayedConfigKeys.Length; i++) {
@@ -97,7 +98,11 @@ namespace BetterJoyForCemu {
                 if (value == "true" || value == "false") {
                     // MouseClick is correct here - a click on a checkbox already IS the new
                     // value, nothing to wait for.
-                    childControl = new CheckBox() { Checked = Boolean.Parse(value), Size = childSize };
+                    childControl = new DarkCheckBox() {
+                        Checked = Boolean.Parse(value),
+                        Size = childSize,
+                        BackColor = Color.Transparent,
+                    };
                     childControl.MouseClick += cbBox_Changed;
                 } else {
                     // Leave, not MouseClick - a text field's new value only exists once the user
@@ -856,18 +861,17 @@ namespace BetterJoyForCemu {
             var KeyCtl = settingsTable.GetControlFromPosition(coord.Column - 1, coord.Row).Text;
 
             try {
-                var configFile = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
-                var settings = configFile.AppSettings.Settings;
-                if (valCtl.GetType() == typeof(CheckBox) && settings[KeyCtl] != null) {
-                    settings[KeyCtl].Value = ((CheckBox)valCtl).Checked.ToString().ToLower();
-                } else if (valCtl.GetType() == typeof(ComboBox) && settings[KeyCtl] != null) {
-                    settings[KeyCtl].Value = ((ComboBox)valCtl).SelectedItem.ToString();
-                } else if (valCtl.GetType() == typeof(TextBox) && settings[KeyCtl] != null) {
-                    settings[KeyCtl].Value = ((TextBox)valCtl).Text.ToLower();
+                string value = null;
+                if (valCtl.GetType() == typeof(CheckBox)) {
+                    value = ((CheckBox)valCtl).Checked.ToString().ToLowerInvariant();
+                } else if (valCtl.GetType() == typeof(ComboBox)) {
+                    value = ((ComboBox)valCtl).SelectedItem.ToString();
+                } else if (valCtl.GetType() == typeof(TextBox)) {
+                    value = ((TextBox)valCtl).Text.ToLowerInvariant();
                 }
 
-                configFile.Save(ConfigurationSaveMode.Modified);
-                ConfigurationManager.RefreshSection(configFile.AppSettings.SectionInformation.Name);
+                if (value != null)
+                    ApplicationSettings.SetValue(KeyCtl, value);
             } catch (ConfigurationErrorsException) {
                 AppendTextBox("Error writing app settings\r\n");
                 Trace.WriteLine(String.Format("rw {0}, column {1}, {2}, {3}", coord.Row, coord.Column, sender.GetType(), KeyCtl));

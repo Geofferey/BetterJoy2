@@ -18,6 +18,9 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_joy_buttons = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_activation = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_analog_sliders = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_mouse_inhibit = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_stick_mode = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_stick_axis = new ContextMenuStrip();
         ContextMenuStrip menu_default_orientation = new ContextMenuStrip();
 
         private Control curAssignment;
@@ -42,11 +45,12 @@ namespace BetterJoyForCemu {
         private ComboBox useAsSelector;
         private ComboBox inactivitySelector;
         private ComboBox gyroActivationModeSelector;
-        private ComboBox gyroStickModeSelector;
-        private ComboBox gyroStickModeRightSelector;
-        private ComboBox gyroStickAxisXSelector;
-        private ComboBox gyroStickAxisXRightSelector;
+        private SplitButton gyroStickModeSelector;
+        private SplitButton gyroStickModeRightSelector;
+        private SplitButton gyroStickAxisXSelector;
+        private SplitButton gyroStickAxisXRightSelector;
         private SplitButton btn_gyro_analog_sliders;
+        private SplitButton btn_gyro_mouse_inhibit;
         private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
@@ -67,6 +71,9 @@ namespace BetterJoyForCemu {
         private TextBox minDeflectionXRightInput;
         private TextBox minDeflectionYRightInput;
         private bool updatingProfileOptions;
+        private bool updatingGlobalOptions;
+        private readonly Dictionary<string, CheckBox> globalOptionCheckBoxes =
+            new Dictionary<string, CheckBox>(StringComparer.Ordinal);
         private readonly Dictionary<string, Panel> profilePages = new Dictionary<string, Panel>();
         private readonly Dictionary<string, Button> profileNavigationButtons = new Dictionary<string, Button>();
         private Panel profilePageHost;
@@ -159,6 +166,19 @@ namespace BetterJoyForCemu {
             menu_gyro_analog_sliders.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
             menu_gyro_analog_sliders.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
             menu_gyro_analog_sliders.ItemClicked += GyroAnalogSlidersMenu_ItemClicked;
+
+            menu_gyro_mouse_inhibit.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
+            menu_gyro_mouse_inhibit.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
+            menu_gyro_mouse_inhibit.ItemClicked += GyroMouseInhibitMenu_ItemClicked;
+
+            menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Rate (current)") { Tag = "rate" });
+            menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Absolute tilt") { Tag = "absolute" });
+            menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Hybrid") { Tag = "hybrid" });
+            menu_gyro_stick_mode.ItemClicked += GyroStickModeMenu_ItemClicked;
+
+            menu_gyro_stick_axis.Items.Add(new ToolStripMenuItem("Yaw (twist)") { Tag = "yaw" });
+            menu_gyro_stick_axis.Items.Add(new ToolStripMenuItem("Roll (bank)") { Tag = "roll" });
+            menu_gyro_stick_axis.ItemClicked += GyroStickAxisMenu_ItemClicked;
 
             menu_default_orientation.Items.Add(
                 new ToolStripMenuItem("Horizontal") { Tag = ControllerMappings.OrientationHorizontal });
@@ -263,10 +283,24 @@ namespace BetterJoyForCemu {
             btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
             btn_guide = new SplitButton { Name = "btn_guide" };
 
+            gyroStickModeSelector = CreateChoiceSplitButton(
+                "btn_gyro_stick_mode_left", menu_gyro_stick_mode);
+            gyroStickModeRightSelector = CreateChoiceSplitButton(
+                "btn_gyro_stick_mode_right", menu_gyro_stick_mode);
+            gyroStickAxisXSelector = CreateChoiceSplitButton(
+                "btn_gyro_stick_axis_left", menu_gyro_stick_axis);
+            gyroStickAxisXRightSelector = CreateChoiceSplitButton(
+                "btn_gyro_stick_axis_right", menu_gyro_stick_axis);
+
             btn_gyro_analog_sliders = new SplitButton { Name = "btn_gyro_analog_sliders" };
             btn_gyro_analog_sliders.Menu = menu_gyro_analog_sliders;
             btn_gyro_analog_sliders.Click += (sender, e) =>
                 menu_gyro_analog_sliders.Show(btn_gyro_analog_sliders, 0, btn_gyro_analog_sliders.Height);
+
+            btn_gyro_mouse_inhibit = new SplitButton { Name = "btn_gyro_mouse_inhibit" };
+            btn_gyro_mouse_inhibit.Menu = menu_gyro_mouse_inhibit;
+            btn_gyro_mouse_inhibit.Click += (sender, e) =>
+                menu_gyro_mouse_inhibit.Show(btn_gyro_mouse_inhibit, 0, btn_gyro_mouse_inhibit.Height);
 
             btn_default_orientation = new SplitButton { Name = "btn_default_orientation" };
             btn_default_orientation.Menu = menu_default_orientation;
@@ -280,6 +314,15 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(gameControllersButton,
                 "Open the selected profile's virtual controller properties when connected.\r\n" +
                 "Disconnected profiles open the standard Game Controllers list.");
+        }
+
+        private SplitButton CreateChoiceSplitButton(string name, ContextMenuStrip menu) {
+            var button = new SplitButton { Name = name, Menu = menu };
+            button.Click += (sender, e) => {
+                menu.Tag = button;
+                menu.Show(button, 0, button.Height);
+            };
+            return button;
         }
 
         // Every control below is laid out at these "design" coordinates/font sizes, then the
@@ -333,14 +376,18 @@ namespace BetterJoyForCemu {
             Panel gyroPage = BuildGyroPage();
             Panel behaviorPage = BuildDeviceBehaviorPage();
             Panel virtualControllerPage = BuildVirtualControllerPage();
+            Panel globalPage = BuildGlobalPage();
             profilePages.Add("bindings", bindingsPage);
             profilePages.Add("gyro", gyroPage);
             profilePages.Add("behavior", behaviorPage);
             profilePages.Add("virtual", virtualControllerPage);
+            profilePages.Add("global", globalPage);
             profilePageHost.Controls.Add(bindingsPage);
             profilePageHost.Controls.Add(gyroPage);
             profilePageHost.Controls.Add(behaviorPage);
             profilePageHost.Controls.Add(virtualControllerPage);
+            profilePageHost.Controls.Add(globalPage);
+            LoadGlobalOptions();
             ShowProfilePage("gyro");
 
             ScaleProfileUi(this, ProfileUiScale);
@@ -472,6 +519,9 @@ namespace BetterJoyForCemu {
             sidebar.Controls.Add(CreateNavigationButton("Gyro", "gyro", 104));
             sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 148));
             sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 192));
+            sidebar.Controls.Add(CreateLabel("GLOBAL", 20, 262,
+                Color.FromArgb(151, 174, 205), false, 8F));
+            sidebar.Controls.Add(CreateNavigationButton("Global options", "global", 292));
             return sidebar;
         }
 
@@ -578,14 +628,14 @@ namespace BetterJoyForCemu {
             AddSectionHeading(page, "Stick mapping", 363,
                 "Shape how gyro tilt drives the stick outputs above per stick. Requires IMU filtering.");
 
-            gyroStickModeSelector = CreateStickModeRow(page, "Left stick response", 419,
-                new object[] { "Rate (current)", "Absolute tilt", "Hybrid" });
-            gyroStickModeRightSelector = CreateStickModeRow(page, "Right stick response", 457,
-                new object[] { "Rate (current)", "Absolute tilt", "Hybrid" });
-            gyroStickAxisXSelector = CreateStickModeRow(page, "Left turn axis", 495,
-                new object[] { "Yaw (twist)", "Roll (bank)" });
-            gyroStickAxisXRightSelector = CreateStickModeRow(page, "Right turn axis", 533,
-                new object[] { "Yaw (twist)", "Roll (bank)" });
+            AddMappingRow(page, null, gyroStickModeSelector,
+                "Left stick response", 419, 24, 180, 180);
+            AddMappingRow(page, null, gyroStickModeRightSelector,
+                "Right stick response", 457, 24, 180, 180);
+            AddMappingRow(page, null, gyroStickAxisXSelector,
+                "Left turn axis", 495, 24, 180, 180);
+            AddMappingRow(page, null, gyroStickAxisXRightSelector,
+                "Right turn axis", 533, 24, 180, 180);
 
             invertStickXCheckBox = CreateProfileCheckBox("Invert left X", 24, 571, "GyroStickInvertXLeft");
             invertStickYCheckBox = CreateProfileCheckBox("Invert left Y", 190, 571, "GyroStickInvertYLeft");
@@ -627,6 +677,8 @@ namespace BetterJoyForCemu {
             page.Controls.Add(CreateDivider(24, 920));
             AddSectionHeading(page, "Mouse actions", 935,
                 "Optional controller inputs available while gyro mouse is active.");
+            const int mouseActionTop = 987;
+            const int mouseActionRowSpacing = 34;
             string[] labels = { "Left click", "Right click", "Middle click", "Clench gyro", "Scroll up", "Scroll down" };
             for (int index = 0; index < gyroMouseButtons.Count; index++) {
                 int column = index % 2;
@@ -634,23 +686,16 @@ namespace BetterJoyForCemu {
                 int labelX = column == 0 ? 24 : 323;
                 int buttonX = column == 0 ? 114 : 423;
                 AddMappingRow(page, null, gyroMouseButtons[index], labels[index],
-                    987 + row * 34, labelX, buttonX, column == 0 ? 181 : 171);
+                    mouseActionTop + row * mouseActionRowSpacing,
+                    labelX, buttonX, column == 0 ? 181 : 171);
             }
-            page.AutoScrollMinSize = new Size(0, 1086);
-            return page;
-        }
 
-        // Matches gyroActivationModeSelector's established label+combo styling exactly (same
-        // column positions, width, and label-to-combo vertical offset) rather than inventing a
-        // new size/position for these - see BuildDeviceBehaviorPage's "Gyro binding behavior" row.
-        private ComboBox CreateStickModeRow(Panel page, string label, int top, object[] items) {
-            page.Controls.Add(CreateLabel(label, 24, top + 6, ProfileText, false));
-            ComboBox selector = CreateProfileComboBox(180, top, 180);
-            selector.DropDownStyle = ComboBoxStyle.DropDownList;
-            selector.Items.AddRange(items);
-            selector.SelectedIndexChanged += ProfileOptionControlChanged;
-            page.Controls.Add(selector);
-            return selector;
+            AddMappingRow(page, null, btn_gyro_mouse_inhibit, "Inhibit",
+                mouseActionTop + 3 * mouseActionRowSpacing, 24, 114, 181);
+            tip_reassign.SetToolTip(btn_gyro_mouse_inhibit,
+                "Inhibit controller actions in mouse mode.");
+            page.AutoScrollMinSize = new Size(0, 1144);
+            return page;
         }
 
         private Panel BuildDeviceBehaviorPage() {
@@ -758,6 +803,64 @@ namespace BetterJoyForCemu {
             return page;
         }
 
+        private Panel BuildGlobalPage() {
+            Panel page = CreateProfilePage("Global options",
+                "Application-wide behavior shared by every controller profile.");
+
+            AddSectionHeading(page, "Application", 96,
+                "Choose how the BetterJoy window behaves when the application starts.");
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Start in the system tray", 24, 153, "StartInTray"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Hide the status log", 315, 153, "HideStatus"));
+
+            page.Controls.Add(CreateDivider(24, 203));
+            AddSectionHeading(page, "Controller discovery", 220,
+                "Control background scanning and automatic registration of supported controllers.");
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Scan for new controllers", 24, 277, "PassiveScan"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Automatically add supported controllers", 315, 277, "AutoAddControllers"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Block auto-add over USB", 24, 310, "BlockAutoAddUSB"));
+
+            page.Controls.Add(CreateDivider(24, 354));
+            AddSectionHeading(page, "Controller support", 371,
+                "Configure calibration access and physical-controller hiding for all profiles.");
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Allow calibration", 24, 428, "AllowCalibration"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Use HidHide", 315, 428, "UseHidHide"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Unhide on exit", 315, 461, "UnhideOnExit"));
+
+            page.Controls.Add(CreateDivider(24, 505));
+            AddSectionHeading(page, "Motion server", 522,
+                "Expose controller motion through the CemuHook-compatible motion server.");
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Enable motion server", 24, 579, "MotionServer"));
+
+            page.Controls.Add(CreateDivider(24, 629));
+            AddSectionHeading(page, "Debug logging", 646,
+                "Diagnostic file logs can grow quickly; enable them only while troubleshooting.");
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Debug logging", 24, 703, "DebugLogging"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "DualSense debug logging", 315, 703, "DualSenseDebugLogging"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Gyro mouse debug logging", 24, 737, "GyroMouseDebugLogging"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Gyro stick debug logging", 315, 737, "GyroStickDebugLogging"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Auto-calibration debug logging", 24, 771, "AutoCalDebugLogging"));
+
+            page.Controls.Add(CreateLabel(
+                "Some changes, including HidHide and startup behavior, take effect after restart.",
+                24, 816, ProfileMuted, false, 8.5F));
+            page.AutoScrollMinSize = new Size(0, 858);
+            return page;
+        }
+
         private void AddSectionHeading(Panel page, string title, int top, string description) {
             page.Controls.Add(CreateLabel(title, 24, top, ProfileText, true, 12F));
             Label help = CreateLabel(description, 24, top + 27, ProfileMuted, false, 9F);
@@ -822,7 +925,20 @@ namespace BetterJoyForCemu {
         }
 
         private CheckBox CreateProfileCheckBox(string text, int left, int top, string optionKey) {
-            CheckBox checkBox = new CheckBox {
+            return CreateOptionCheckBox(
+                text, left, top, optionKey, ProfileOptionControlChanged);
+        }
+
+        private CheckBox CreateGlobalCheckBox(string text, int left, int top, string optionKey) {
+            CheckBox checkBox = CreateOptionCheckBox(
+                text, left, top, optionKey, GlobalOptionControlChanged);
+            globalOptionCheckBoxes.Add(optionKey, checkBox);
+            return checkBox;
+        }
+
+        private CheckBox CreateOptionCheckBox(string text, int left, int top, string optionKey,
+                                              EventHandler changed) {
+            CheckBox checkBox = new DarkCheckBox {
                 AutoSize = true,
                 Text = text,
                 Tag = optionKey,
@@ -833,8 +949,33 @@ namespace BetterJoyForCemu {
                 Font = new Font("Segoe UI", 9F),
                 Cursor = Cursors.Hand,
             };
-            checkBox.CheckedChanged += ProfileOptionControlChanged;
+            checkBox.CheckedChanged += changed;
             return checkBox;
+        }
+
+        private void GlobalOptionControlChanged(object sender, EventArgs e) {
+            if (updatingGlobalOptions)
+                return;
+
+            CheckBox checkBox = (CheckBox)sender;
+            try {
+                ApplicationSettings.SetValue(
+                    (string)checkBox.Tag, checkBox.Checked.ToString().ToLowerInvariant());
+            } catch (ConfigurationErrorsException ex) {
+                LoadGlobalOptions();
+                MessageBox.Show("Unable to save global setting: " + ex.Message,
+                    "BetterJoy", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LoadGlobalOptions() {
+            updatingGlobalOptions = true;
+            try {
+                foreach (KeyValuePair<string, CheckBox> option in globalOptionCheckBoxes)
+                    option.Value.Checked = ApplicationSettings.BoolValue(option.Key);
+            } finally {
+                updatingGlobalOptions = false;
+            }
         }
 
         // Not NumericUpDown - nothing else in this dialog uses one, and its spin-button portion
@@ -908,18 +1049,6 @@ namespace BetterJoyForCemu {
                 int minutes = InactivityMinutesFromText(inactivitySelector.Text);
                 ControllerMappings.SetOptionValue(
                     SelectedProfileId, "PowerOffInactivity", minutes.ToString());
-            } else if (sender == gyroStickModeSelector || sender == gyroStickModeRightSelector) {
-                ComboBox selector = (ComboBox)sender;
-                string value = selector.SelectedIndex == 1
-                    ? "absolute"
-                    : (selector.SelectedIndex == 2 ? "hybrid" : "rate");
-                string key = sender == gyroStickModeSelector ? "GyroStickModeLeft" : "GyroStickModeRight";
-                ControllerMappings.SetOptionValue(SelectedProfileId, key, value);
-            } else if (sender == gyroStickAxisXSelector || sender == gyroStickAxisXRightSelector) {
-                ComboBox selector = (ComboBox)sender;
-                string value = selector.SelectedIndex == 1 ? "roll" : "yaw";
-                string key = sender == gyroStickAxisXSelector ? "GyroStickAxisXLeft" : "GyroStickAxisXRight";
-                ControllerMappings.SetOptionValue(SelectedProfileId, key, value);
             }
         }
 
@@ -937,7 +1066,7 @@ namespace BetterJoyForCemu {
 
             Control[] controls = {
                 useAsSelector, inactivitySelector, gyroActivationModeSelector,
-                btn_gyro_analog_sliders, btn_default_orientation,
+                btn_gyro_analog_sliders, btn_gyro_mouse_inhibit, btn_default_orientation,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
                 gyroStickModeSelector, gyroStickModeRightSelector,
@@ -985,18 +1114,22 @@ namespace BetterJoyForCemu {
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
+                btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "GyroMouseInhibitButtons") ? "Enabled" : "Disabled";
                 btn_gyro_analog_sliders.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroAnalogSliders") ? "Enabled" : "Disabled";
                 btn_default_orientation.Text = ControllerMappings.OptionValue(
                     SelectedProfileId, "DefaultOrientation") == ControllerMappings.OrientationVertical
                     ? "Vertical" : "Horizontal";
 
-                LoadGyroStickModeSelector(gyroStickModeSelector, "GyroStickModeLeft");
-                LoadGyroStickModeSelector(gyroStickModeRightSelector, "GyroStickModeRight");
-                gyroStickAxisXSelector.SelectedIndex =
-                    ControllerMappings.OptionValue(SelectedProfileId, "GyroStickAxisXLeft") == "roll" ? 1 : 0;
-                gyroStickAxisXRightSelector.SelectedIndex =
-                    ControllerMappings.OptionValue(SelectedProfileId, "GyroStickAxisXRight") == "roll" ? 1 : 0;
+                LoadGyroStickModeButton(gyroStickModeSelector, "GyroStickModeLeft");
+                LoadGyroStickModeButton(gyroStickModeRightSelector, "GyroStickModeRight");
+                gyroStickAxisXSelector.Text =
+                    ControllerMappings.OptionValue(SelectedProfileId, "GyroStickAxisXLeft") == "roll"
+                        ? "Roll (bank)" : "Yaw (twist)";
+                gyroStickAxisXRightSelector.Text =
+                    ControllerMappings.OptionValue(SelectedProfileId, "GyroStickAxisXRight") == "roll"
+                        ? "Roll (bank)" : "Yaw (twist)";
                 invertStickXCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroStickInvertXLeft");
                 invertStickYCheckBox.Checked = ControllerMappings.BoolOption(
@@ -1039,9 +1172,11 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private void LoadGyroStickModeSelector(ComboBox selector, string optionKey) {
+        private void LoadGyroStickModeButton(SplitButton selector, string optionKey) {
             string mode = ControllerMappings.OptionValue(SelectedProfileId, optionKey);
-            selector.SelectedIndex = mode == "hybrid" ? 2 : (mode == "absolute" ? 1 : 0);
+            selector.Text = mode == "hybrid"
+                ? "Hybrid"
+                : (mode == "absolute" ? "Absolute tilt" : "Rate (current)");
         }
 
         private static int InactivityMinutesFromText(string text) {
@@ -1083,6 +1218,7 @@ namespace BetterJoyForCemu {
         private void StyleAssignmentMenus() {
             foreach (ContextMenuStrip menu in new[] {
                      menu_joy_buttons, menu_gyro_activation, menu_gyro_analog_sliders,
+                     menu_gyro_mouse_inhibit, menu_gyro_stick_mode, menu_gyro_stick_axis,
                      menu_default_orientation }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
@@ -1366,6 +1502,42 @@ namespace BetterJoyForCemu {
             string value = (string)e.ClickedItem.Tag;
             ControllerMappings.SetOptionValue(SelectedProfileId, "GyroAnalogSliders", value);
             btn_gyro_analog_sliders.Text = value == "true" ? "Enabled" : "Disabled";
+        }
+
+        private void GyroMouseInhibitMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, "GyroMouseInhibitButtons", value);
+            btn_gyro_mouse_inhibit.Text = value == "true" ? "Enabled" : "Disabled";
+        }
+
+        private void GyroStickModeMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            SplitButton caller = (SplitButton)((ContextMenuStrip)sender).Tag;
+            string key = caller == gyroStickModeSelector
+                ? "GyroStickModeLeft"
+                : "GyroStickModeRight";
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, key, (string)e.ClickedItem.Tag);
+            caller.Text = e.ClickedItem.Text;
+        }
+
+        private void GyroStickAxisMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            SplitButton caller = (SplitButton)((ContextMenuStrip)sender).Tag;
+            string key = caller == gyroStickAxisXSelector
+                ? "GyroStickAxisXLeft"
+                : "GyroStickAxisXRight";
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, key, (string)e.ClickedItem.Tag);
+            caller.Text = e.ClickedItem.Text;
         }
 
         private void DefaultOrientationMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {

@@ -46,7 +46,8 @@ namespace BetterJoyForCemu {
         // persisted beside bindings once a profile is edited.
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
-            "GyroHoldToggle", "DragToggle", "SwapAB", "SwapXY", "HomeLEDOn",
+            "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
+            "SwapAB", "SwapXY", "HomeLEDOn",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
             "GyroStickAxisXLeft", "GyroStickAxisXRight",

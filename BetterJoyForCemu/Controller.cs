@@ -1064,7 +1064,8 @@ namespace BetterJoyForCemu {
         }
 
         protected bool[] GetButtonsForVigem() {
-            bool gyroMouseConsumesButtons = PairHasActiveGyroMouse();
+            bool gyroMouseConsumesButtons = PairHasActiveGyroMouse() &&
+                ProfileBoolOption("GyroMouseInhibitButtons");
             bool customGuideHeld = TryGetHeldCustomGuideMapping(out string guideMapping);
             if (!gyroMouseConsumesButtons && !customGuideHeld)
                 return buttons;
