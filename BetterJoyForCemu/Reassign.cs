@@ -23,6 +23,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_touchpad_sensitivity = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_click_lockout = new ContextMenuStrip();
+        ContextMenuStrip menu_touchpad_two_finger_scroll = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_mode = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_axis = new ContextMenuStrip();
         ContextMenuStrip menu_default_orientation = new ContextMenuStrip();
@@ -200,6 +201,13 @@ namespace BetterJoyForCemu {
             menu_touchpad_click_lockout.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
             menu_touchpad_click_lockout.ItemClicked += TouchpadClickLockoutMenu_ItemClicked;
 
+            menu_touchpad_two_finger_scroll.Items.Add(
+                new ToolStripMenuItem("Enabled") { Tag = "true" });
+            menu_touchpad_two_finger_scroll.Items.Add(
+                new ToolStripMenuItem("Disabled") { Tag = "false" });
+            menu_touchpad_two_finger_scroll.ItemClicked +=
+                TouchpadTwoFingerScrollMenu_ItemClicked;
+
             menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Rate (current)") { Tag = "rate" });
             menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Absolute tilt") { Tag = "absolute" });
             menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Hybrid") { Tag = "hybrid" });
@@ -215,7 +223,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadMouseButtons);
@@ -248,6 +256,10 @@ namespace BetterJoyForCemu {
         private SplitButton btn_guide;
         private SplitButton btn_touchpad_click;
         private SplitButton btn_touchpad_tap;
+        private SplitButton btn_touchpad_two_finger_tap;
+        private SplitButton btn_touchpad_two_finger_scroll_up;
+        private SplitButton btn_touchpad_two_finger_scroll_down;
+        private SplitButton btn_touchpad_two_finger_scroll;
         private SplitButton btn_active_touchpad_mouse;
         private SplitButton btn_touchpad_inhibit;
         private SplitButton btn_touchpad_sensitivity;
@@ -330,6 +342,22 @@ namespace BetterJoyForCemu {
             btn_guide = new SplitButton { Name = "btn_guide" };
             btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
             btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
+            btn_touchpad_two_finger_tap = new SplitButton {
+                Name = "btn_touchpad_two_finger_tap"
+            };
+            btn_touchpad_two_finger_scroll_up = new SplitButton {
+                Name = "btn_touchpad_two_finger_scroll_up"
+            };
+            btn_touchpad_two_finger_scroll_down = new SplitButton {
+                Name = "btn_touchpad_two_finger_scroll_down"
+            };
+            btn_touchpad_two_finger_scroll = new SplitButton {
+                Name = "btn_touchpad_two_finger_scroll",
+                Menu = menu_touchpad_two_finger_scroll,
+            };
+            btn_touchpad_two_finger_scroll.Click += (sender, e) =>
+                menu_touchpad_two_finger_scroll.Show(btn_touchpad_two_finger_scroll, 0,
+                    btn_touchpad_two_finger_scroll.Height);
             btn_active_touchpad_mouse = new SplitButton { Name = "btn_active_touchpad_mouse" };
 
             gyroStickModeSelector = CreateChoiceSplitButton(
@@ -781,7 +809,7 @@ namespace BetterJoyForCemu {
                 "Use this controller's touch surface as an independently activated mouse.");
 
             AddSectionHeading(page, "Physical control", 96,
-                "Bind press and tap independently, with optional tap-and-hold dragging.");
+                "Bind press and tap gestures independently, with optional tap-and-hold dragging.");
             AddMappingRow(page, null, btn_touchpad_click, "Touchpad click",
                 157, 24, 114, 181);
             AddMappingRow(page, null, btn_touchpad_tap, "Tap",
@@ -789,28 +817,48 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(btn_touchpad_tap,
                 "A short one-finger touch with limited travel. Dragging or pressing the pad cancels it.");
 
+            AddMappingRow(page, null, btn_touchpad_two_finger_tap, "Two-finger tap",
+                194, 24, 114, 181);
+            tip_reassign.SetToolTip(btn_touchpad_two_finger_tap,
+                "A short two-finger touch with limited travel. Defaults to right click while touchpad mouse is active.");
             AddMappingRow(page, null, btn_touchpad_tap_hold, "Tap behavior",
-                194, 24, 232, 362);
+                194, 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_tap_hold,
                 "Choose whether holding one touch or a second tap holds the Tap action for dragging.");
 
             page.Controls.Add(CreateDivider(24, 242));
-            AddSectionHeading(page, "Output activation", 257,
+            AddSectionHeading(page, "Two-finger scroll", 257,
+                "Enable vertical scrolling and optionally replace either direction's wheel action.");
+            AddMappingRow(page, null, btn_touchpad_two_finger_scroll, "Scrolling",
+                318, 24, 232, 362);
+            tip_reassign.SetToolTip(btn_touchpad_two_finger_scroll,
+                "Enable or disable recognition of two-finger vertical scroll gestures.");
+            AddMappingRow(page, null, btn_touchpad_two_finger_scroll_up, "Scroll up",
+                355, 24, 114, 181);
+            AddMappingRow(page, null, btn_touchpad_two_finger_scroll_down, "Scroll down",
+                355, 323, 423, 171);
+            tip_reassign.SetToolTip(btn_touchpad_two_finger_scroll_up,
+                "Defaults to wheel up while touchpad mouse is active. Assign any replacement input or combo.");
+            tip_reassign.SetToolTip(btn_touchpad_two_finger_scroll_down,
+                "Defaults to wheel down while touchpad mouse is active. Assign any replacement input or combo.");
+
+            page.Controls.Add(CreateDivider(24, 403));
+            AddSectionHeading(page, "Output activation", 418,
                 "Set the pointer to always on, disabled, or activate it with a binding.");
-            page.Controls.Add(CreateLabel("Output", 24, 308, ProfileMuted, false, 8.25F));
-            page.Controls.Add(CreateLabel("Activation", 232, 308, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Output", 24, 469, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 232, 469, ProfileMuted, false, 8.25F));
             AddMappingRow(page, null, btn_active_touchpad_mouse, "Mouse",
-                329, 24, 232, 362);
+                490, 24, 232, 362);
 
             AddMappingRow(page, null, btn_touchpad_sensitivity, "Pointer sensitivity",
-                366, 24, 232, 362);
+                527, 24, 232, 362);
             tip_reassign.SetToolTip(btn_touchpad_sensitivity,
                 "Choose a preset or right-click to enter a custom value from 10% to 400%.");
 
-            page.Controls.Add(CreateDivider(24, 414));
-            AddSectionHeading(page, "Mouse actions", 429,
+            page.Controls.Add(CreateDivider(24, 575));
+            AddSectionHeading(page, "Mouse actions", 590,
                 "Optional controller inputs available while touchpad mouse is active.");
-            const int actionTop = 481;
+            const int actionTop = 642;
             const int actionSpacing = 34;
             string[] labels = {
                 "Left click", "Right click", "Middle click", "Clench touchpad",
@@ -834,7 +882,7 @@ namespace BetterJoyForCemu {
                 actionTop + 3 * actionSpacing, 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_click_lockout,
                 "Prevent pointer movement while the physical touchpad is pressed.");
-            page.AutoScrollMinSize = new Size(0, 649);
+            page.AutoScrollMinSize = new Size(0, 810);
             return page;
         }
 
@@ -1210,7 +1258,7 @@ namespace BetterJoyForCemu {
                 useAsSelector, inactivitySelector, gyroActivationModeSelector,
                 btn_gyro_analog_sliders, btn_gyro_mouse_inhibit, btn_default_orientation,
                 btn_touchpad_inhibit, btn_touchpad_sensitivity, btn_touchpad_tap_hold,
-                btn_touchpad_click_lockout,
+                btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
                 gyroStickModeSelector, gyroStickModeRightSelector,
@@ -1268,6 +1316,8 @@ namespace BetterJoyForCemu {
                     ControllerMappings.OptionValue(SelectedProfileId, "TouchpadTapAndHold"));
                 btn_touchpad_click_lockout.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "TouchpadClickMovementLockout") ? "Enabled" : "Disabled";
+                btn_touchpad_two_finger_scroll.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "TouchpadTwoFingerScroll") ? "Enabled" : "Disabled";
                 btn_gyro_analog_sliders.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroAnalogSliders") ? "Enabled" : "Disabled";
                 btn_default_orientation.Text = ControllerMappings.OptionValue(
@@ -1372,6 +1422,7 @@ namespace BetterJoyForCemu {
                      menu_joy_buttons, menu_gyro_activation, menu_gyro_analog_sliders,
                      menu_gyro_mouse_inhibit, menu_touchpad_inhibit, menu_touchpad_sensitivity,
                      menu_touchpad_tap_hold, menu_touchpad_click_lockout,
+                     menu_touchpad_two_finger_scroll,
                      menu_gyro_stick_mode, menu_gyro_stick_axis,
                      menu_default_orientation }) {
                 menu.BackColor = ProfileSurface;
@@ -1792,6 +1843,17 @@ namespace BetterJoyForCemu {
             btn_touchpad_click_lockout.Text = value == "true" ? "Enabled" : "Disabled";
         }
 
+        private void TouchpadTwoFingerScrollMenu_ItemClicked(
+            object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, "TouchpadTwoFingerScroll", value);
+            btn_touchpad_two_finger_scroll.Text = value == "true" ? "Enabled" : "Disabled";
+        }
+
         private void TouchpadTapHoldMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
             if (String.IsNullOrEmpty(SelectedProfileId))
                 return;
@@ -2107,6 +2169,30 @@ namespace BetterJoyForCemu {
                 tip_reassign.SetToolTip(c,
                     "Uses this controller layout's original Guide / PS behavior.\r\n\r\n" +
                     "Left-click to detect a replacement button or combo.\r\n" +
+                    "Middle-click to reset.\r\nRight-click for input options.");
+                return;
+            }
+            if ((string)c.Tag == "touchpad_two_finger_tap" && val == "default") {
+                c.Text = "Right click (default)";
+                tip_reassign.SetToolTip(c,
+                    "Right click while touchpad mouse is active.\r\n\r\n" +
+                    "Left-click to detect a replacement input.\r\n" +
+                    "Middle-click to reset.\r\nRight-click for input options.");
+                return;
+            }
+            if ((string)c.Tag == "touchpad_two_finger_scroll_up" && val == "default") {
+                c.Text = "Wheel up (default)";
+                tip_reassign.SetToolTip(c,
+                    "Wheel up while touchpad mouse is active.\r\n\r\n" +
+                    "Left-click to detect a replacement input.\r\n" +
+                    "Middle-click to reset.\r\nRight-click for input options.");
+                return;
+            }
+            if ((string)c.Tag == "touchpad_two_finger_scroll_down" && val == "default") {
+                c.Text = "Wheel down (default)";
+                tip_reassign.SetToolTip(c,
+                    "Wheel down while touchpad mouse is active.\r\n\r\n" +
+                    "Left-click to detect a replacement input.\r\n" +
                     "Middle-click to reset.\r\nRight-click for input options.");
                 return;
             }
