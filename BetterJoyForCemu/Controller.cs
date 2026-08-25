@@ -458,6 +458,15 @@ namespace BetterJoyForCemu {
         // Every report's raw HID read + parse + downstream processing - no shared default
         // possible (every device's report format is unrelated), so this is the one truly abstract
         // hook. See Joycon.ReceiveRaw (Nintendo family) and DualSenseController.ReceiveRaw.
+        //
+        // If your override picks a report's byte offset (USB vs Bluetooth prefix length) from the
+        // read's return LENGTH: don't. On Windows, hidapi can pad a read to the full requested
+        // buffer size regardless of the device's actual native report length - confirmed on real
+        // hardware for DualShock4Controller, which returned 78 bytes carrying the USB-style
+        // single-byte report ID (0x01), not Bluetooth's extended 0x11, because the OS padded the
+        // read rather than the device actually using the BT format. DualSenseController's own
+        // report-offset bug (d755fae) was a close cousin of this same failure shape. Branch on the
+        // report-ID byte (buf[0]) instead; length is fine only as a sanity/validity check.
         protected abstract int ReceiveRaw();
 
         // No-op by default; Joycon overrides this to send whatever HD-rumble data is queued in
