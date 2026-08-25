@@ -256,6 +256,12 @@ namespace BetterJoyForCemu {
         // must accumulate its own X source (see ProcessGyroStickSample).
         protected float pendingGyroStickDxLeft, pendingGyroStickDyLeft;
         protected float pendingGyroStickDxRight, pendingGyroStickDyRight;
+        // A controller that aggregates several short hardware reports into one gyro-stick
+        // output holds the last completed deflection while the next sensor window fills. This
+        // is kept separate from the pending integrals so freshly parsed physical sticks can
+        // still be combined with gyro output on every controller report.
+        protected float heldGyroStickDxLeft, heldGyroStickDyLeft;
+        protected float heldGyroStickDxRight, heldGyroStickDyRight;
         // Gyro-to-stick represents angular velocity as a held stick deflection. Nintendo happens
         // to bundle three fixed 5 ms samples before each output, so its historical sensitivity is
         // calibrated around a 15 ms window. Track the real accumulated sample time so faster
@@ -318,6 +324,11 @@ namespace BetterJoyForCemu {
         // inconsistent factor call to call. DualSenseController overrides this with a real
         // measured elapsed time instead.
         protected virtual float GyroSubSamplePeriod => ImuSamplePeriodSeconds;
+
+        // Zero preserves the established one-output-per-controller-report behavior. Devices
+        // with one high-rate IMU sample per report can opt into a real sensor-time window; this
+        // matches Nintendo's built-in 3 x 5 ms aggregation without slowing unrelated inputs.
+        protected virtual float GyroStickOutputWindowPeriod => 0.0f;
 
         // ProcessGyroStickSample subtracts this from gyroMouseSensorRate before feeding
         // gyroStickPlayerSpace, mirroring the stationary-bias correction gyro-mouse already
@@ -1530,6 +1541,8 @@ namespace BetterJoyForCemu {
             pendingGyroStickDxLeft = pendingGyroStickDyLeft = 0.0f;
             pendingGyroStickDxRight = pendingGyroStickDyRight = 0.0f;
             pendingGyroStickSamplePeriod = 0.0f;
+            heldGyroStickDxLeft = heldGyroStickDyLeft = 0.0f;
+            heldGyroStickDxRight = heldGyroStickDyRight = 0.0f;
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
             if (resetPlayerSpace)
@@ -1675,6 +1688,35 @@ namespace BetterJoyForCemu {
             if (!flushToStick)
                 return;
 
+            float outputWindow = GyroStickOutputWindowPeriod;
+            bool aggregateReports = outputWindow > 0.0f &&
+                                    !float.IsNaN(outputWindow) &&
+                                    !float.IsInfinity(outputWindow);
+            // A DS4 report contains only one ~1-2 ms sample. Until a complete output window is
+            // available, reuse the preceding averaged gyro deflection on top of this report's
+            // freshly parsed physical stick. Inactive/ratcheted reports deliberately fall
+            // through so both pending and held motion are cleared immediately.
+            if (aggregateReports && anyStickActive && !gyroStickRatcheted &&
+                pendingGyroStickSamplePeriod < outputWindow) {
+                float[] heldDiagnosticStick = gyroLeftStickActiveThisReport ? stick : stick2;
+                float heldPhysicalX = heldDiagnosticStick[0];
+                float heldPhysicalY = heldDiagnosticStick[1];
+                float heldDiagnosticDx = gyroLeftStickActiveThisReport
+                    ? heldGyroStickDxLeft : heldGyroStickDxRight;
+                float heldDiagnosticDy = gyroLeftStickActiveThisReport
+                    ? heldGyroStickDyLeft : heldGyroStickDyRight;
+
+                if (gyroLeftStickActiveThisReport)
+                    ApplyGyroToStick(stick, heldGyroStickDxLeft, heldGyroStickDyLeft);
+                if (gyroRightStickActiveThisReport)
+                    ApplyGyroToStick(stick2, heldGyroStickDxRight, heldGyroStickDyRight);
+
+                CaptureGyroStickDiagnosticOutput(true, gyroStickReportDt,
+                    heldPhysicalX, heldPhysicalY, heldDiagnosticDx, heldDiagnosticDy,
+                    heldDiagnosticStick[0], heldDiagnosticStick[1]);
+                return;
+            }
+
             // The pending values above are integrated angle over however much sensor time this
             // output report contained. Convert them back to the established 15 ms reference
             // window so an equal angular velocity means an equal stick deflection on Nintendo
@@ -1704,6 +1746,17 @@ namespace BetterJoyForCemu {
                 rightDx = ApplyDeflectionLimits(rightDx, GyroStickMinDeflectionXRight, GyroStickMaxDeflectionXRight);
                 rightDy = ApplyDeflectionLimits(rightDy, GyroStickMinDeflectionYRight, GyroStickMaxDeflectionYRight);
             }
+
+            // Save only a completed, active output window. Ratchet or deactivation must stop
+            // held motion immediately rather than letting the previous turn persist.
+            heldGyroStickDxLeft = gyroLeftStickActiveThisReport && !gyroStickRatcheted
+                ? leftDx : 0.0f;
+            heldGyroStickDyLeft = gyroLeftStickActiveThisReport && !gyroStickRatcheted
+                ? leftDy : 0.0f;
+            heldGyroStickDxRight = gyroRightStickActiveThisReport && !gyroStickRatcheted
+                ? rightDx : 0.0f;
+            heldGyroStickDyRight = gyroRightStickActiveThisReport && !gyroStickRatcheted
+                ? rightDy : 0.0f;
 
             if (gyroLeftStickActiveThisReport)
                 ApplyGyroToStick(stick, leftDx, leftDy);

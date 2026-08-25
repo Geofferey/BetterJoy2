@@ -54,6 +54,12 @@ namespace BetterJoyForCemu {
         private const float MaxGyroSubSamplePeriod = 0.02f;
         protected override float GyroSubSamplePeriod => measuredGyroSubSamplePeriod;
         protected override Vector3 GyroStickBiasCorrection => gyroMouseBias;
+        // DS4 reports one very short IMU sample at a time. Average those samples over the same
+        // 15 ms sensor window a Joy-Con report already contains, otherwise each 1-2 ms sample is
+        // expanded into a complete stick update and its cross-axis sensor noise becomes visible.
+        // ProcessGyroStickSample holds the last completed result between windows, so this does
+        // not reduce button or physical-stick report frequency.
+        protected override float GyroStickOutputWindowPeriod => GyroStickReferenceReportPeriod;
 
         // DS4 uses the same nominal Bosch sensor resolutions as DualSense, but its factory
         // calibration feature report groups gyro extrema differently on USB and Bluetooth.
