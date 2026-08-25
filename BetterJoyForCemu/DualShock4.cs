@@ -127,6 +127,30 @@ namespace BetterJoyForCemu {
             return 0;
         }
 
+        // The shared HOME-long-press and inactivity paths call this virtual hook. A DS4 needs
+        // the same radio-level Bluetooth disconnect as DualSense; merely marking it dropped
+        // leaves the physical HID connection alive and the scanner immediately adds it again.
+        // USB has no equivalent power-off command, so leave a wired controller connected.
+        public override void PowerOff() {
+            if (state > state_.DROPPED && !isUSB) {
+                BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+                state = state_.DROPPED;
+            }
+        }
+
+        // If the same DS4 appears over USB while its Bluetooth HID connection is still present,
+        // the shared MAC-based duplicate retirement stops BetterJoy from using the old entry.
+        // Drop the underlying radio link as well so Windows does not rediscover that stale entry
+        // on every scan. This mirrors DualSenseController's transport handoff behavior.
+        protected override void OnDuplicateRetired(Controller other) {
+            if (other is DualShock4Controller && isUSB && !other.isUSB) {
+                bool disconnected = BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+                form.AppendTextBox(disconnected
+                    ? "Disconnected DualShock 4's Bluetooth link now that USB has taken over.\r\n"
+                    : "Could not disconnect DualShock 4's Bluetooth link - it may keep reappearing.\r\n");
+            }
+        }
+
         // A DS4 connected over Bluetooth defaults to sending short, basic reports (still labeled
         // with report ID 0x01, the same ID USB uses) until the host signals it understands the
         // extended format - confirmed on real hardware: a raw capture showed buttons/sticks/
