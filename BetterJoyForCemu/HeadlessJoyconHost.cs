@@ -852,6 +852,8 @@ namespace BetterJoyForCemu {
                     PadId = (byte)jc.PadId,
                     Kind = kind,
                     Battery = (sbyte)jc.battery,
+                    BatteryPercent = (sbyte)jc.batteryPercent,
+                    BatteryStatus = jc.batteryStatus,
                     OtherPadId = otherPadId,
                     ProfileId = profile.ProfileId,
                     ProfileName = profile.DisplayName,

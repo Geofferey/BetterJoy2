@@ -74,6 +74,8 @@ namespace BetterJoyForCemu {
         // For UdpServer
         public int PadId = 0;
         public int battery = -1;
+        public int batteryPercent = -1;
+        public ControllerBatteryStatus batteryStatus = ControllerBatteryStatus.Unknown;
         public int model = 2;
         public int constate = 2;
         public int connection = 3;
@@ -84,6 +86,35 @@ namespace BetterJoyForCemu {
             if (battery <= 1 && !isUSB) {
                 form.NotifyLowBattery(this);
             }
+        }
+
+        // Sony controllers report both a real 0-100 capacity and a charging state. Keep the
+        // legacy 0-4 battery field in sync for DSU clients and tile colors, while retaining the
+        // richer values for the service snapshot/UI.
+        protected void SetBatteryStatus(int percent, ControllerBatteryStatus status) {
+            percent = Math.Max(0, Math.Min(100, percent));
+            int oldBattery = battery;
+            bool changed = batteryPercent != percent || batteryStatus != status;
+
+            batteryPercent = percent;
+            batteryStatus = status;
+            battery = BatteryLevelFromPercent(percent);
+
+            if (!changed && oldBattery == battery)
+                return;
+
+            form.UpdateBatteryColor(this);
+            if (oldBattery != battery && battery <= 1 && !isUSB &&
+                status == ControllerBatteryStatus.Discharging)
+                form.NotifyLowBattery(this);
+        }
+
+        public static int BatteryLevelFromPercent(int percent) {
+            if (percent <= 9) return 0;
+            if (percent <= 29) return 1;
+            if (percent <= 54) return 2;
+            if (percent <= 79) return 3;
+            return 4;
         }
 
         // Queues low/high-frequency + amplitude rumble requests, one FIFO of at most 15 pending

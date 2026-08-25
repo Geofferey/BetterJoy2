@@ -86,8 +86,37 @@ namespace BetterJoyForCemu {
             deadzone2 = 8;
             getActiveStickData();
 
+            RequestExtendedReportMode();
+
             form.AppendTextBox("DualShock 4 attached (baseline mode).\r\n");
             return 0;
+        }
+
+        // A DS4 connected over Bluetooth defaults to sending short, basic reports (still labeled
+        // with report ID 0x01, the same ID USB uses) until the host signals it understands the
+        // extended format - confirmed on real hardware: a raw capture showed buttons/sticks/
+        // triggers working (they live in that short report) while every byte past them - battery,
+        // gyro, touchpad - was constantly zero for the entire session, never populated at all, not
+        // just misread. Reading feature report 0x02 once is the widely-used trick across
+        // independent open-source DS4 implementations (the Linux kernel's hid-sony driver reads
+        // this same report as part of its own Bluetooth bring-up) to make the controller switch to
+        // sending extended 0x11 reports with the full field set. Best-effort: failure here doesn't
+        // break the baseline fields already working, so errors are swallowed rather than surfaced.
+        // UNVERIFIED against real hardware yet - if dualshock4_raw_debug.log still shows the
+        // extended region as constant zero after this, this specific report ID/mechanism needs
+        // re-checking.
+        private const byte ExtendedReportModeFeatureReportId = 0x02;
+        private const int ExtendedReportModeFeatureReportLen = 37;
+
+        private void RequestExtendedReportMode() {
+            try {
+                byte[] buf = new byte[ExtendedReportModeFeatureReportLen];
+                buf[0] = ExtendedReportModeFeatureReportId;
+                HIDapi.hid_get_feature_report(handle, buf,
+                    new UIntPtr((uint)ExtendedReportModeFeatureReportLen));
+            } catch {
+                // Best-effort - see method comment.
+            }
         }
 
         private static readonly ConcurrentQueue<string> dualShock4RawDumpQueue = new ConcurrentQueue<string>();
@@ -258,15 +287,27 @@ namespace BetterJoyForCemu {
             triggerVal[0] = r[buttonFieldBase + 3 + o];
             triggerVal[1] = r[buttonFieldBase + 4 + o];
 
-            // Classic byte 30 (battery/cable-state): low nibble is a coarse 0-10ish level, bit 4
-            // is the USB-cable-connected flag. Halved to match GetBatteryColor's existing 0-4
-            // scale, same as DualSenseController's own coarser battery nibble.
+            // status[0] at common-report offset 29: DS4Windows scales the low nibble against
+            // 8 while wireless and 11 while a cable is connected, then clamps the result to 100.
+            // Preserve that percentage and charge state while the shared Controller helper keeps
+            // the legacy 0-4 DSU/color level in sync.
             byte batteryByte = r[29 + o];
-            int rawLevel = batteryByte & 0x0F;
-            int newBattery = battery;
-            battery = Math.Min(4, rawLevel / 2);
-            if (newBattery != battery)
-                BatteryChanged();
+            int batteryPercent;
+            ControllerBatteryStatus batteryState;
+            DecodeBatteryStatus(batteryByte, out batteryPercent, out batteryState);
+            SetBatteryStatus(batteryPercent, batteryState);
+        }
+
+        internal static void DecodeBatteryStatus(byte value, out int percent,
+                                                 out ControllerBatteryStatus status) {
+            int level = value & 0x0F;
+            bool cableConnected = (value & 0x10) != 0;
+
+            int maximumLevel = cableConnected ? 11 : 8;
+            percent = Math.Min(level * 100 / maximumLevel, 100);
+            status = cableConnected
+                ? (percent >= 100 ? ControllerBatteryStatus.Full : ControllerBatteryStatus.Charging)
+                : ControllerBatteryStatus.Discharging;
         }
     }
 }

@@ -551,16 +551,26 @@ namespace BetterJoyForCemu {
                 CommitButtonState();
             }
 
-            // Battery offset (52+o) confirmed via DS4Windows's DualSenseDevice.cs (inputReport[53+ro],
-            // same absolute position once o's own transport skip is accounted for). Low nibble is a
-            // coarse 0-8 level (bit 5 = full charge, forced to 8); halved to match GetBatteryColor's
-            // existing 0-4 scale, the same way Joy-Con's own coarser battery nibble already does.
+            // DS4Windows reads the capacity from status[0] and the charging flag from status[1].
+            // The controller exposes eight usable capacity steps, so scale the low nibble against
+            // 8 (clamped at 100) instead of presenting the midpoint of a nominal 10% bucket.
             byte batteryByte = r[52 + o];
-            int rawLevel = (batteryByte & 0x20) != 0 ? 8 : (batteryByte & 0x0F);
-            int newBattery = battery;
-            battery = Math.Min(4, rawLevel / 2);
-            if (newBattery != battery)
-                BatteryChanged();
+            byte powerStateByte = r[53 + o];
+            int batteryPercent;
+            ControllerBatteryStatus batteryState;
+            DecodeBatteryStatus(batteryByte, powerStateByte, out batteryPercent, out batteryState);
+            SetBatteryStatus(batteryPercent, batteryState);
+        }
+
+        internal static void DecodeBatteryStatus(byte batteryValue, byte powerStateValue, out int percent,
+                                                 out ControllerBatteryStatus status) {
+            bool full = (batteryValue & 0x20) != 0;
+            bool charging = (powerStateValue & 0x08) != 0;
+
+            percent = full ? 100 : Math.Min((batteryValue & 0x0F) * 100 / 8, 100);
+            status = full ? ControllerBatteryStatus.Full :
+                     charging ? ControllerBatteryStatus.Charging :
+                     ControllerBatteryStatus.Discharging;
         }
 
         // Gyro/accel byte offsets, cross-checked against three independent reference

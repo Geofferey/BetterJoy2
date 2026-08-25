@@ -74,6 +74,9 @@ namespace BetterJoyForCemu {
             // MouseDown/MouseUp aren't synthesized that way and reliably report e.Button for
             // any button.
             foreach (Button v in con) {
+                v.Font = new Font(v.Font.FontFamily, 7F, FontStyle.Bold);
+                v.ForeColor = Color.Black;
+                v.TextAlign = ContentAlignment.BottomRight;
                 v.MouseUp += new MouseEventHandler(conBtnMouseClick);
                 v.MouseEnter += new EventHandler(conBtnMouseEnter);
                 v.MouseLeave += new EventHandler(conBtnMouseLeave);
@@ -465,6 +468,7 @@ namespace BetterJoyForCemu {
                 b.Tag = null;
                 b.BackColor = Color.FromArgb(0x00, SystemColors.Control);
                 b.BackgroundImage = Properties.Resources.cross;
+                b.Text = String.Empty;
                 SetEmptySlotTooltip(b);
             }
 
@@ -482,15 +486,18 @@ namespace BetterJoyForCemu {
 
                 if (isPair) {
                     button.BackgroundImage = ComposeJoinedIcon(button.Width, button.Height);
-                    SetConnectionTooltip(button, false);
                 } else {
                     button.BackgroundImage = IconFor(record);
-                    SetConnectionTooltip(button, record.Kind == ControllerKind.Pro ||
-                        record.Kind == ControllerKind.DualSense || record.Kind == ControllerKind.DualShock4);
                 }
 
                 button.Tag = (int)record.PadId;
                 button.BackColor = record.Battery >= 0 ? Controller.GetBatteryColor(record.Battery) : Color.FromArgb(0x00, SystemColors.Control);
+                button.Text = record.BatteryPercent >= 0 ? record.BatteryPercent + "%" : String.Empty;
+                SetConnectionTooltip(button,
+                    !isPair && (record.Kind == ControllerKind.Pro ||
+                                record.Kind == ControllerKind.DualSense ||
+                                record.Kind == ControllerKind.DualShock4),
+                    record);
 
                 // Mirrors AssignJoyconToSlot's loc-button wiring - unsubscribe first since this
                 // whole method reruns on every snapshot push, unlike AssignJoyconToSlot which
@@ -665,11 +672,25 @@ namespace BetterJoyForCemu {
                 button.BackgroundImage = Properties.Resources.cross;
         }
 
-        public void SetConnectionTooltip(Button button, bool isPro) {
+        public void SetConnectionTooltip(Button button, bool isPro, ControllerRecord record) {
             string tip = isPro ? "Left-click to edit controller profile" : "Right-click to split / left-click to edit controller profile";
             if (allowCalibration)
                 tip += ", double click to calibrate";
+            if (record.BatteryPercent >= 0)
+                tip = BatteryStatusText(record) + "\r\n" + tip;
             btnTip.SetToolTip(button, tip);
+        }
+
+        private static string BatteryStatusText(ControllerRecord record) {
+            string state;
+            switch (record.BatteryStatus) {
+                case ControllerBatteryStatus.Charging: state = "charging"; break;
+                case ControllerBatteryStatus.Full: state = "full"; break;
+                case ControllerBatteryStatus.NotCharging: state = "not charging"; break;
+                case ControllerBatteryStatus.Discharging: state = "discharging"; break;
+                default: state = "status unknown"; break;
+            }
+            return "Battery: " + record.BatteryPercent + "% (" + state + ")";
         }
 
         public void SetEmptySlotTooltip(Button button) {

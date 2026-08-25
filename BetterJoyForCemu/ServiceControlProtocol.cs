@@ -43,13 +43,24 @@ namespace BetterJoyForCemu {
         DualShock4 = 6,
     }
 
+    public enum ControllerBatteryStatus : byte {
+        Unknown = 0,
+        Discharging = 1,
+        Charging = 2,
+        Full = 3,
+        NotCharging = 4,
+    }
+
     // One connected controller's display-relevant state - deliberately not a live Joycon
     // reference, since the GUI process may not have one at all when the service owns the
-    // hardware. Battery -1 means unknown; OtherPadId -1 means unpaired.
+    // hardware. Battery is the legacy 0-4 level used for tile colors/DSU; BatteryPercent -1
+    // means no precise percentage is available. OtherPadId -1 means unpaired.
     public struct ControllerRecord {
         public byte PadId;
         public ControllerKind Kind;
         public sbyte Battery;
+        public sbyte BatteryPercent;
+        public ControllerBatteryStatus BatteryStatus;
         public sbyte OtherPadId;
         public string ProfileId;
         public string ProfileName;
@@ -69,6 +80,8 @@ namespace BetterJoyForCemu {
             writer.Write(ProfileName ?? String.Empty);
             writer.Write(ConnectionSequence);
             writer.Write(IsVertical);
+            writer.Write(BatteryPercent);
+            writer.Write((byte)BatteryStatus);
         }
 
         public static ControllerRecord ReadFrom(BinaryReader reader) {
@@ -81,6 +94,8 @@ namespace BetterJoyForCemu {
                 ProfileName = reader.ReadString(),
                 ConnectionSequence = reader.ReadInt64(),
                 IsVertical = reader.ReadBoolean(),
+                BatteryPercent = reader.ReadSByte(),
+                BatteryStatus = (ControllerBatteryStatus)reader.ReadByte(),
             };
         }
     }
