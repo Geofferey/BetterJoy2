@@ -745,33 +745,6 @@ namespace BetterJoyForCemu {
             return corrected / AccelLsbPerG;
         }
 
-        // Standard IEEE 802.3 CRC32 (polynomial 0xEDB88320, the same one zlib/most CRC32 libraries
-        // use) - DualSense's Bluetooth output reports are silently ignored by the controller unless
-        // this checksum is present and correct; USB output needs none.
-        private static readonly uint[] crc32Table = BuildCrc32Table();
-
-        private static uint[] BuildCrc32Table() {
-            var table = new uint[256];
-            for (uint i = 0; i < 256; i++) {
-                uint c = i;
-                for (int k = 0; k < 8; k++)
-                    c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
-                table[i] = c;
-            }
-            return table;
-        }
-
-        // seed is a virtual leading byte folded into the running CRC state before data - the real
-        // DualSense Bluetooth output checksum is computed as if a 0xA2 byte preceded the actual
-        // report, without that byte itself being part of the transmitted buffer.
-        private static uint Crc32(byte seed, byte[] data, int length) {
-            uint crc = 0xFFFFFFFF;
-            crc = crc32Table[(crc ^ seed) & 0xFF] ^ (crc >> 8);
-            for (int i = 0; i < length; i++)
-                crc = crc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-            return crc ^ 0xFFFFFFFF;
-        }
-
         // DualSense baseline rumble - both motors driven by the same single amplitude value
         // dequeued from rumble_obj (see the Poll() call site), since DualSense's simple dual-motor
         // rumble has no equivalent to Joy-Con's HD-rumble low/high-frequency split Rumble.GetData()

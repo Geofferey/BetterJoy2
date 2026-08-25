@@ -333,6 +333,31 @@ namespace BetterJoyForCemu {
             DebugPrint(string.Format(format, tostr), d);
         }
 
+        // Standard IEEE 802.3 CRC32 with a virtual leading seed byte. Sony Bluetooth feature and
+        // output reports use this same checksum with 0xA3 for controller-to-host feature data and
+        // 0xA2 for host-to-controller output data. Kept in the shared controller base so Sony
+        // device definitions can describe their own reports without duplicating checksum code.
+        private static readonly uint[] crc32Table = BuildCrc32Table();
+
+        private static uint[] BuildCrc32Table() {
+            var table = new uint[256];
+            for (uint i = 0; i < 256; i++) {
+                uint c = i;
+                for (int k = 0; k < 8; k++)
+                    c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+                table[i] = c;
+            }
+            return table;
+        }
+
+        protected static uint Crc32(byte seed, byte[] data, int length) {
+            uint crc = 0xFFFFFFFF;
+            crc = crc32Table[(crc ^ seed) & 0xFF] ^ (crc >> 8);
+            for (int i = 0; i < length; i++)
+                crc = crc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+            return crc ^ 0xFFFFFFFF;
+        }
+
         public float[] GetStick() {
             return stick;
         }
