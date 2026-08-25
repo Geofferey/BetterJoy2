@@ -31,6 +31,11 @@ namespace BetterJoyForCemu {
         // otherwise search for one of them to join with instead. See MainForm's
         // HandlePossibleOrientationDoubleClick.
         ForceSelfPair = 17,
+        // A specific binding box is actively listening. While this short-lived scope is open,
+        // controller-derived desktop presses/clicks are suppressed at their source so the GUI's
+        // global hooks observe only inputs the user actually pressed, not mapped consequences.
+        BeginBindingCapture = 18,
+        EndBindingCapture = 19,
     }
 
     public enum ControllerKind : byte {

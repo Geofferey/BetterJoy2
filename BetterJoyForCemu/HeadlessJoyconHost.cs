@@ -34,6 +34,8 @@ namespace BetterJoyForCemu {
 
         private readonly object controlPipeLock = new object();
         private NamedPipeServerStream controlPipe;
+        private NamedPipeServerStream bindingCaptureOwner;
+        private volatile bool bindingCaptureSuppressesMappedOutput;
 
         public void AppendTextBox(string message) {
             try {
@@ -397,11 +399,23 @@ namespace BetterJoyForCemu {
             outgoingMessages.Add(new InputMessage { Type = type, A = a, B = b });
         }
 
-        public void SimulateKeyClick(int keyCode) => SendMessage(InputMessageType.SimulateKeyClick, keyCode);
-        public void SimulateKeyHold(int keyCode) => SendStatefulMessage(InputMessageType.SimulateKeyHold, keyCode);
+        public void SimulateKeyClick(int keyCode) {
+            if (!bindingCaptureSuppressesMappedOutput)
+                SendMessage(InputMessageType.SimulateKeyClick, keyCode);
+        }
+        public void SimulateKeyHold(int keyCode) {
+            if (!bindingCaptureSuppressesMappedOutput)
+                SendStatefulMessage(InputMessageType.SimulateKeyHold, keyCode);
+        }
         public void SimulateKeyRelease(int keyCode) => SendStatefulMessage(InputMessageType.SimulateKeyRelease, keyCode);
-        public void SimulateButtonClick(int buttonCode) => SendMessage(InputMessageType.SimulateButtonClick, buttonCode);
-        public void SimulateButtonHold(int buttonCode) => SendStatefulMessage(InputMessageType.SimulateButtonHold, buttonCode);
+        public void SimulateButtonClick(int buttonCode) {
+            if (!bindingCaptureSuppressesMappedOutput)
+                SendMessage(InputMessageType.SimulateButtonClick, buttonCode);
+        }
+        public void SimulateButtonHold(int buttonCode) {
+            if (!bindingCaptureSuppressesMappedOutput)
+                SendStatefulMessage(InputMessageType.SimulateButtonHold, buttonCode);
+        }
         public void SimulateButtonRelease(int buttonCode) => SendStatefulMessage(InputMessageType.SimulateButtonRelease, buttonCode);
         public void SimulateMoveTo(int x, int y) => SendMessage(InputMessageType.SimulateMoveTo, x, y);
 
@@ -486,6 +500,7 @@ namespace BetterJoyForCemu {
 
             lock (controlPipeLock) {
                 if (controlPipe != null) {
+                    EndBindingCapture(controlPipe);
                     try { controlPipe.Dispose(); } catch { }
                 }
                 controlPipe = connectedPipe;
@@ -533,12 +548,36 @@ namespace BetterJoyForCemu {
                         case ControlMessageType.StopButtonCapture:
                             StopButtonCapture();
                             break;
+                        case ControlMessageType.BeginBindingCapture:
+                            BeginBindingCapture(connectedPipe);
+                            break;
+                        case ControlMessageType.EndBindingCapture:
+                            EndBindingCapture(connectedPipe);
+                            break;
                     }
                 }
             } catch {
                 // GUI closed/disconnected - fine, a fresh accept-loop is already listening.
             } finally {
+                EndBindingCapture(connectedPipe);
                 AppendTextBox("GUI control connection closed.");
+            }
+        }
+
+        private void BeginBindingCapture(NamedPipeServerStream owner) {
+            lock (controlPipeLock) {
+                bindingCaptureOwner = owner;
+                bindingCaptureSuppressesMappedOutput = true;
+            }
+        }
+
+        private void EndBindingCapture(NamedPipeServerStream owner) {
+            lock (controlPipeLock) {
+                if (bindingCaptureOwner != owner)
+                    return;
+
+                bindingCaptureSuppressesMappedOutput = false;
+                bindingCaptureOwner = null;
             }
         }
 

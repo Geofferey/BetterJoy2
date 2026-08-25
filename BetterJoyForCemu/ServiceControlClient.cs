@@ -90,6 +90,8 @@ namespace BetterJoyForCemu {
         public void CalibrationReady(int padId) => Send(w => ServiceControlIpc.WritePadIdMessage(w, ControlMessageType.CalibrationReady, padId));
         public void StartButtonCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.StartButtonCapture));
         public void StopButtonCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.StopButtonCapture));
+        public void BeginBindingCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.BeginBindingCapture));
+        public void EndBindingCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.EndBindingCapture));
 
         private void Send(Action<BinaryWriter> write) {
             lock (writeLock) {

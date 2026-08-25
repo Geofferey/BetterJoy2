@@ -28,6 +28,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_default_orientation = new ContextMenuStrip();
 
         private Control curAssignment;
+        private bool bindingCaptureSuppressionActive;
 
         // Controller buttons have no equivalent to WindowsInput.Capture.Global (there's no OS-
         // level hook for "a button was pressed on this specific HID device") - the only way to
@@ -1863,6 +1864,7 @@ namespace BetterJoyForCemu {
         }
 
         private void StartComboCapture(SplitButton c) {
+            BeginBindingCaptureSuppression();
             comboMembers = new HashSet<string>();
             comboHeldNow = new HashSet<string>();
             c.Text = "Press combo...";
@@ -1888,8 +1890,10 @@ namespace BetterJoyForCemu {
         // whatever they were holding) as well as the explicit middle-click-to-reset path -
         // leaves whatever bind already existed untouched, just stops listening.
         private void CancelComboCapture() {
-            if (comboMembers == null)
+            if (comboMembers == null) {
+                EndBindingCaptureSuppression();
                 return;
+            }
 
             comboTimeout?.Stop();
             comboTimeout?.Dispose();
@@ -1899,6 +1903,7 @@ namespace BetterJoyForCemu {
             curAssignment = null;
             comboMembers = null;
             comboHeldNow = null;
+            EndBindingCaptureSuppression();
 
             if (target != null)
                 GetPrettyName(target); // drop the "Press combo..." placeholder, restore the real value
@@ -1947,6 +1952,23 @@ namespace BetterJoyForCemu {
             curAssignment = null;
             comboMembers = null;
             comboHeldNow = null;
+            EndBindingCaptureSuppression();
+        }
+
+        private void BeginBindingCaptureSuppression() {
+            if (bindingCaptureSuppressionActive)
+                return;
+
+            bindingCaptureSuppressionActive = true;
+            serviceClient.BeginBindingCapture();
+        }
+
+        private void EndBindingCaptureSuppression() {
+            if (!bindingCaptureSuppressionActive)
+                return;
+
+            bindingCaptureSuppressionActive = false;
+            serviceClient.EndBindingCapture();
         }
 
         private void Reassign_Load(object sender, EventArgs e) {
@@ -1990,6 +2012,7 @@ namespace BetterJoyForCemu {
                 SetBindValue((string)curAssignment.Tag, "joy_" + bi);
                 GetPrettyName(curAssignment);
                 curAssignment = null;
+                EndBindingCaptureSuppression();
             }
         }
 
@@ -2024,6 +2047,7 @@ namespace BetterJoyForCemu {
                 SetBindValue((string)curAssignment.Tag, "mse_" + ((int)e.Data.ButtonDown.Button));
                 AsyncPrettyName(curAssignment);
                 curAssignment = null;
+                EndBindingCaptureSuppression();
                 e.Next_Hook_Enabled = false;
             }
         }
@@ -2046,6 +2070,7 @@ namespace BetterJoyForCemu {
                 SetBindValue((string)curAssignment.Tag, "key_" + ((int)e.Data.KeyDown.Key));
                 AsyncPrettyName(curAssignment);
                 curAssignment = null;
+                EndBindingCaptureSuppression();
                 e.Next_Hook_Enabled = false;
             }
         }
@@ -2060,6 +2085,7 @@ namespace BetterJoyForCemu {
             mouse?.Dispose();
             comboTimeout?.Stop();
             comboTimeout?.Dispose();
+            EndBindingCaptureSuppression();
 
             serviceClient.ButtonTransition -= ServiceClient_ButtonTransition;
             serviceClient.SnapshotReceived -= ServiceClient_SnapshotReceived;
