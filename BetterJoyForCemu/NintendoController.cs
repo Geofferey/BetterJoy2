@@ -478,7 +478,7 @@ namespace BetterJoyForCemu {
                         down_[i] = buttons[i];
                     }
                 }
-                buttons = new bool[20];
+                buttons = new bool[ButtonCount];
 
                 buttons[(int)Button.DPAD_DOWN] = (report_buf[3 + (isLeft ? 2 : 0)] & (isLeft ? 0x01 : 0x04)) != 0;
                 buttons[(int)Button.DPAD_RIGHT] = (report_buf[3 + (isLeft ? 2 : 0)] & (isLeft ? 0x04 : 0x08)) != 0;

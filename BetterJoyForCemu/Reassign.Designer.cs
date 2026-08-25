@@ -14,12 +14,22 @@ namespace BetterJoyForCemu {
 		DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
 		public int SplitWidth { get; set; }
 
+		// Most split buttons use right-click as another way to open Menu. A control which needs
+		// a distinct alternate action can opt in without changing every existing split button.
+		[Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+		public MouseEventHandler RightClickHandler { get; set; }
+
 		public SplitButton() {
 			SplitWidth = 20;
 		}
 
 		protected override void OnMouseDown(MouseEventArgs mevent) {
 			var splitRect = new Rectangle(this.Width - this.SplitWidth, 0, this.SplitWidth, this.Height);
+
+			if (mevent.Button == MouseButtons.Right && RightClickHandler != null) {
+				RightClickHandler(this, mevent);
+				return;
+			}
 
 			// Figure out if the button click was on the button itself or the menu split
 			if (Menu != null &&

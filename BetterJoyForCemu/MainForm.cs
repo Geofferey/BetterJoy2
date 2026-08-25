@@ -27,7 +27,9 @@ namespace BetterJoyForCemu {
             new HashSet<string>(StringComparer.Ordinal) {
                 "ShowAsXInput", "ShowAsDS4", "AutoPowerOff", "PowerOffInactivity",
                 "HomeLongPowerOff", "GyroHoldToggle", "GyroMouseInhibitButtons",
-                "DragToggle", "SwapAB", "SwapXY", "HomeLEDOn",
+                "DragToggle", "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
+                "TouchpadTapAndHold", "TouchpadClickMovementLockout",
+                "SwapAB", "SwapXY", "HomeLEDOn",
             };
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/
         // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just

@@ -19,6 +19,10 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_gyro_activation = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_analog_sliders = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_mouse_inhibit = new ContextMenuStrip();
+        ContextMenuStrip menu_touchpad_inhibit = new ContextMenuStrip();
+        ContextMenuStrip menu_touchpad_sensitivity = new ContextMenuStrip();
+        ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
+        ContextMenuStrip menu_touchpad_click_lockout = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_mode = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_axis = new ContextMenuStrip();
         ContextMenuStrip menu_default_orientation = new ContextMenuStrip();
@@ -94,7 +98,9 @@ namespace BetterJoyForCemu {
         // intentionally rejected for them below, just as before profiles were introduced.
         private static readonly HashSet<string> ControllerOnlyKeys = new HashSet<string> {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
-            "clench_gyro", "ratchet_gyro"
+            "clench_gyro", "ratchet_gyro", "touchpad_left_click", "touchpad_right_click",
+            "touchpad_center_click", "touchpad_scroll_up", "touchpad_scroll_down",
+            "touchpad_pointer_lock"
         };
 
         private ControllerProfileInfo SelectedProfile {
@@ -171,6 +177,27 @@ namespace BetterJoyForCemu {
             menu_gyro_mouse_inhibit.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
             menu_gyro_mouse_inhibit.ItemClicked += GyroMouseInhibitMenu_ItemClicked;
 
+            menu_touchpad_inhibit.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
+            menu_touchpad_inhibit.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
+            menu_touchpad_inhibit.ItemClicked += TouchpadInhibitMenu_ItemClicked;
+
+            foreach (int percent in new[] { 25, 50, 75, 100, 125, 150, 200, 300, 400 })
+                menu_touchpad_sensitivity.Items.Add(
+                    new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
+            menu_touchpad_sensitivity.ItemClicked += TouchpadSensitivityMenu_ItemClicked;
+
+            menu_touchpad_tap_hold.Items.Add(
+                new ToolStripMenuItem("Disabled") { Tag = "disabled" });
+            menu_touchpad_tap_hold.Items.Add(
+                new ToolStripMenuItem("Hold to drag") { Tag = "hold" });
+            menu_touchpad_tap_hold.Items.Add(
+                new ToolStripMenuItem("Double-tap to drag") { Tag = "double_tap" });
+            menu_touchpad_tap_hold.ItemClicked += TouchpadTapHoldMenu_ItemClicked;
+
+            menu_touchpad_click_lockout.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
+            menu_touchpad_click_lockout.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
+            menu_touchpad_click_lockout.ItemClicked += TouchpadClickLockoutMenu_ItemClicked;
+
             menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Rate (current)") { Tag = "rate" });
             menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Absolute tilt") { Tag = "absolute" });
             menu_gyro_stick_mode.Items.Add(new ToolStripMenuItem("Hybrid") { Tag = "hybrid" });
@@ -186,9 +213,10 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
+            specialButtons.AddRange(touchpadMouseButtons);
 
             foreach (SplitButton c in specialButtons) {
                 c.Tag = c == btn_active_gyro
@@ -197,7 +225,7 @@ namespace BetterJoyForCemu {
                 GetPrettyName(c);
 
                 c.MouseDown += Remap;
-                c.Menu = IsGyroActivationKey((string)c.Tag)
+                c.Menu = IsActivationKey((string)c.Tag)
                     ? menu_gyro_activation
                     : menu_joy_buttons;
                 c.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
@@ -213,14 +241,23 @@ namespace BetterJoyForCemu {
         // Designer-owned buttons below, so page navigation never creates a second behavior path.
         private readonly List<SplitButton> gyroMouseButtons = new List<SplitButton>();
         private readonly List<SplitButton> gyroStickActivationButtons = new List<SplitButton>();
+        private readonly List<SplitButton> touchpadMouseButtons = new List<SplitButton>();
         private SplitButton btn_ratchet_gyro;
         private SplitButton btn_guide;
+        private SplitButton btn_touchpad_click;
+        private SplitButton btn_touchpad_tap;
+        private SplitButton btn_active_touchpad_mouse;
+        private SplitButton btn_touchpad_inhibit;
+        private SplitButton btn_touchpad_sensitivity;
+        private SplitButton btn_touchpad_tap_hold;
+        private SplitButton btn_touchpad_click_lockout;
         private List<SplitButton> specialButtons;
 
-        private static bool IsGyroActivationKey(string key) {
+        private static bool IsActivationKey(string key) {
             return key == "active_gyro_mouse" ||
                    key == "active_gyro_left_stick" ||
-                   key == "active_gyro_right_stick";
+                   key == "active_gyro_right_stick" ||
+                   key == "active_touchpad_mouse";
         }
 
         // Stick mapping mode/axis/invert only take effect in filtered IMU mode (see
@@ -280,8 +317,18 @@ namespace BetterJoyForCemu {
                 gyroStickActivationButtons.Add(button);
             }
 
+            string[] touchpadActionKeys = {
+                "touchpad_left_click", "touchpad_right_click", "touchpad_center_click",
+                "touchpad_pointer_lock", "touchpad_scroll_up", "touchpad_scroll_down",
+            };
+            foreach (string key in touchpadActionKeys)
+                touchpadMouseButtons.Add(new SplitButton { Name = "btn_" + key });
+
             btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
             btn_guide = new SplitButton { Name = "btn_guide" };
+            btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
+            btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
+            btn_active_touchpad_mouse = new SplitButton { Name = "btn_active_touchpad_mouse" };
 
             gyroStickModeSelector = CreateChoiceSplitButton(
                 "btn_gyro_stick_mode_left", menu_gyro_stick_mode);
@@ -301,6 +348,31 @@ namespace BetterJoyForCemu {
             btn_gyro_mouse_inhibit.Menu = menu_gyro_mouse_inhibit;
             btn_gyro_mouse_inhibit.Click += (sender, e) =>
                 menu_gyro_mouse_inhibit.Show(btn_gyro_mouse_inhibit, 0, btn_gyro_mouse_inhibit.Height);
+
+            btn_touchpad_inhibit = new SplitButton { Name = "btn_touchpad_inhibit" };
+            btn_touchpad_inhibit.Menu = menu_touchpad_inhibit;
+            btn_touchpad_inhibit.Click += (sender, e) =>
+                menu_touchpad_inhibit.Show(btn_touchpad_inhibit, 0, btn_touchpad_inhibit.Height);
+
+            btn_touchpad_sensitivity = new SplitButton { Name = "btn_touchpad_sensitivity" };
+            btn_touchpad_sensitivity.Menu = menu_touchpad_sensitivity;
+            btn_touchpad_sensitivity.Click += (sender, e) =>
+                menu_touchpad_sensitivity.Show(btn_touchpad_sensitivity, 0,
+                    btn_touchpad_sensitivity.Height);
+            btn_touchpad_sensitivity.RightClickHandler = (sender, e) =>
+                PromptTouchpadSensitivity();
+
+            btn_touchpad_tap_hold = new SplitButton { Name = "btn_touchpad_tap_hold" };
+            btn_touchpad_tap_hold.Menu = menu_touchpad_tap_hold;
+            btn_touchpad_tap_hold.Click += (sender, e) =>
+                menu_touchpad_tap_hold.Show(btn_touchpad_tap_hold, 0,
+                    btn_touchpad_tap_hold.Height);
+
+            btn_touchpad_click_lockout = new SplitButton { Name = "btn_touchpad_click_lockout" };
+            btn_touchpad_click_lockout.Menu = menu_touchpad_click_lockout;
+            btn_touchpad_click_lockout.Click += (sender, e) =>
+                menu_touchpad_click_lockout.Show(btn_touchpad_click_lockout, 0,
+                    btn_touchpad_click_lockout.Height);
 
             btn_default_orientation = new SplitButton { Name = "btn_default_orientation" };
             btn_default_orientation.Menu = menu_default_orientation;
@@ -374,16 +446,19 @@ namespace BetterJoyForCemu {
 
             Panel bindingsPage = BuildBindingsPage();
             Panel gyroPage = BuildGyroPage();
+            Panel touchpadPage = BuildTouchpadPage();
             Panel behaviorPage = BuildDeviceBehaviorPage();
             Panel virtualControllerPage = BuildVirtualControllerPage();
             Panel globalPage = BuildGlobalPage();
             profilePages.Add("bindings", bindingsPage);
             profilePages.Add("gyro", gyroPage);
+            profilePages.Add("touchpad", touchpadPage);
             profilePages.Add("behavior", behaviorPage);
             profilePages.Add("virtual", virtualControllerPage);
             profilePages.Add("global", globalPage);
             profilePageHost.Controls.Add(bindingsPage);
             profilePageHost.Controls.Add(gyroPage);
+            profilePageHost.Controls.Add(touchpadPage);
             profilePageHost.Controls.Add(behaviorPage);
             profilePageHost.Controls.Add(virtualControllerPage);
             profilePageHost.Controls.Add(globalPage);
@@ -517,11 +592,12 @@ namespace BetterJoyForCemu {
             sidebar.Controls.Add(profileNavigationAccent);
             sidebar.Controls.Add(CreateNavigationButton("Bindings", "bindings", 60));
             sidebar.Controls.Add(CreateNavigationButton("Gyro", "gyro", 104));
-            sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 148));
-            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 192));
-            sidebar.Controls.Add(CreateLabel("GLOBAL", 20, 262,
+            sidebar.Controls.Add(CreateNavigationButton("Touchpad", "touchpad", 148));
+            sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 192));
+            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 236));
+            sidebar.Controls.Add(CreateLabel("GLOBAL", 20, 306,
                 Color.FromArgb(151, 174, 205), false, 8F));
-            sidebar.Controls.Add(CreateNavigationButton("Global options", "global", 292));
+            sidebar.Controls.Add(CreateNavigationButton("Global options", "global", 336));
             return sidebar;
         }
 
@@ -698,6 +774,68 @@ namespace BetterJoyForCemu {
             return page;
         }
 
+        private Panel BuildTouchpadPage() {
+            Panel page = CreateProfilePage("Touchpad",
+                "Use this controller's touch surface as an independently activated mouse.");
+
+            AddSectionHeading(page, "Physical control", 96,
+                "Bind press and tap independently, with optional tap-and-hold dragging.");
+            AddMappingRow(page, null, btn_touchpad_click, "Touchpad click",
+                157, 24, 114, 181);
+            AddMappingRow(page, null, btn_touchpad_tap, "Tap",
+                157, 323, 423, 171);
+            tip_reassign.SetToolTip(btn_touchpad_tap,
+                "A short one-finger touch with limited travel. Dragging or pressing the pad cancels it.");
+
+            AddMappingRow(page, null, btn_touchpad_tap_hold, "Tap behavior",
+                194, 24, 232, 362);
+            tip_reassign.SetToolTip(btn_touchpad_tap_hold,
+                "Choose whether holding one touch or a second tap holds the Tap action for dragging.");
+
+            page.Controls.Add(CreateDivider(24, 242));
+            AddSectionHeading(page, "Output activation", 257,
+                "Set the pointer to always on, disabled, or activate it with a binding.");
+            page.Controls.Add(CreateLabel("Output", 24, 308, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 232, 308, ProfileMuted, false, 8.25F));
+            AddMappingRow(page, null, btn_active_touchpad_mouse, "Mouse",
+                329, 24, 232, 362);
+
+            AddMappingRow(page, null, btn_touchpad_sensitivity, "Pointer sensitivity",
+                366, 24, 232, 362);
+            tip_reassign.SetToolTip(btn_touchpad_sensitivity,
+                "Choose a preset or right-click to enter a custom value from 10% to 400%.");
+
+            page.Controls.Add(CreateDivider(24, 414));
+            AddSectionHeading(page, "Mouse actions", 429,
+                "Optional controller inputs available while touchpad mouse is active.");
+            const int actionTop = 481;
+            const int actionSpacing = 34;
+            string[] labels = {
+                "Left click", "Right click", "Middle click", "Clench touchpad",
+                "Scroll up", "Scroll down",
+            };
+            for (int index = 0; index < touchpadMouseButtons.Count; index++) {
+                int column = index % 2;
+                int row = index / 2;
+                int labelX = column == 0 ? 24 : 323;
+                int buttonX = column == 0 ? 114 : 423;
+                AddMappingRow(page, null, touchpadMouseButtons[index], labels[index],
+                    actionTop + row * actionSpacing,
+                    labelX, buttonX, column == 0 ? 181 : 171);
+            }
+
+            AddMappingRow(page, null, btn_touchpad_inhibit, "Inhibit",
+                actionTop + 3 * actionSpacing, 24, 114, 181);
+            tip_reassign.SetToolTip(btn_touchpad_inhibit,
+                "Inhibit controller actions in touchpad mouse mode.");
+            AddMappingRow(page, null, btn_touchpad_click_lockout, "Click lockout",
+                actionTop + 3 * actionSpacing, 323, 423, 171);
+            tip_reassign.SetToolTip(btn_touchpad_click_lockout,
+                "Prevent pointer movement while the physical touchpad is pressed.");
+            page.AutoScrollMinSize = new Size(0, 649);
+            return page;
+        }
+
         private Panel BuildDeviceBehaviorPage() {
             Panel page = CreateProfilePage("Device behavior",
                 "Control power, button layout, gyro activation, and controller lighting.");
@@ -729,14 +867,14 @@ namespace BetterJoyForCemu {
             page.Controls.Add(swapAbCheckBox);
             page.Controls.Add(swapXyCheckBox);
             page.Controls.Add(dragToggleCheckBox);
-            page.Controls.Add(CreateLabel("Gyro binding behavior", 24, 366, ProfileText, false));
+            page.Controls.Add(CreateLabel("Pointer binding behavior", 24, 366, ProfileText, false));
             gyroActivationModeSelector = CreateProfileComboBox(180, 360, 180);
             gyroActivationModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
             gyroActivationModeSelector.Items.AddRange(new object[] { "Hold", "Toggle" });
             gyroActivationModeSelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(gyroActivationModeSelector);
             Label gyroHelp = CreateLabel(
-                "Applies to mouse, left-stick, and right-stick gyro activation bindings.",
+                "Applies to gyro and touchpad mouse activation bindings.",
                 24, 399, ProfileMuted, false, 8.5F);
             page.Controls.Add(gyroHelp);
 
@@ -1069,6 +1207,8 @@ namespace BetterJoyForCemu {
             Control[] controls = {
                 useAsSelector, inactivitySelector, gyroActivationModeSelector,
                 btn_gyro_analog_sliders, btn_gyro_mouse_inhibit, btn_default_orientation,
+                btn_touchpad_inhibit, btn_touchpad_sensitivity, btn_touchpad_tap_hold,
+                btn_touchpad_click_lockout,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, homeLedCheckBox,
                 gyroStickModeSelector, gyroStickModeRightSelector,
@@ -1118,6 +1258,14 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroMouseInhibitButtons") ? "Enabled" : "Disabled";
+                btn_touchpad_inhibit.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "TouchpadMouseInhibitButtons") ? "Enabled" : "Disabled";
+                btn_touchpad_sensitivity.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "TouchpadSensitivity", 100) + "%";
+                btn_touchpad_tap_hold.Text = TouchpadTapHoldDisplayText(
+                    ControllerMappings.OptionValue(SelectedProfileId, "TouchpadTapAndHold"));
+                btn_touchpad_click_lockout.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "TouchpadClickMovementLockout") ? "Enabled" : "Disabled";
                 btn_gyro_analog_sliders.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroAnalogSliders") ? "Enabled" : "Disabled";
                 btn_default_orientation.Text = ControllerMappings.OptionValue(
@@ -1220,7 +1368,9 @@ namespace BetterJoyForCemu {
         private void StyleAssignmentMenus() {
             foreach (ContextMenuStrip menu in new[] {
                      menu_joy_buttons, menu_gyro_activation, menu_gyro_analog_sliders,
-                     menu_gyro_mouse_inhibit, menu_gyro_stick_mode, menu_gyro_stick_axis,
+                     menu_gyro_mouse_inhibit, menu_touchpad_inhibit, menu_touchpad_sensitivity,
+                     menu_touchpad_tap_hold, menu_touchpad_click_lockout,
+                     menu_gyro_stick_mode, menu_gyro_stick_axis,
                      menu_default_orientation }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
@@ -1250,6 +1400,7 @@ namespace BetterJoyForCemu {
                                 : record.ProfileName,
                             ConnectionSequence = record.ConnectionSequence,
                             IsConnected = true,
+                            Kind = record.Kind,
                         };
                     }
                 }
@@ -1300,7 +1451,8 @@ namespace BetterJoyForCemu {
                     if (current == null || current.ProfileId != choices[i].ProfileId ||
                         current.DisplayName != choices[i].DisplayName ||
                         current.IsConnected != choices[i].IsConnected ||
-                        current.ConnectionSequence != choices[i].ConnectionSequence) {
+                        current.ConnectionSequence != choices[i].ConnectionSequence ||
+                        current.Kind != choices[i].Kind) {
                         changed = true;
                         break;
                     }
@@ -1341,6 +1493,14 @@ namespace BetterJoyForCemu {
 
             ControllerProfileInfo selected = SelectedProfile;
             bool hasController = selected != null && !String.IsNullOrEmpty(selected.ProfileId);
+            bool hasTouchpad = selected != null &&
+                (selected.Kind == ControllerKind.DualSense ||
+                 selected.Kind == ControllerKind.DualShock4);
+            if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation))
+                touchpadNavigation.Visible = hasTouchpad;
+            if (!hasTouchpad && profilePages.TryGetValue("touchpad", out Panel touchpadPage) &&
+                touchpadPage.Visible)
+                ShowProfilePage("gyro");
             foreach (SplitButton button in specialButtons) {
                 button.Enabled = hasController;
                 GetPrettyName(button);
@@ -1514,6 +1674,138 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(
                 SelectedProfileId, "GyroMouseInhibitButtons", value);
             btn_gyro_mouse_inhibit.Text = value == "true" ? "Enabled" : "Disabled";
+        }
+
+        private void TouchpadInhibitMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, "TouchpadMouseInhibitButtons", value);
+            btn_touchpad_inhibit.Text = value == "true" ? "Enabled" : "Disabled";
+        }
+
+        private void TouchpadSensitivityMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, "TouchpadSensitivity", value);
+            btn_touchpad_sensitivity.Text = value + "%";
+        }
+
+        private void PromptTouchpadSensitivity() {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            using (var prompt = new Form()) {
+                prompt.Text = "Touchpad sensitivity";
+                prompt.FormBorderStyle = FormBorderStyle.FixedDialog;
+                prompt.StartPosition = FormStartPosition.CenterParent;
+                prompt.MinimizeBox = false;
+                prompt.MaximizeBox = false;
+                prompt.ShowInTaskbar = false;
+                prompt.ClientSize = new Size(330, 142);
+                prompt.BackColor = ProfileBackground;
+                prompt.ForeColor = ProfileText;
+                prompt.Font = new Font("Segoe UI", 9F);
+
+                var label = new Label {
+                    AutoSize = true,
+                    Location = new Point(18, 18),
+                    Text = "Enter pointer sensitivity (10%–400%):",
+                    ForeColor = ProfileText,
+                };
+                var input = new TextBox {
+                    Location = new Point(21, 48),
+                    Size = new Size(288, 25),
+                    BackColor = ProfileSurface,
+                    ForeColor = ProfileText,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Text = ControllerMappings.IntOption(
+                        SelectedProfileId, "TouchpadSensitivity", 100) + "%",
+                    TextAlign = HorizontalAlignment.Center,
+                };
+                var cancel = new Button {
+                    Text = "Cancel",
+                    DialogResult = DialogResult.Cancel,
+                    Location = new Point(153, 94),
+                    Size = new Size(75, 28),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = ProfileSurface,
+                    ForeColor = ProfileText,
+                };
+                var accept = new Button {
+                    Text = "OK",
+                    DialogResult = DialogResult.OK,
+                    Location = new Point(234, 94),
+                    Size = new Size(75, 28),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = ProfileAccent,
+                    ForeColor = Color.Black,
+                };
+                cancel.FlatAppearance.BorderColor = ProfileBorder;
+                accept.FlatAppearance.BorderColor = ProfileAccent;
+                prompt.Controls.Add(label);
+                prompt.Controls.Add(input);
+                prompt.Controls.Add(cancel);
+                prompt.Controls.Add(accept);
+                prompt.CancelButton = cancel;
+                prompt.AcceptButton = accept;
+                prompt.Shown += (sender, e) => {
+                    input.SelectAll();
+                    input.Focus();
+                };
+
+                while (prompt.ShowDialog(this) == DialogResult.OK) {
+                    string text = input.Text.Trim();
+                    if (text.EndsWith("%", StringComparison.Ordinal))
+                        text = text.Substring(0, text.Length - 1).Trim();
+
+                    int value;
+                    if (Int32.TryParse(text, out value) && value >= 10 && value <= 400) {
+                        ControllerMappings.SetOptionValue(
+                            SelectedProfileId, "TouchpadSensitivity", value.ToString());
+                        btn_touchpad_sensitivity.Text = value + "%";
+                        return;
+                    }
+
+                    MessageBox.Show(prompt, "Enter a whole number from 10 to 400.",
+                        "Touchpad sensitivity", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    input.SelectAll();
+                    input.Focus();
+                }
+            }
+        }
+
+        private void TouchpadClickLockoutMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, "TouchpadClickMovementLockout", value);
+            btn_touchpad_click_lockout.Text = value == "true" ? "Enabled" : "Disabled";
+        }
+
+        private void TouchpadTapHoldMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, "TouchpadTapAndHold", value);
+            btn_touchpad_tap_hold.Text = TouchpadTapHoldDisplayText(value);
+        }
+
+        private static string TouchpadTapHoldDisplayText(string value) {
+            if (value == "hold" || String.Equals(value, "true", StringComparison.OrdinalIgnoreCase))
+                return "Hold to drag";
+            if (value == "double_tap")
+                return "Double-tap to drag";
+            return "Disabled";
         }
 
         private void GyroStickModeMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
@@ -1723,8 +2015,8 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            // Gyro-mouse action buttons only ever check for a "joy_" binding at runtime (see
-            // Joycon.SimulateGyroMouseButton/Scroll). A keyboard/mouse trigger would capture fine
+            // Gyro/touchpad mouse action buttons only check for a "joy_" binding at runtime (see
+            // Controller.SimulateMouseActionButton/Scroll). A keyboard/mouse trigger would capture fine
             // here but then silently do nothing, so leave those actions uncaptured. Activation
             // mappings are not controller-only and may still use keyboard or mouse input.
             if (e.Data.ButtonDown != null && !ControllerOnlyKeys.Contains((string)curAssignment.Tag)) {
@@ -1791,7 +2083,7 @@ namespace BetterJoyForCemu {
                     "Middle-click to reset.\r\nRight-click for input options.");
                 return;
             }
-            if (IsGyroActivationKey((string)c.Tag) && val == "always") {
+            if (IsActivationKey((string)c.Tag) && val == "always") {
                 c.Text = "Always On";
                 tip_reassign.SetToolTip(c,
                     "Always on.\r\n\r\nLeft-click to detect input.\r\n" +
@@ -1803,7 +2095,7 @@ namespace BetterJoyForCemu {
             // A combo is "+"-joined parts (see Joycon.IsComboHeld) - a single-input bind is just
             // a one-part combo, so this handles both uniformly.
             bool explicitlyDisabled = unassigned &&
-                (IsGyroActivationKey((string)c.Tag) || (string)c.Tag == "guide");
+                (IsActivationKey((string)c.Tag) || (string)c.Tag == "guide");
             string description = explicitlyDisabled
                 ? "(disabled)"
                 : (unassigned ? "(unassigned)" : String.Join("+", val.Split('+').Select(DescribeBindPart)));

@@ -26,6 +26,7 @@ namespace BetterJoyForCemu {
         public override bool SupportsPairing => false;
         public override bool HasDualSticks => true;
         public override bool HasGyro => true;
+        public override bool HasTouchpad => true;
         public override bool HasAnalogTriggers => true;
         public override bool UsesNintendoProtocol => false;
         public override ControllerKind Kind => ControllerKind.DualSense;
@@ -516,7 +517,7 @@ namespace BetterJoyForCemu {
                     for (int i = 0; i < buttons.Length; ++i)
                         down_[i] = buttons[i];
                 }
-                bool[] b = new bool[20];
+                bool[] b = new bool[ButtonCount];
 
                 byte btn1 = r[buttonFieldBase + o];
                 b[(int)Button.X] = (btn1 & 0x80) != 0; // Triangle
@@ -544,12 +545,19 @@ namespace BetterJoyForCemu {
                 // DualSenseDevice.cs (inputReport[10+ro], bit 0).
                 byte btn3 = r[9 + o];
                 b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
-                // Touchpad click/mute/paddles intentionally unmapped this milestone (out of scope);
-                // SL/SR have no DualSense equivalent, left false.
+                b[(int)Button.TOUCHPAD] = (btn3 & 0x02) != 0;
+                // Mute/paddles remain unmapped; SL/SR have no DualSense equivalent.
 
                 buttons = b;
                 CommitButtonState();
             }
+
+            // DualSense contact status bytes are common-report offsets 32 and 36 (absolute
+            // Bluetooth offsets 34 and 38). Live touch movement changes the first packed contact
+            // at absolute 34 while the second remains the inactive 0x80 record at absolute 38.
+            // Everything after these device-specific offsets is shared with the DS4 path.
+            SubmitTouchpadReport(ReadPackedTouchContact(r, 32 + o),
+                                 ReadPackedTouchContact(r, 36 + o));
 
             // DS4Windows reads the capacity from status[0] and the charging flag from status[1].
             // The controller exposes eight usable capacity steps, so scale the low nibble against

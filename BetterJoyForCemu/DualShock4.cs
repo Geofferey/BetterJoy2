@@ -29,6 +29,7 @@ namespace BetterJoyForCemu {
         public override bool SupportsPairing => false;
         public override bool HasDualSticks => true;
         public override bool HasGyro => true;
+        public override bool HasTouchpad => true;
         public override bool HasAnalogTriggers => true;
         public override bool UsesNintendoProtocol => false;
         public override ControllerKind Kind => ControllerKind.DualShock4;
@@ -323,7 +324,7 @@ namespace BetterJoyForCemu {
                     for (int i = 0; i < buttons.Length; ++i)
                         down_[i] = buttons[i];
                 }
-                bool[] b = new bool[20];
+                bool[] b = new bool[ButtonCount];
 
                 byte btn1 = r[buttonFieldBase + o];
                 b[(int)Button.X] = (btn1 & 0x80) != 0; // Triangle
@@ -349,12 +350,17 @@ namespace BetterJoyForCemu {
 
                 byte btn3 = r[buttonFieldBase + 2 + o];
                 b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
-                // Touchpad click intentionally unmapped this milestone (out of scope); SL/SR have
-                // no DualShock 4 equivalent, left false.
+                b[(int)Button.TOUCHPAD] = (btn3 & 0x02) != 0;
+                // SL/SR have no DualShock 4 equivalent and remain false.
 
                 buttons = b;
                 CommitButtonState();
             }
+
+            // DS4 common-report touch contacts begin at offsets 34 and 38. The shared pipeline
+            // owns activation, pointer deltas, actions, click lockout, and output inhibition.
+            SubmitTouchpadReport(ReadPackedTouchContact(r, 34 + o),
+                                 ReadPackedTouchContact(r, 38 + o));
 
             // Classic layout: L2 analog immediately follows the button bytes, R2 right after.
             triggerVal[0] = r[buttonFieldBase + 3 + o];

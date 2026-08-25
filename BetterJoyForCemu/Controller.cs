@@ -69,7 +69,9 @@ namespace BetterJoyForCemu {
             STICK2 = 17,
             SHOULDER2_1 = 18,
             SHOULDER2_2 = 19,
+            TOUCHPAD = 20,
         };
+        protected const int ButtonCount = (int)Button.TOUCHPAD + 1;
 
         // For UdpServer
         public int PadId = 0;
@@ -509,6 +511,10 @@ namespace BetterJoyForCemu {
             // stateful desktop inputs here as the final backstop instead of leaving Windows with
             // a button-down whose corresponding physical controller can no longer report up.
             ReleaseGyroMouseActions();
+            ReleaseTouchpadMouseActions();
+            if (HasTouchpad)
+                ReleaseMappedHold(MappingValue("touchpad_click"));
+            ResetTouchpadGestureState();
         }
 
         // Every report's raw HID read + parse + downstream processing - no shared default
@@ -580,11 +586,11 @@ namespace BetterJoyForCemu {
         // against to derive buttons_down/buttons_up (rising/falling edges), and
         // buttons_down_timestamp records when each button last went down, for press-and-hold/
         // double-click detection.
-        protected bool[] buttons_down = new bool[20];
-        protected bool[] buttons_up = new bool[20];
-        protected bool[] buttons = new bool[20];
-        protected bool[] down_ = new bool[20];
-        protected long[] buttons_down_timestamp = new long[20];
+        protected bool[] buttons_down = new bool[ButtonCount];
+        protected bool[] buttons_up = new bool[ButtonCount];
+        protected bool[] buttons = new bool[ButtonCount];
+        protected bool[] down_ = new bool[ButtonCount];
+        protected long[] buttons_down_timestamp = new long[ButtonCount];
 
         // Public read accessors for the arrays above - used by Reassign.cs/HeadlessJoyconHost.cs's
         // button-mapping auto-detect (press a button to bind it) for any connected controller, not
@@ -787,6 +793,7 @@ namespace BetterJoyForCemu {
         public abstract bool SupportsPairing { get; }      // can combine with another unit into one logical controller
         public abstract bool HasDualSticks { get; }        // has two physical sticks/thumb-stick-click buttons on one unit
         public abstract bool HasGyro { get; }               // currently populates real gyr_g/acc_g data
+        public virtual bool HasTouchpad => false;
         public abstract bool HasAnalogTriggers { get; }     // triggers report a real analog value, not just a digital button bit
         public abstract bool UsesNintendoProtocol { get; }  // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
 
@@ -827,6 +834,7 @@ namespace BetterJoyForCemu {
         public bool active_gyro = false;
         protected bool activeGyroLeftStick = false;
         protected bool activeGyroRightStick = false;
+        protected bool activeTouchpadMouse = false;
 
         // Real elapsed time since the last DoThingsWithButtons call, used to scale raw angular
         // velocity (gyr_g) into a per-packet rotation amount - previously a hardcoded 0.015f
@@ -844,6 +852,8 @@ namespace BetterJoyForCemu {
         protected bool prevActiveGyroLeftStickComboHeld = false;
         protected bool prevActiveGyroRightStickComboHeld = false;
         protected bool gyroMouseEnabledThisReport = false;
+        protected bool prevActiveTouchpadMouseComboHeld = false;
+        protected bool touchpadMouseEnabledThisReport = false;
 
         // Same idea for reset_mouse - a one-shot action needs the rising edge only, or it would
         // keep re-centering every packet for as long as the bind stays held.
@@ -866,8 +876,270 @@ namespace BetterJoyForCemu {
         // gate. All seven values come from the current logical controller profile.
         protected readonly string[] lastGyroOnlyBindValues =
             new string[GyroOnlyBindKeys.Length + 1];
-        protected readonly bool[] gyroOnlyReservedButtons = new bool[20];
-        protected readonly bool[] vigemButtons = new bool[20];
+        protected readonly bool[] gyroOnlyReservedButtons = new bool[ButtonCount];
+        protected static readonly string[] TouchpadOnlyBindKeys = {
+            "touchpad_left_click", "touchpad_right_click", "touchpad_center_click",
+            "touchpad_scroll_up", "touchpad_scroll_down", "touchpad_pointer_lock",
+        };
+        protected readonly string[] lastTouchpadOnlyBindValues =
+            new string[TouchpadOnlyBindKeys.Length];
+        protected readonly bool[] touchpadOnlyReservedButtons = new bool[ButtonCount];
+        protected readonly bool[] vigemButtons = new bool[ButtonCount];
+
+        // Controller definitions decode their own report offsets, then submit this canonical
+        // contact shape to the shared activation/actions/pointer pipeline below. Sony touchpads
+        // use the same four-byte packed contact representation but place it at different offsets.
+        protected struct TouchContact {
+            internal bool Active;
+            internal byte Id;
+            internal int X;
+            internal int Y;
+        }
+
+        protected TouchContact touchpadFirstContact;
+        protected TouchContact touchpadSecondContact;
+        protected bool touchpadContactActive;
+        protected byte touchpadContactId;
+        protected int touchpadLastX;
+        protected int touchpadLastY;
+        protected float touchpadMovementRemainderX;
+        protected float touchpadMovementRemainderY;
+        protected bool touchpadTapTracking;
+        protected bool touchpadTapRejected;
+        protected byte touchpadTapContactId;
+        protected int touchpadTapStartX;
+        protected int touchpadTapStartY;
+        protected long touchpadTapStartTimestamp;
+        protected int touchpadPreviousContactCount;
+        protected long touchpadLastTapTimestamp;
+        protected int touchpadLastTapX;
+        protected int touchpadLastTapY;
+        protected bool touchpadTapHoldActive;
+        protected byte touchpadTapHoldContactId;
+        protected string touchpadTapHoldMapping;
+
+        // Both Sony pads use roughly 1,920 horizontal coordinate units. This permits normal
+        // fingertip jitter while rejecting a deliberate drag before it can become a tap action.
+        protected const int TouchpadTapMaxTravel = 48;
+        protected const double TouchpadTapMaxSeconds = 0.25;
+        protected const double TouchpadTapHoldDelaySeconds = 0.25;
+        protected const int TouchpadDoubleTapMaxDistance = 96;
+        protected const double TouchpadDoubleTapWindowSeconds = 0.35;
+
+        protected static TouchContact ReadPackedTouchContact(byte[] report, int offset) {
+            byte status = report[offset];
+            return new TouchContact {
+                Active = (status & 0x80) == 0,
+                Id = (byte)(status & 0x7F),
+                X = report[offset + 1] | ((report[offset + 2] & 0x0F) << 8),
+                Y = ((report[offset + 2] & 0xF0) >> 4) | (report[offset + 3] << 4),
+            };
+        }
+
+        protected void SubmitTouchpadReport(TouchContact first, TouchContact second) {
+            touchpadFirstContact = first;
+            touchpadSecondContact = second;
+        }
+
+        protected void ResetTouchpadGestureState() {
+            ReleaseTouchpadTapHold();
+            touchpadTapTracking = false;
+            touchpadTapRejected = false;
+            touchpadPreviousContactCount = 0;
+            touchpadLastTapTimestamp = 0;
+            touchpadMovementRemainderX = 0.0f;
+            touchpadMovementRemainderY = 0.0f;
+        }
+
+        protected void TriggerTouchpadTap() {
+            string mapping = MappingValue("touchpad_tap");
+            if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return;
+
+            // Key/mouse targets are discrete clicks. Controller targets become a one-report
+            // virtual-button pulse, using the same joy_N output convention as physical remaps.
+            Simulate(mapping);
+            foreach (string part in mapping.Split('+')) {
+                if (!part.StartsWith("joy_"))
+                    continue;
+
+                int buttonIndex;
+                if (Int32.TryParse(part.Substring(4), out buttonIndex) &&
+                    buttonIndex >= 0 && buttonIndex < buttons.Length)
+                    buttons[buttonIndex] = true;
+            }
+        }
+
+        protected bool BeginTouchpadTapHold(TouchContact contact) {
+            string mapping = MappingValue("touchpad_tap");
+            if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return false;
+
+            touchpadTapHoldActive = true;
+            touchpadTapHoldContactId = contact.Id;
+            touchpadTapHoldMapping = mapping;
+            foreach (string part in mapping.Split('+')) {
+                int code;
+                if (part.StartsWith("key_") && Int32.TryParse(part.Substring(4), out code))
+                    form.SimulateKeyHold(code);
+                else if (part.StartsWith("mse_") && Int32.TryParse(part.Substring(4), out code))
+                    form.SimulateButtonHold(code);
+            }
+            ApplyTouchpadTapHoldControllerButtons();
+            return true;
+        }
+
+        protected void ApplyTouchpadTapHoldControllerButtons() {
+            if (!touchpadTapHoldActive || String.IsNullOrEmpty(touchpadTapHoldMapping))
+                return;
+
+            foreach (string part in touchpadTapHoldMapping.Split('+')) {
+                int buttonIndex;
+                if (part.StartsWith("joy_") &&
+                    Int32.TryParse(part.Substring(4), out buttonIndex) &&
+                    buttonIndex >= 0 && buttonIndex < buttons.Length)
+                    buttons[buttonIndex] = true;
+            }
+        }
+
+        protected void ReleaseTouchpadTapHold() {
+            if (!touchpadTapHoldActive)
+                return;
+
+            foreach (string part in (touchpadTapHoldMapping ?? String.Empty).Split('+')) {
+                int code;
+                if (part.StartsWith("key_") && Int32.TryParse(part.Substring(4), out code))
+                    form.SimulateKeyRelease(code);
+                else if (part.StartsWith("mse_") && Int32.TryParse(part.Substring(4), out code))
+                    form.SimulateButtonRelease(code);
+            }
+            touchpadTapHoldActive = false;
+            touchpadTapHoldMapping = null;
+        }
+
+        protected void ProcessTouchpadGestures() {
+            int contactCount = (touchpadFirstContact.Active ? 1 : 0) +
+                               (touchpadSecondContact.Active ? 1 : 0);
+            long timestamp = Stopwatch.GetTimestamp();
+            string tapHoldMode = ControllerMappings.OptionValue(
+                mappingProfileId, "TouchpadTapAndHold");
+            // Profiles written by the earlier Enabled/Disabled toggle remain valid.
+            if (String.Equals(tapHoldMode, "true", StringComparison.OrdinalIgnoreCase))
+                tapHoldMode = "hold";
+            else if (String.Equals(tapHoldMode, "false", StringComparison.OrdinalIgnoreCase))
+                tapHoldMode = "disabled";
+            bool holdToDrag = tapHoldMode == "hold";
+            bool doubleTapToDrag = tapHoldMode == "double_tap";
+
+            if (!holdToDrag && !doubleTapToDrag) {
+                ReleaseTouchpadTapHold();
+                touchpadLastTapTimestamp = 0;
+            }
+
+            if (touchpadTapHoldActive) {
+                bool heldContactActive =
+                    (touchpadFirstContact.Active &&
+                     touchpadFirstContact.Id == touchpadTapHoldContactId) ||
+                    (touchpadSecondContact.Active &&
+                     touchpadSecondContact.Id == touchpadTapHoldContactId);
+                if (!heldContactActive || contactCount != 1 ||
+                    buttons[(int)Button.TOUCHPAD]) {
+                    ReleaseTouchpadTapHold();
+                } else {
+                    ApplyTouchpadTapHoldControllerButtons();
+                }
+                touchpadPreviousContactCount = contactCount;
+                return;
+            }
+
+            if (!doubleTapToDrag) {
+                touchpadLastTapTimestamp = 0;
+            } else if (touchpadLastTapTimestamp != 0 &&
+                (timestamp - touchpadLastTapTimestamp) / (double)Stopwatch.Frequency >
+                    TouchpadDoubleTapWindowSeconds) {
+                touchpadLastTapTimestamp = 0;
+            }
+
+            // A candidate begins only on a clean zero-to-one-finger transition. This prevents
+            // lifting one finger after a two-finger gesture from turning the remaining finger
+            // into a fresh tap candidate halfway through its contact.
+            if (!touchpadTapTracking && touchpadPreviousContactCount == 0 && contactCount == 1) {
+                TouchContact contact = touchpadFirstContact.Active
+                    ? touchpadFirstContact : touchpadSecondContact;
+                int doubleTapDx = contact.X - touchpadLastTapX;
+                int doubleTapDy = contact.Y - touchpadLastTapY;
+                bool beginDoubleTapHold = doubleTapToDrag && touchpadLastTapTimestamp != 0 &&
+                    doubleTapDx * doubleTapDx + doubleTapDy * doubleTapDy <=
+                        TouchpadDoubleTapMaxDistance * TouchpadDoubleTapMaxDistance &&
+                    BeginTouchpadTapHold(contact);
+                touchpadLastTapTimestamp = 0;
+                if (beginDoubleTapHold) {
+                    touchpadTapTracking = false;
+                    touchpadPreviousContactCount = contactCount;
+                    return;
+                }
+
+                touchpadTapTracking = true;
+                touchpadTapRejected = false;
+                touchpadTapContactId = contact.Id;
+                touchpadTapStartX = contact.X;
+                touchpadTapStartY = contact.Y;
+                touchpadTapStartTimestamp = timestamp;
+            }
+
+            if (touchpadTapTracking) {
+                TouchContact tracked = touchpadFirstContact;
+                bool trackedActive = touchpadFirstContact.Active &&
+                                     touchpadFirstContact.Id == touchpadTapContactId;
+                if (!trackedActive && touchpadSecondContact.Active &&
+                    touchpadSecondContact.Id == touchpadTapContactId) {
+                    tracked = touchpadSecondContact;
+                    trackedActive = true;
+                }
+
+                double elapsed = (timestamp - touchpadTapStartTimestamp) /
+                                 (double)Stopwatch.Frequency;
+                if (contactCount > 1 || buttons[(int)Button.TOUCHPAD])
+                    touchpadTapRejected = true;
+
+                if (trackedActive) {
+                    int dx = tracked.X - touchpadTapStartX;
+                    int dy = tracked.Y - touchpadTapStartY;
+                    if (dx * dx + dy * dy > TouchpadTapMaxTravel * TouchpadTapMaxTravel)
+                        touchpadTapRejected = true;
+
+                    // A short contact still becomes the ordinary Tap action on lift. Keeping the
+                    // same finger down past the threshold turns that pending click into a real
+                    // held action, so subsequent pointer motion naturally becomes a drag.
+                    if (holdToDrag && !touchpadTapRejected &&
+                        elapsed >= TouchpadTapHoldDelaySeconds &&
+                        BeginTouchpadTapHold(tracked)) {
+                        touchpadTapTracking = false;
+                        touchpadPreviousContactCount = contactCount;
+                        return;
+                    }
+                } else if (contactCount > 0) {
+                    // Contact ID replacement without the surface becoming empty is a handoff,
+                    // not the end of a one-finger tap.
+                    touchpadTapRejected = true;
+                }
+
+                if (contactCount == 0) {
+                    if (!touchpadTapRejected && elapsed <= TouchpadTapMaxSeconds) {
+                        TriggerTouchpadTap();
+                        if (doubleTapToDrag) {
+                            touchpadLastTapTimestamp = timestamp;
+                            touchpadLastTapX = touchpadTapStartX;
+                            touchpadLastTapY = touchpadTapStartY;
+                        }
+                    }
+                    touchpadTapTracking = false;
+                    touchpadTapRejected = false;
+                }
+            }
+
+            touchpadPreviousContactCount = contactCount;
+        }
 
         protected string MappingValue(string key) {
             if (mappingProfileId == null)
@@ -914,6 +1186,9 @@ namespace BetterJoyForCemu {
                 return;
 
             ReleaseGyroMouseActions();
+            ReleaseTouchpadMouseActions();
+            if (HasTouchpad)
+                ReleaseMappedHold(MappingValue("touchpad_click"));
             ReleaseMappedHold(MappingValue(isLeft ? "sl_l" : "sl_r"));
             ReleaseMappedHold(MappingValue(isLeft ? "sr_l" : "sr_r"));
             if (hasShaked)
@@ -924,10 +1199,14 @@ namespace BetterJoyForCemu {
             active_gyro = false;
             activeGyroLeftStick = false;
             activeGyroRightStick = false;
+            activeTouchpadMouse = false;
             prevActiveGyroMouseComboHeld = false;
             prevActiveGyroLeftStickComboHeld = false;
             prevActiveGyroRightStickComboHeld = false;
+            prevActiveTouchpadMouseComboHeld = false;
             gyroMouseEnabledThisReport = false;
+            touchpadMouseEnabledThisReport = false;
+            ResetTouchpadGestureState();
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
             prevResetMouseComboHeld = false;
@@ -982,15 +1261,15 @@ namespace BetterJoyForCemu {
             return true;
         }
 
-        // Gyro activation mappings have three explicit states:
+        // Pointer/output activation mappings have three explicit states:
         //   always  - active without a bind
         //   0       - disabled
         //   combo   - controlled by the profile's hold/toggle preference
         // The old unbound value is migrated to "always" by ControllerMappings, so 0 can safely
-        // mean disabled for every new output without unexpectedly enabling all three.
-        protected bool UpdateGyroActivation(string key, ref bool toggledActive,
-                                           ref bool previousComboHeld,
-                                           out bool justEnabled) {
+        // mean disabled for every new output without unexpectedly enabling every output.
+        protected bool UpdateOutputActivation(string key, ref bool toggledActive,
+                                              ref bool previousComboHeld,
+                                              out bool justEnabled) {
             string mapping = MappingValue(key);
             if (mapping == "always") {
                 toggledActive = false;
@@ -1057,6 +1336,134 @@ namespace BetterJoyForCemu {
                         gyroOnlyReservedButtons[buttonIndex] = true;
                 }
             }
+        }
+
+        protected void RefreshTouchpadOnlyButtonReservations() {
+            bool changed = false;
+            for (int i = 0; i < TouchpadOnlyBindKeys.Length; i++) {
+                string value = MappingValue(TouchpadOnlyBindKeys[i]);
+                if (lastTouchpadOnlyBindValues[i] != value) {
+                    lastTouchpadOnlyBindValues[i] = value;
+                    changed = true;
+                }
+            }
+
+            if (!changed)
+                return;
+
+            Array.Clear(touchpadOnlyReservedButtons, 0, touchpadOnlyReservedButtons.Length);
+            foreach (string value in lastTouchpadOnlyBindValues) {
+                if (String.IsNullOrEmpty(value) || value == "0")
+                    continue;
+
+                foreach (string part in value.Split('+')) {
+                    if (!part.StartsWith("joy_"))
+                        continue;
+
+                    int buttonIndex;
+                    if (Int32.TryParse(part.Substring(4), out buttonIndex) &&
+                        buttonIndex >= 0 && buttonIndex < touchpadOnlyReservedButtons.Length)
+                        touchpadOnlyReservedButtons[buttonIndex] = true;
+                }
+            }
+        }
+
+        protected void ProcessTouchpadMouse() {
+            bool enabled = HasTouchpad && touchpadMouseEnabledThisReport;
+            if (!enabled) {
+                ReleaseTouchpadMouseActions();
+                return;
+            }
+
+            SimulateMouseActionButton("touchpad_left_click",
+                (int)WindowsInput.Events.ButtonCode.Left, true);
+            SimulateMouseActionButton("touchpad_right_click",
+                (int)WindowsInput.Events.ButtonCode.Right, true);
+            SimulateMouseActionButton("touchpad_center_click",
+                (int)WindowsInput.Events.ButtonCode.Middle, true);
+            SimulateMouseActionScroll("touchpad_scroll_up", true, true);
+            SimulateMouseActionScroll("touchpad_scroll_down", false, true);
+
+            TouchContact current = touchpadFirstContact;
+            bool hasContact = touchpadFirstContact.Active;
+            if (touchpadContactActive) {
+                if (touchpadFirstContact.Active && touchpadFirstContact.Id == touchpadContactId) {
+                    current = touchpadFirstContact;
+                    hasContact = true;
+                } else if (touchpadSecondContact.Active &&
+                           touchpadSecondContact.Id == touchpadContactId) {
+                    current = touchpadSecondContact;
+                    hasContact = true;
+                } else {
+                    // The tracked finger lifted. A remaining finger becomes a new baseline in
+                    // this report; never turn the absolute distance between fingers into motion.
+                    hasContact = touchpadFirstContact.Active || touchpadSecondContact.Active;
+                    current = touchpadFirstContact.Active
+                        ? touchpadFirstContact : touchpadSecondContact;
+                    touchpadContactActive = false;
+                }
+            } else if (!hasContact && touchpadSecondContact.Active) {
+                current = touchpadSecondContact;
+                hasContact = true;
+            }
+
+            if (!hasContact) {
+                touchpadContactActive = false;
+                touchpadMovementRemainderX = 0.0f;
+                touchpadMovementRemainderY = 0.0f;
+                return;
+            }
+
+            if (!touchpadContactActive || current.Id != touchpadContactId) {
+                touchpadContactActive = true;
+                touchpadContactId = current.Id;
+                touchpadLastX = current.X;
+                touchpadLastY = current.Y;
+                touchpadMovementRemainderX = 0.0f;
+                touchpadMovementRemainderY = 0.0f;
+                return;
+            }
+
+            int dx = current.X - touchpadLastX;
+            int dy = current.Y - touchpadLastY;
+            touchpadLastX = current.X;
+            touchpadLastY = current.Y;
+
+            string pointerLock = MappingValue("touchpad_pointer_lock");
+            bool bindingLocked = !String.IsNullOrEmpty(pointerLock) &&
+                pointerLock != "0" && IsComboHeld(pointerLock);
+            bool clickLocked = ProfileBoolOption("TouchpadClickMovementLockout") &&
+                buttons[(int)Button.TOUCHPAD];
+            if (bindingLocked || clickLocked) {
+                touchpadMovementRemainderX = 0.0f;
+                touchpadMovementRemainderY = 0.0f;
+                return;
+            }
+
+            int sensitivity = Math.Max(10, Math.Min(400,
+                ProfileIntOption("TouchpadSensitivity", 100)));
+            float scaledX = dx * sensitivity / 100.0f + touchpadMovementRemainderX;
+            float scaledY = dy * sensitivity / 100.0f + touchpadMovementRemainderY;
+            int moveX = (int)scaledX;
+            int moveY = (int)scaledY;
+            touchpadMovementRemainderX = scaledX - moveX;
+            touchpadMovementRemainderY = scaledY - moveY;
+            if ((moveX != 0 || moveY != 0) && form != null)
+                form.SimulateMoveBy(moveX, moveY);
+        }
+
+        protected void ReleaseTouchpadMouseActions() {
+            touchpadContactActive = false;
+            touchpadMovementRemainderX = 0.0f;
+            touchpadMovementRemainderY = 0.0f;
+            SimulateMouseActionButton("touchpad_left_click",
+                (int)WindowsInput.Events.ButtonCode.Left, false);
+            SimulateMouseActionButton("touchpad_right_click",
+                (int)WindowsInput.Events.ButtonCode.Right, false);
+            SimulateMouseActionButton("touchpad_center_click",
+                (int)WindowsInput.Events.ButtonCode.Middle, false);
+            SimulateMouseActionScroll("touchpad_scroll_up", true, false);
+            SimulateMouseActionScroll("touchpad_scroll_down", false, false);
         }
 
         protected bool OwnsGyroMouse() {
@@ -1131,8 +1538,10 @@ namespace BetterJoyForCemu {
         protected bool[] GetButtonsForVigem() {
             bool gyroMouseConsumesButtons = PairHasActiveGyroMouse() &&
                 ProfileBoolOption("GyroMouseInhibitButtons");
+            bool touchpadMouseConsumesButtons = touchpadMouseEnabledThisReport &&
+                ProfileBoolOption("TouchpadMouseInhibitButtons");
             bool customGuideHeld = TryGetHeldCustomGuideMapping(out string guideMapping);
-            if (!gyroMouseConsumesButtons && !customGuideHeld)
+            if (!gyroMouseConsumesButtons && !touchpadMouseConsumesButtons && !customGuideHeld)
                 return buttons;
 
             Array.Copy(buttons, vigemButtons, buttons.Length);
@@ -1142,6 +1551,14 @@ namespace BetterJoyForCemu {
                      canonicalIndex++) {
                     if (gyroOnlyReservedButtons[canonicalIndex])
                         vigemButtons[CanonicalButtonToLocalVigemIndex(canonicalIndex)] = false;
+                }
+            }
+            if (touchpadMouseConsumesButtons) {
+                for (int buttonIndex = 0;
+                     buttonIndex < touchpadOnlyReservedButtons.Length;
+                     buttonIndex++) {
+                    if (touchpadOnlyReservedButtons[buttonIndex])
+                        vigemButtons[buttonIndex] = false;
                 }
             }
 
@@ -1344,6 +1761,13 @@ namespace BetterJoyForCemu {
                 Simulate(MappingValue("home"));
             SimulateContinous((int)Button.CAPTURE, MappingValue("capture"));
             SimulateContinous((int)Button.HOME, MappingValue("home"));
+            if (HasTouchpad) {
+                if (buttons_down[(int)Button.TOUCHPAD])
+                    Simulate(MappingValue("touchpad_click"), false, false);
+                if (buttons_up[(int)Button.TOUCHPAD])
+                    Simulate(MappingValue("touchpad_click"), false, true);
+                SimulateContinous((int)Button.TOUCHPAD, MappingValue("touchpad_click"));
+            }
 
             if (isLeft) {
                 if (buttons_down[(int)Button.SL])
@@ -1380,24 +1804,33 @@ namespace BetterJoyForCemu {
                 : (float)((nowTimestamp - lastDoThingsTimestamp) / (double)Stopwatch.Frequency);
             lastDoThingsTimestamp = nowTimestamp;
 
-            // Evaluate all three profile outputs independently. A real mouse activation edge
+            // Evaluate the gyro and touchpad profile outputs independently. A real gyro-mouse edge
             // recenters; Always Active intentionally has no edge, matching the old unbound
             // activation behavior.
             bool gyroMouseJustEnabled;
-            gyroMouseEnabledThisReport = UpdateGyroActivation(
+            gyroMouseEnabledThisReport = UpdateOutputActivation(
                 "active_gyro_mouse", ref active_gyro,
                 ref prevActiveGyroMouseComboHeld, out gyroMouseJustEnabled);
             bool gyroLeftStickJustEnabled;
-            gyroLeftStickActiveThisReport = UpdateGyroActivation(
+            gyroLeftStickActiveThisReport = UpdateOutputActivation(
                 "active_gyro_left_stick", ref activeGyroLeftStick,
                 ref prevActiveGyroLeftStickComboHeld, out gyroLeftStickJustEnabled);
             bool gyroRightStickJustEnabled;
-            gyroRightStickActiveThisReport = UpdateGyroActivation(
+            gyroRightStickActiveThisReport = UpdateOutputActivation(
                 "active_gyro_right_stick", ref activeGyroRightStick,
                 ref prevActiveGyroRightStickComboHeld, out gyroRightStickJustEnabled);
+            bool touchpadMouseJustEnabled = false;
+            touchpadMouseEnabledThisReport = HasTouchpad && UpdateOutputActivation(
+                "active_touchpad_mouse", ref activeTouchpadMouse,
+                ref prevActiveTouchpadMouseComboHeld, out touchpadMouseJustEnabled);
             gyroStickReportDt = dt;
 
             RefreshGyroOnlyButtonReservations();
+            if (HasTouchpad)
+                RefreshTouchpadOnlyButtonReservations();
+
+            if (HasTouchpad)
+                ProcessTouchpadGestures();
 
             bool ownsGyroMouse = OwnsGyroMouse();
             bool gyroMouseActionsEnabled = ownsGyroMouse && gyroMouseEnabledThisReport;
@@ -1523,14 +1956,15 @@ namespace BetterJoyForCemu {
             // button state on every controller report, including reports where gyro-mouse is
             // inactive or this half no longer owns it. Otherwise leaving either condition while
             // a synthetic button is down skips the only path that could send its matching up.
-            SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left,
-                                    gyroMouseActionsEnabled);
-            SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right,
-                                    gyroMouseActionsEnabled);
-            SimulateGyroMouseButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle,
-                                    gyroMouseActionsEnabled);
-            SimulateGyroMouseScroll("scroll_up", true, gyroMouseActionsEnabled);
-            SimulateGyroMouseScroll("scroll_down", false, gyroMouseActionsEnabled);
+            SimulateMouseActionButton("left_click", (int)WindowsInput.Events.ButtonCode.Left,
+                                      gyroMouseActionsEnabled);
+            SimulateMouseActionButton("right_click", (int)WindowsInput.Events.ButtonCode.Right,
+                                      gyroMouseActionsEnabled);
+            SimulateMouseActionButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle,
+                                      gyroMouseActionsEnabled);
+            SimulateMouseActionScroll("scroll_up", true, gyroMouseActionsEnabled);
+            SimulateMouseActionScroll("scroll_down", false, gyroMouseActionsEnabled);
+            ProcessTouchpadMouse();
         }
 
         protected static short CastStickValue(float stick_value) {
@@ -1779,7 +2213,8 @@ namespace BetterJoyForCemu {
                 output.share = buttons[(int)Button.CAPTURE];
                 output.options = buttons[(int)Button.PLUS];
                 output.ps = buttons[(int)Button.HOME];
-                output.touchpad = buttons[(int)Button.MINUS];
+                output.touchpad = buttons[(int)(input.HasTouchpad
+                    ? Button.TOUCHPAD : Button.MINUS)];
                 output.shoulder_left = buttons[(int)Button.SHOULDER_1];
                 output.shoulder_right = buttons[(int)Button.SHOULDER2_1];
                 output.thumb_left = buttons[(int)Button.STICK];

@@ -1945,24 +1945,24 @@ namespace BetterJoyForCemu {
         // Int32.Parse(val.Substring(4)) on the whole value, which crashed the poll thread with a
         // FormatException the moment val held a "+"-joined combo instead of one plain joy_N.
         // ConcurrentDictionary, not plain Dictionary: PrepareForMappingProfileChange (join/split
-        // thread, via ReleaseGyroMouseActions) reads/writes this while the poll thread
-        // concurrently does the same via SimulateGyroMouseButton/Scroll every report.
-        protected readonly ConcurrentDictionary<string, bool> gyroMouseComboHeld =
+        // thread, via the release helpers) reads/writes this while the poll thread concurrently
+        // reconciles gyro and touchpad mouse actions every report.
+        protected readonly ConcurrentDictionary<string, bool> desktopActionComboHeld =
             new ConcurrentDictionary<string, bool>();
 
-        // Shared rising/falling-edge bookkeeping for both gyro-mouse-only actions below - resolve
+        // Shared rising/falling-edge bookkeeping for gyro and touchpad mouse actions - resolve
         // configKey's current bind, evaluate whether it's held, and report whether it was held on
         // the previous call so each caller only needs its own 2-line edge reaction.
-        protected bool UpdateGyroMouseComboHeld(string configKey, bool enabled, out bool wasHeld) {
+        protected bool UpdateDesktopActionComboHeld(string configKey, bool enabled, out bool wasHeld) {
             string val = MappingValue(configKey);
             bool held = enabled && val != "0" && IsComboHeld(val);
-            wasHeld = gyroMouseComboHeld.TryGetValue(configKey, out bool prev) && prev;
-            gyroMouseComboHeld[configKey] = held;
+            wasHeld = desktopActionComboHeld.TryGetValue(configKey, out bool prev) && prev;
+            desktopActionComboHeld[configKey] = held;
             return held;
         }
 
-        protected void SimulateGyroMouseButton(string configKey, int buttonCode, bool enabled) {
-            bool held = UpdateGyroMouseComboHeld(configKey, enabled, out bool wasHeld);
+        protected void SimulateMouseActionButton(string configKey, int buttonCode, bool enabled) {
+            bool held = UpdateDesktopActionComboHeld(configKey, enabled, out bool wasHeld);
 
             if (held && !wasHeld)
                 form.SimulateButtonHold(buttonCode);
@@ -1972,8 +1972,8 @@ namespace BetterJoyForCemu {
 
         // Scroll has no hold/release equivalent - just a discrete tick per press, matching a
         // physical scroll wheel's own click detents rather than a continuous rate while held.
-        protected void SimulateGyroMouseScroll(string configKey, bool up, bool enabled) {
-            bool held = UpdateGyroMouseComboHeld(configKey, enabled, out bool wasHeld);
+        protected void SimulateMouseActionScroll(string configKey, bool up, bool enabled) {
+            bool held = UpdateDesktopActionComboHeld(configKey, enabled, out bool wasHeld);
 
             if (held && !wasHeld)
                 form.SimulateScroll(up);
@@ -1981,18 +1981,18 @@ namespace BetterJoyForCemu {
 
         // Final backstop, called by Poll()'s shell after the read loop exits (a disconnect/detach
         // may prevent another report from arriving to naturally release these) - releases all
-        // five gyro-mouse-only actions. Fully shared, no per-device variance expected, so this is
-        // a plain method rather than a virtual hook (unlike the other Poll()-shell hooks, which
-        // exist specifically because their bodies differ per device).
+        // five gyro-mouse-only actions. The edge machinery itself is shared with touchpad mouse;
+        // this helper releases only the gyro mappings. No per-device variance is expected, so it
+        // is a plain method rather than a virtual hook.
         protected void ReleaseGyroMouseActions() {
-            SimulateGyroMouseButton("left_click", (int)WindowsInput.Events.ButtonCode.Left,
-                                    false);
-            SimulateGyroMouseButton("right_click", (int)WindowsInput.Events.ButtonCode.Right,
-                                    false);
-            SimulateGyroMouseButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle,
-                                    false);
-            SimulateGyroMouseScroll("scroll_up", true, false);
-            SimulateGyroMouseScroll("scroll_down", false, false);
+            SimulateMouseActionButton("left_click", (int)WindowsInput.Events.ButtonCode.Left,
+                                      false);
+            SimulateMouseActionButton("right_click", (int)WindowsInput.Events.ButtonCode.Right,
+                                      false);
+            SimulateMouseActionButton("center_click", (int)WindowsInput.Events.ButtonCode.Middle,
+                                      false);
+            SimulateMouseActionScroll("scroll_up", true, false);
+            SimulateMouseActionScroll("scroll_down", false, false);
         }
 
     }

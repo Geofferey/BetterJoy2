@@ -17,6 +17,7 @@ namespace BetterJoyForCemu {
         public string DisplayName { get; set; }
         public long ConnectionSequence { get; set; }
         public bool IsConnected { get; set; }
+        public ControllerKind? Kind { get; set; }
 
         public override string ToString() {
             return DisplayName;
@@ -39,6 +40,9 @@ namespace BetterJoyForCemu {
             "active_gyro_left_stick", "active_gyro_right_stick",
             "left_click", "right_click",
             "center_click", "scroll_up", "scroll_down", "clench_gyro", "ratchet_gyro",
+            "touchpad_click", "touchpad_tap", "active_touchpad_mouse",
+            "touchpad_left_click", "touchpad_right_click", "touchpad_center_click",
+            "touchpad_scroll_up", "touchpad_scroll_down", "touchpad_pointer_lock",
         };
 
         // Profile-owned behavior which historically lived in App.config. App.config remains the
@@ -47,6 +51,8 @@ namespace BetterJoyForCemu {
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
+            "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
+            "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "SwapAB", "SwapXY", "HomeLEDOn",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
@@ -388,6 +394,8 @@ namespace BetterJoyForCemu {
                 return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
+            if (key == "active_touchpad_mouse")
+                return "0";
             return AppConfigBackedKeys.Contains(key) ? "0" : Config.GetDefaultValue(key);
         }
 
@@ -602,6 +610,7 @@ namespace BetterJoyForCemu {
                     DisplayName = "Joy-Con Pair (L " + DeviceSuffix(left) + " / R " + DeviceSuffix(right) + ")",
                     ConnectionSequence = Math.Max(left.virtualControllerSequence, right.virtualControllerSequence),
                     IsConnected = true,
+                    Kind = null,
                 };
             }
 
@@ -631,6 +640,7 @@ namespace BetterJoyForCemu {
                 DisplayName = type + " (" + DeviceSuffix(controller) + ")",
                 ConnectionSequence = controller.virtualControllerSequence,
                 IsConnected = true,
+                Kind = controller.Kind,
             };
         }
 
@@ -670,6 +680,7 @@ namespace BetterJoyForCemu {
                     DisplayName = DisconnectedDisplayName(profileId),
                     ConnectionSequence = -1,
                     IsConnected = false,
+                    Kind = KindFromProfileId(profileId),
                 };
             }
 
@@ -705,6 +716,8 @@ namespace BetterJoyForCemu {
                 return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
+            if (key == "active_touchpad_mouse")
+                return "0";
 
             string value = AppConfigBackedKeys.Contains(key)
                 ? ConfigurationManager.AppSettings[key]
@@ -839,6 +852,28 @@ namespace BetterJoyForCemu {
             }
 
             return name + " (disconnected)";
+        }
+
+        private static ControllerKind? KindFromProfileId(string profileId) {
+            if (String.IsNullOrEmpty(profileId))
+                return null;
+            if (profileId.StartsWith("dualsense:", StringComparison.Ordinal))
+                return ControllerKind.DualSense;
+            if (profileId.StartsWith("dualshock4:", StringComparison.Ordinal))
+                return ControllerKind.DualShock4;
+            if (profileId.StartsWith("pro:", StringComparison.Ordinal))
+                return ControllerKind.Pro;
+            if (profileId.StartsWith("snes:", StringComparison.Ordinal))
+                return ControllerKind.Snes;
+            if (profileId.StartsWith("n64:", StringComparison.Ordinal))
+                return ControllerKind.N64;
+            if (profileId.StartsWith("solo-left:", StringComparison.Ordinal) ||
+                profileId.StartsWith("vertical-left:", StringComparison.Ordinal))
+                return ControllerKind.Left;
+            if (profileId.StartsWith("solo-right:", StringComparison.Ordinal) ||
+                profileId.StartsWith("vertical-right:", StringComparison.Ordinal))
+                return ControllerKind.Right;
+            return null;
         }
 
         private static string IdentitySuffix(string identity) {
