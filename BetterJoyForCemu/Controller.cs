@@ -601,6 +601,11 @@ namespace BetterJoyForCemu {
         // pass, generically, regardless of device kind.
         public virtual void SetHomeLight(bool on) { }
 
+        // No-op for controllers without configurable RGB lighting. Sony controller definitions
+        // override this with their transport-specific lightbar output reports; callers can apply
+        // one profile color generically without importing device protocol details.
+        public virtual void SetLightColor(byte red, byte green, byte blue) { }
+
 
         // The canonical per-report button state every subclass's report parser populates (see
         // the Button enum above) - protected, not public, since nothing outside a Controller

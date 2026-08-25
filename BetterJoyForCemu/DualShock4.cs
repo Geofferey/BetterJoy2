@@ -14,8 +14,8 @@ namespace BetterJoyForCemu {
     // scope started by matching how DualSense itself began (5e7355b, "Add baseline DualSense
     // support: buttons, sticks, and triggers"). Gyro/accel now feeds the same shared calibrated
     // mouse/stick pipeline as DualSense, while DS4-specific report framing, timestamps, factory
-    // calibration layout, and sensor axes remain defined here. Rumble, lightbar, and touchpad are
-    // still deferred.
+    // calibration layout, sensor axes, and transport-specific lightbar output remain defined
+    // here. Touchpad input feeds the shared Controller pipeline.
     //
     // Byte offsets below follow the classic DualShock 4 HID report layout - the single most
     // independently re-verified third-party controller format in existence (DS4Windows, the
@@ -45,6 +45,13 @@ namespace BetterJoyForCemu {
         private const int DualShock4MaxReportLen = 78;
         private long lastDualShock4RawDumpTimestamp = 0;
         private long lastDualShock4ImuLogTimestamp = 0;
+        private bool lightbarTransportKnown;
+        private bool lightbarUpdatePending = true;
+        private byte lightbarRed;
+        private byte lightbarGreen;
+        private byte lightbarBlue = 255;
+        private long lightbarApplyEarliestTimestamp;
+        private bool connectionLightFlashStarted;
 
         // DS4 carries a 16-bit sensor clock at common offsets 9-10. One tick is 16/3 microseconds,
         // as used by DS4Windows; unsigned subtraction handles the frequent 16-bit rollover.
@@ -136,6 +143,17 @@ namespace BetterJoyForCemu {
             if (state > state_.DROPPED && !isUSB) {
                 BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 state = state_.DROPPED;
+            }
+        }
+
+        public override void SetLightColor(byte red, byte green, byte blue) {
+            lightbarRed = red;
+            lightbarGreen = green;
+            lightbarBlue = blue;
+            lightbarUpdatePending = true;
+            if (lightbarTransportKnown) {
+                lightbarUpdatePending = !SendDualShock4Lightbar(
+                    lightbarRed, lightbarGreen, lightbarBlue);
             }
         }
 
@@ -247,6 +265,32 @@ namespace BetterJoyForCemu {
                 isUSB = reportId == 0x01;
                 connection = isUSB ? 0x01 : 0x02;
                 int reportOffset = isUSB ? 1 : 3;
+                if (!lightbarTransportKnown) {
+                    lightbarTransportKnown = true;
+                    // A color written during the DS4's Bluetooth startup is accepted by HID but
+                    // then overwritten as the controller finishes entering extended-report mode.
+                    // Keep the profile color pending until that short initialization window ends.
+                    lightbarApplyEarliestTimestamp = Stopwatch.GetTimestamp() +
+                        Stopwatch.Frequency / 4;
+                }
+                if (lightbarUpdatePending) {
+                    long lightbarNow = Stopwatch.GetTimestamp();
+                    if (lightbarNow >= lightbarApplyEarliestTimestamp) {
+                        if (!connectionLightFlashStarted) {
+                            // DS4 finishes entering extended-report mode shortly after connect.
+                            // Once ready, show the same blue confirmation as DualSense before
+                            // applying this controller profile's assigned color.
+                            if (SendDualShock4Lightbar(0, 0, 255)) {
+                                connectionLightFlashStarted = true;
+                                lightbarApplyEarliestTimestamp = lightbarNow +
+                                    Stopwatch.Frequency / 4;
+                            }
+                        } else {
+                            lightbarUpdatePending = !SendDualShock4Lightbar(
+                                lightbarRed, lightbarGreen, lightbarBlue);
+                        }
+                    }
+                }
 
                 // Same "TEMPORARY diagnostic" pattern DualSense.cs used to find its own real
                 // offset mistakes - dump raw bytes to a file instead of guessing twice. Throttled
@@ -568,6 +612,41 @@ namespace BetterJoyForCemu {
             float range = plus - minus;
             float bias = plus - range / 2.0f;
             return (raw - bias) * (2.0f * AccelLsbPerG / range) / AccelLsbPerG;
+        }
+
+        // DualShock 4 main output report. USB uses report 0x05 with the common payload directly
+        // after the report ID. Bluetooth uses report 0x11, requests HID+CRC handling in its
+        // hardware-control byte, and appends an A2-seeded CRC32. In both forms valid_flag0 bit 1
+        // marks the RGB fields as authoritative. Layout follows the kernel hid-playstation DS4
+        // output structures so connection color and later profile changes share one path.
+        private bool SendDualShock4Lightbar(byte red, byte green, byte blue) {
+            bool bt = !isUSB;
+            int len = bt ? 78 : 32;
+            byte[] buf = new byte[len];
+            int commonOffset;
+            if (bt) {
+                buf[0] = 0x11;
+                buf[1] = 0xC4; // HID | CRC32 | 4 ms Bluetooth poll interval
+                buf[2] = 0x00; // audio control
+                commonOffset = 3;
+            } else {
+                buf[0] = 0x05;
+                commonOffset = 1;
+            }
+
+            buf[commonOffset] = 0x02; // DS4_OUTPUT_VALID_FLAG0_LED
+            buf[commonOffset + 5] = red;
+            buf[commonOffset + 6] = green;
+            buf[commonOffset + 7] = blue;
+
+            if (bt) {
+                uint crc = Crc32(0xA2, buf, len - 4);
+                buf[len - 4] = (byte)crc;
+                buf[len - 3] = (byte)(crc >> 8);
+                buf[len - 2] = (byte)(crc >> 16);
+                buf[len - 1] = (byte)(crc >> 24);
+            }
+            return HIDapi.hid_write(handle, buf, new UIntPtr((uint)len)) >= 0;
         }
     }
 }

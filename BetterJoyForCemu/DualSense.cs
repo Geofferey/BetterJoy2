@@ -35,7 +35,16 @@ namespace BetterJoyForCemu {
         protected override byte[] TriggerVal => triggerVal;
 
         private const int DualSenseMaxReportLen = 78; // Bluetooth report length; USB (64) fits the same buffer
-        private bool sentUsbActiveLightbar = false;
+        private bool lightbarTransportKnown;
+        private bool lightbarUpdatePending = true;
+        private byte lightbarRed;
+        private byte lightbarGreen;
+        private byte lightbarBlue = 255;
+        private readonly object lightbarOutputLock = new object();
+        private byte lightbarOutputSequence;
+        private bool lightbarControlReleased;
+        private bool connectionLightFlashStarted;
+        private long connectionLightColorTimestamp;
         private long lastDualSenseRawDumpTimestamp = 0;
         private long lastDualSenseImuLogTimestamp = 0;
         // GyroSubSamplePeriod override support - see GyroMath.cs's field comment. DualSense's real
@@ -264,6 +273,17 @@ namespace BetterJoyForCemu {
             }
         }
 
+        public override void SetLightColor(byte red, byte green, byte blue) {
+            lightbarRed = red;
+            lightbarGreen = green;
+            lightbarBlue = blue;
+            lightbarUpdatePending = true;
+            if (lightbarTransportKnown) {
+                SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
+                lightbarUpdatePending = false;
+            }
+        }
+
         // Generic MAC-based dedup runs in Controller.RetireDuplicateConnections(); this hook adds
         // DualSense's own Bluetooth-auto-disconnect tail on top, for the one case a plain MAC-based
         // drop doesn't fully clean up: a Bluetooth-connected DualSense that's now also connected
@@ -274,9 +294,8 @@ namespace BetterJoyForCemu {
         // the same way DS4Windows's DisconnectBT does (IOCTL_BTH_DISCONNECT_DEVICE).
         protected override void OnDuplicateRetired(Controller other) {
             if (other is DualSenseController && isUSB && !other.isUSB) {
-                // Blue lightbar confirmation is handled unconditionally on the first confirmed-USB
-                // read in ReceiveRaw (sentUsbActiveLightbar) - covers this case too, not just
-                // fresh/no-prior-BT USB connects.
+                // The profile lightbar color is applied on the first transport-confirmed read,
+                // covering this handoff as well as a fresh USB or Bluetooth connection.
                 bool disconnected = BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 form.AppendTextBox(disconnected
                     ? "Disconnected DualSense's Bluetooth link now that USB has taken over.\r\n"
@@ -362,13 +381,19 @@ namespace BetterJoyForCemu {
                 // stale Bluetooth link). Keep them in lockstep here, at the one place isUSB itself
                 // is corrected. See DOCS/CONTROLLERS-REFACTOR.md step 7.
                 connection = isUSB ? 0x01 : 0x02;
-                if (isUSB && !sentUsbActiveLightbar) {
-                    // Fires once per connection, on the first confirmed-USB read - covers every
-                    // USB-connect scenario (fresh plug-in, reconnect, with or without a prior
-                    // Bluetooth link), not just the "just force-disconnected a stale BT link" case
-                    // OnDuplicateRetired handles separately.
-                    sentUsbActiveLightbar = true;
-                    SendDualSenseLightbar(0, 0, 255);
+                lightbarTransportKnown = true;
+                if (lightbarUpdatePending) {
+                    long lightbarNow = Stopwatch.GetTimestamp();
+                    if (!connectionLightFlashStarted) {
+                        // Confirm every new USB or Bluetooth connection with a short blue light,
+                        // then replace it with the controller profile's assigned color.
+                        SendDualSenseLightbar(0, 0, 255);
+                        connectionLightFlashStarted = true;
+                        connectionLightColorTimestamp = lightbarNow + Stopwatch.Frequency / 4;
+                    } else if (lightbarNow >= connectionLightColorTimestamp) {
+                        SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
+                        lightbarUpdatePending = false;
+                    }
                 }
                 // hid_read_timeout does NOT strip the leading report-ID byte for either transport -
                 // byte 0 is a constant 0x01 (USB) or 0x31 (BT) report ID. USB has no further
@@ -787,39 +812,63 @@ namespace BetterJoyForCemu {
             HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
         }
 
-        // Sets the DualSense's lightbar to a solid color via an output report - used to give a
-        // visible confirmation that the controller is now active on USB right after its stale
-        // Bluetooth link gets disconnected (see OnDuplicateRetired). Layout matches
-        // SendDualSenseRumble; rumble flags are left at "not in use" since this report isn't
-        // rumble-related. RGB offsets (45/46/47 USB, 46/47/48 BT) and the fact that no separate
+        // Sets the DualSense's lightbar to the profile's solid RGB color via an output report.
+        // Layout matches SendDualSenseRumble; rumble flags are left at "not in use" since this
+        // report isn't rumble-related. RGB offsets (45/46/47 USB, 46/47/48 BT) and the fact that
+        // no separate
         // "enable lightbar" bit is needed beyond the same 0x55 feature-flags byte the rumble report
         // already sets - both confirmed via DS4Windows's DualSenseDevice.cs.
         private void SendDualSenseLightbar(byte red, byte green, byte blue) {
             bool bt = !isUSB;
-            int len = bt ? DualSenseMaxReportLen : 64;
-            byte[] buf = new byte[len];
-            if (bt) {
-                buf[0] = 0x31;
-                buf[1] = 0x02;
-                buf[2] = 0x0C; // rumble motors not in use for this report
-                buf[3] = 0x55;
-                buf[46] = red;
-                buf[47] = green;
-                buf[48] = blue;
-                uint crc = Crc32(0xA2, buf, len - 4);
-                buf[len - 4] = (byte)crc;
-                buf[len - 3] = (byte)(crc >> 8);
-                buf[len - 2] = (byte)(crc >> 16);
-                buf[len - 1] = (byte)(crc >> 24);
-            } else {
+            if (!bt) {
+                const int len = 64;
+                byte[] buf = new byte[len];
                 buf[0] = 0x02;
                 buf[1] = 0x0C; // rumble motors not in use for this report
                 buf[2] = 0x55;
                 buf[45] = red;
                 buf[46] = green;
                 buf[47] = blue;
+                HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
+                return;
             }
-            HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
+
+            lock (lightbarOutputLock) {
+                if (!lightbarControlReleased) {
+                    byte[] setup = CreateDualSenseBluetoothLightbarReport();
+                    const int commonOffset = 3;
+                    setup[commonOffset + 38] = 0x02; // lightbar setup control enable
+                    setup[commonOffset + 41] = 0x02; // release startup animation ownership
+                    WriteDualSenseBluetoothLightbarReport(setup);
+                    lightbarControlReleased = true;
+                }
+
+                byte[] color = CreateDualSenseBluetoothLightbarReport();
+                const int colorCommonOffset = 3;
+                color[colorCommonOffset + 1] = 0x04; // lightbar control enable
+                color[colorCommonOffset + 44] = red;
+                color[colorCommonOffset + 45] = green;
+                color[colorCommonOffset + 46] = blue;
+                WriteDualSenseBluetoothLightbarReport(color);
+            }
+        }
+
+        private byte[] CreateDualSenseBluetoothLightbarReport() {
+            byte[] buf = new byte[DualSenseMaxReportLen];
+            buf[0] = 0x31;
+            buf[1] = (byte)(lightbarOutputSequence << 4);
+            lightbarOutputSequence = (byte)((lightbarOutputSequence + 1) & 0x0F);
+            buf[2] = 0x10;
+            return buf;
+        }
+
+        private void WriteDualSenseBluetoothLightbarReport(byte[] buf) {
+            uint crc = Crc32(0xA2, buf, buf.Length - 4);
+            buf[buf.Length - 4] = (byte)crc;
+            buf[buf.Length - 3] = (byte)(crc >> 8);
+            buf[buf.Length - 2] = (byte)(crc >> 16);
+            buf[buf.Length - 1] = (byte)(crc >> 24);
+            HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
         }
     }
 }

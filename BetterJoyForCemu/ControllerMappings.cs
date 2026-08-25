@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Configuration;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
@@ -30,6 +31,7 @@ namespace BetterJoyForCemu {
     // become fully independent rather than retaining a hidden dependency on later global edits.
     public static class ControllerMappings {
         public const string FileName = "controller_mappings.xml";
+        public const string DefaultLightColor = "#0000FF";
 
         public static readonly string[] Keys = {
             "capture", "home", "guide", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
@@ -60,7 +62,7 @@ namespace BetterJoyForCemu {
             "TouchpadHorizontalScale", "TouchpadVerticalScale",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
-            "SwapAB", "SwapXY", "HomeLEDOn",
+            "SwapAB", "SwapXY", "HomeLEDOn", "LightColor",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
             "GyroStickAxisXLeft", "GyroStickAxisXRight",
@@ -872,6 +874,42 @@ namespace BetterJoyForCemu {
             }
 
             return name + " (disconnected)";
+        }
+
+        public static string NormalizeLightColor(string value) {
+            byte red, green, blue;
+            if (!TryParseLightColor(value, out red, out green, out blue))
+                return DefaultLightColor;
+            return String.Format(CultureInfo.InvariantCulture,
+                "#{0:X2}{1:X2}{2:X2}", red, green, blue);
+        }
+
+        public static bool TryParseLightColor(string value,
+                                              out byte red, out byte green, out byte blue) {
+            red = 0;
+            green = 0;
+            blue = 255;
+            string hex = (value ?? String.Empty).Trim();
+            if (hex.StartsWith("#", StringComparison.Ordinal))
+                hex = hex.Substring(1);
+            uint rgb;
+            if (hex.Length != 6 || !UInt32.TryParse(hex, NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture, out rgb))
+                return false;
+            red = (byte)(rgb >> 16);
+            green = (byte)(rgb >> 8);
+            blue = (byte)rgb;
+            return true;
+        }
+
+        public static void GetLightColor(string profileId,
+                                         out byte red, out byte green, out byte blue) {
+            if (!TryParseLightColor(OptionValue(profileId, "LightColor"),
+                                    out red, out green, out blue)) {
+                red = 0;
+                green = 0;
+                blue = 255;
+            }
         }
 
         private static ControllerKind? KindFromProfileId(string profileId) {

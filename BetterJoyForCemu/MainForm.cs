@@ -33,7 +33,7 @@ namespace BetterJoyForCemu {
                 "TouchpadHorizontalScale", "TouchpadVerticalScale",
                 "TouchpadTapAndHold", "TouchpadClickMovementLockout",
                 "TouchpadTwoFingerScroll",
-                "SwapAB", "SwapXY", "HomeLEDOn",
+                "SwapAB", "SwapXY", "HomeLEDOn", "LightColor",
             };
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/
         // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just

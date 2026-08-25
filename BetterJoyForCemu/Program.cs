@@ -126,7 +126,7 @@ namespace BetterJoyForCemu {
                     if (jc.state == Controller.state_.DROPPED)
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(jc);
-                    jc.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
+                    ApplyControllerProfileLighting(jc, profileId);
                     if (!handledProfiles.Add(profileId))
                         continue;
 
@@ -153,6 +153,14 @@ namespace BetterJoyForCemu {
                 }
                 form.RefreshControllerState();
             });
+        }
+
+        private static void ApplyControllerProfileLighting(Controller controller,
+                                                            string profileId) {
+            controller.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
+            byte red, green, blue;
+            ControllerMappings.GetLightColor(profileId, out red, out green, out blue);
+            controller.SetLightColor(red, green, blue);
         }
 
         void CheckForNewControllersTime(Object source, ElapsedEventArgs e) {
@@ -565,7 +573,7 @@ namespace BetterJoyForCemu {
 
                     CreateOutputControllers(jc);
                     string profileId = ControllerMappings.ProfileIdFor(jc);
-                    jc.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
+                    ApplyControllerProfileLighting(jc, profileId);
                     ControllerMappings.EnsureProfileSaved(profileId);
 
                     jc.Begin();

@@ -66,6 +66,8 @@ namespace BetterJoyForCemu {
         private CheckBox swapAbCheckBox;
         private CheckBox swapXyCheckBox;
         private CheckBox homeLedCheckBox;
+        private Label lightColorLabel;
+        private Button lightColorButton;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
@@ -992,6 +994,20 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(rumbleEnabledCheckBox,
                 "Allow games and BetterJoy's controller test to vibrate this controller.");
 
+            lightColorLabel = CreateLabel("Light color", 315, 520, ProfileText, false);
+            lightColorButton = new Button {
+                Location = new Point(423, 508),
+                Size = new Size(171, 31),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0),
+            };
+            StyleStandardButton(lightColorButton, false);
+            lightColorButton.Click += LightColorButton_Click;
+            tip_reassign.SetToolTip(lightColorButton,
+                "Choose the RGB color used by this controller's lightbar.");
+            page.Controls.Add(lightColorLabel);
+            page.Controls.Add(lightColorButton);
+
             page.Controls.Add(CreateDivider(24, 560));
             AddSectionHeading(page, "Orientation", 577,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
@@ -1299,6 +1315,42 @@ namespace BetterJoyForCemu {
             }
         }
 
+        private void LightColorButton_Click(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            byte red, green, blue;
+            ControllerMappings.GetLightColor(SelectedProfileId, out red, out green, out blue);
+            using (var dialog = new ColorDialog()) {
+                dialog.Color = Color.FromArgb(red, green, blue);
+                dialog.AllowFullOpen = true;
+                dialog.FullOpen = true;
+                dialog.SolidColorOnly = true;
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                    return;
+
+                string value = String.Format("#{0:X2}{1:X2}{2:X2}",
+                    dialog.Color.R, dialog.Color.G, dialog.Color.B);
+                ControllerMappings.SetOptionValue(SelectedProfileId, "LightColor", value);
+                UpdateLightColorButton(value);
+            }
+        }
+
+        private void UpdateLightColorButton(string value) {
+            if (lightColorButton == null)
+                return;
+
+            string normalized = ControllerMappings.NormalizeLightColor(value);
+            byte red, green, blue;
+            ControllerMappings.TryParseLightColor(normalized, out red, out green, out blue);
+            Color color = Color.FromArgb(red, green, blue);
+            lightColorButton.Text = normalized;
+            lightColorButton.BackColor = color;
+            lightColorButton.FlatAppearance.MouseOverBackColor = ControlPaint.Light(color);
+            int luminance = red * 299 + green * 587 + blue * 114;
+            lightColorButton.ForeColor = luminance >= 150000 ? Color.Black : Color.White;
+        }
+
         private void LoadProfileOptions(bool hasProfile) {
             // LoadProfileOptions can be triggered by the hardware-refresh timer (twice a second)
             // whenever the controller list changes, not only by the user picking a different
@@ -1320,6 +1372,7 @@ namespace BetterJoyForCemu {
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, rumbleEnabledCheckBox, homeLedCheckBox,
+                lightColorButton,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1365,6 +1418,8 @@ namespace BetterJoyForCemu {
                 rumbleEnabledCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "EnableRumble");
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
+                UpdateLightColorButton(
+                    ControllerMappings.OptionValue(SelectedProfileId, "LightColor"));
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(
@@ -1617,6 +1672,15 @@ namespace BetterJoyForCemu {
             bool hasTouchpad = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
+            bool hasConfigurableLight = selected != null &&
+                (selected.Kind == ControllerKind.DualSense ||
+                 selected.Kind == ControllerKind.DualShock4);
+            if (lightColorLabel != null)
+                lightColorLabel.Visible = hasConfigurableLight;
+            if (lightColorButton != null)
+                lightColorButton.Visible = hasConfigurableLight;
+            if (homeLedCheckBox != null)
+                homeLedCheckBox.Visible = selected != null && !hasConfigurableLight;
             if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation))
                 touchpadNavigation.Visible = hasTouchpad;
             if (!hasTouchpad && profilePages.TryGetValue("touchpad", out Panel touchpadPage) &&
