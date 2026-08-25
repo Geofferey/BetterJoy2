@@ -12,7 +12,7 @@ namespace BetterJoyForCemu {
                 "StartInTray", "HideStatus", "MotionServer", "PassiveScan",
                 "AutoAddControllers", "BlockAutoAddUSB", "AllowCalibration",
                 "UseHidHide", "UnhideOnExit", "AutoCalDebugLogging",
-                "DualSenseDebugLogging", "DebugLogging", "GyroMouseDebugLogging",
+                "DualSenseDebugLogging", "DualShock4DebugLogging", "DebugLogging", "GyroMouseDebugLogging",
                 "GyroStickDebugLogging",
             };
 

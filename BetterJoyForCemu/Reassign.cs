@@ -846,18 +846,20 @@ namespace BetterJoyForCemu {
             page.Controls.Add(CreateGlobalCheckBox(
                 "Debug logging", 24, 703, "DebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "DualSense debug logging", 315, 703, "DualSenseDebugLogging"));
+                "DualSense debug logging", 24, 737, "DualSenseDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Gyro mouse debug logging", 24, 737, "GyroMouseDebugLogging"));
+                "DualShock 4 debug logging", 315, 737, "DualShock4DebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Gyro stick debug logging", 315, 737, "GyroStickDebugLogging"));
+                "Gyro mouse debug logging", 24, 771, "GyroMouseDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Auto-calibration debug logging", 24, 771, "AutoCalDebugLogging"));
+                "Gyro stick debug logging", 315, 771, "GyroStickDebugLogging"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Auto-calibration debug logging", 24, 805, "AutoCalDebugLogging"));
 
             page.Controls.Add(CreateLabel(
                 "Some changes, including HidHide and startup behavior, take effect after restart.",
-                24, 816, ProfileMuted, false, 8.5F));
-            page.AutoScrollMinSize = new Size(0, 858);
+                24, 850, ProfileMuted, false, 8.5F));
+            page.AutoScrollMinSize = new Size(0, 892);
             return page;
         }
 
