@@ -36,6 +36,7 @@ namespace BetterJoyForCemu {
         // global hooks observe only inputs the user actually pressed, not mapped consequences.
         BeginBindingCapture = 18,
         EndBindingCapture = 19,
+        PrepareUsbAudio = 20,
     }
 
     public enum ControllerKind : byte {
@@ -75,6 +76,8 @@ namespace BetterJoyForCemu {
         // partner record to pair against). Lets the GUI pick the correct slot icon (see
         // MainForm.IconFor) without a live Joycon reference to check .other on directly.
         public bool IsVertical;
+        public bool IsUsb;
+        public string AudioEndpointNameHint;
 
         public void WriteTo(BinaryWriter writer) {
             writer.Write(PadId);
@@ -87,6 +90,8 @@ namespace BetterJoyForCemu {
             writer.Write(IsVertical);
             writer.Write(BatteryPercent);
             writer.Write((byte)BatteryStatus);
+            writer.Write(IsUsb);
+            writer.Write(AudioEndpointNameHint ?? String.Empty);
         }
 
         public static ControllerRecord ReadFrom(BinaryReader reader) {
@@ -101,6 +106,8 @@ namespace BetterJoyForCemu {
                 IsVertical = reader.ReadBoolean(),
                 BatteryPercent = reader.ReadSByte(),
                 BatteryStatus = (ControllerBatteryStatus)reader.ReadByte(),
+                IsUsb = reader.ReadBoolean(),
+                AudioEndpointNameHint = reader.ReadString(),
             };
         }
     }
@@ -170,6 +177,13 @@ namespace BetterJoyForCemu {
         public static void WritePadIdMessage(BinaryWriter writer, ControlMessageType type, int padId) {
             writer.Write((byte)type);
             writer.Write((byte)padId);
+            writer.Flush();
+        }
+
+        public static void WriteUsbAudioMessage(BinaryWriter writer, int padId, int volumePercent) {
+            writer.Write((byte)ControlMessageType.PrepareUsbAudio);
+            writer.Write((byte)padId);
+            writer.Write((byte)Math.Max(0, Math.Min(100, volumePercent)));
             writer.Flush();
         }
 

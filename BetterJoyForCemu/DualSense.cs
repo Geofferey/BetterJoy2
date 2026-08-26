@@ -30,6 +30,7 @@ namespace BetterJoyForCemu {
         public override bool HasAnalogTriggers => true;
         public override bool UsesNintendoProtocol => false;
         public override ControllerKind Kind => ControllerKind.DualSense;
+        public override string UsbAudioEndpointNameHint => "Wireless Controller";
 
         public byte[] triggerVal = { 0, 0 }; // raw 0-255 analog L2/R2
         protected override byte[] TriggerVal => triggerVal;
@@ -810,6 +811,23 @@ namespace BetterJoyForCemu {
                 buf[4] = leftMotor;
             }
             HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
+        }
+
+        // The USB audio endpoint's first pair is ordinary audio; its second pair drives the
+        // voice-coil actuators. ControllerAudio keeps the test tone off that actuator pair. This
+        // report sends the right audio channel to the built-in mono speaker and sets its volume.
+        public override void PrepareUsbAudio(int volumePercent) {
+            if (!isUSB || state <= state_.DROPPED)
+                return;
+
+            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+            byte[] buf = new byte[64];
+            buf[0] = 0x02;
+            buf[1] = 0xB0; // headphone volume + speaker volume + audio routing are valid
+            buf[5] = (byte)(volumePercent * 0x7F / 100);
+            buf[6] = (byte)(volumePercent * 0x64 / 100);
+            buf[8] = 0x30; // internal speaker only; the speaker consumes the right channel
+            HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
         }
 
         // Sets the DualSense's lightbar to the profile's solid RGB color via an output report.

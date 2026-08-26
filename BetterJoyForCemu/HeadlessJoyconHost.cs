@@ -557,6 +557,9 @@ namespace BetterJoyForCemu {
                         case ControlMessageType.EndBindingCapture:
                             EndBindingCapture(connectedPipe);
                             break;
+                        case ControlMessageType.PrepareUsbAudio:
+                            PrepareUsbAudio(reader.ReadByte(), reader.ReadByte());
+                            break;
                     }
                 }
             } catch {
@@ -591,6 +594,11 @@ namespace BetterJoyForCemu {
 
             jc.SetRumble(160.0f, 320.0f, 1.0f);
             Task.Delay(300).ContinueWith(_ => jc.SetRumble(160.0f, 320.0f, 0));
+        }
+
+        private void PrepareUsbAudio(int padId, int volumePercent) {
+            Controller controller = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
+            controller?.PrepareUsbAudio(volumePercent);
         }
 
         private void JoinOrSplitByPadId(int padId, bool forceSelfPair) {
@@ -901,6 +909,8 @@ namespace BetterJoyForCemu {
                     ProfileName = profile.DisplayName,
                     ConnectionSequence = profile.ConnectionSequence,
                     IsVertical = jc.other == jc,
+                    IsUsb = jc.IsUsbConnection,
+                    AudioEndpointNameHint = jc.UsbAudioEndpointNameHint,
                 });
             }
 

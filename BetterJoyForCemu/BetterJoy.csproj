@@ -127,6 +127,9 @@
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
+    <Reference Include="NAudio, Version=1.10.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\packages\NAudio.1.10.0\lib\net35\NAudio.dll</HintPath>
+    </Reference>
     <Reference Include="System.Data" />
     <Reference Include="System.Xml" />
     <Reference Include="WindowsInput, Version=6.3.0.0, Culture=neutral, processorArchitecture=MSIL">
@@ -149,6 +152,7 @@
     <Compile Include="Config.cs" />
     <Compile Include="Controller.cs" />
     <Compile Include="ControllerMappings.cs" />
+    <Compile Include="ControllerAudio.cs" />
     <Compile Include="DarkCheckBox.cs" />
     <Compile Include="DebugLog.cs" />
     <Compile Include="DualSense.cs" />

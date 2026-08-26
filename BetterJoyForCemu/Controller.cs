@@ -289,6 +289,12 @@ namespace BetterJoyForCemu {
         // packet for DualSense based on observed report length - same field, two different "who
         // updates it and when" contracts (see DOCS/CONTROLLERS-REFACTOR.md's known-issues list).
         internal bool isUSB = false;
+        public bool IsUsbConnection => isUSB;
+
+        // Windows owns the USB Audio Class stream; each physical controller definition owns the
+        // HID command which selects and unmutes its speaker.
+        public virtual string UsbAudioEndpointNameHint => null;
+        public virtual void PrepareUsbAudio(int volumePercent) { }
 
         // Calibrated stick position, gyro/accel readings, and filtered orientation - written by
         // each subclass's own report-parsing code (Joycon.ExtractIMUValues stays Nintendo-report-

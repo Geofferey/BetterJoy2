@@ -92,6 +92,8 @@ namespace BetterJoyForCemu {
         public void StopButtonCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.StopButtonCapture));
         public void BeginBindingCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.BeginBindingCapture));
         public void EndBindingCapture() => Send(w => ServiceControlIpc.WriteSimple(w, ControlMessageType.EndBindingCapture));
+        public void PrepareUsbAudio(int padId, int volumePercent) =>
+            Send(w => ServiceControlIpc.WriteUsbAudioMessage(w, padId, volumePercent));
 
         private void Send(Action<BinaryWriter> write) {
             lock (writeLock) {

@@ -127,6 +127,9 @@ namespace BetterJoyForCemu {
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
+                    if (ControllerMappings.BoolOption(profileId, "ControllerAudioEnabled"))
+                        jc.PrepareUsbAudio(ControllerMappings.IntOption(
+                            profileId, "ControllerAudioVolume", 75));
                     if (!handledProfiles.Add(profileId))
                         continue;
 

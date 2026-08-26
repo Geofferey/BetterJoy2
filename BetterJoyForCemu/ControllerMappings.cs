@@ -19,6 +19,9 @@ namespace BetterJoyForCemu {
         public long ConnectionSequence { get; set; }
         public bool IsConnected { get; set; }
         public ControllerKind? Kind { get; set; }
+        public int PadId { get; set; } = -1;
+        public bool IsUsb { get; set; }
+        public string AudioEndpointNameHint { get; set; }
 
         public override string ToString() {
             return DisplayName;
@@ -55,7 +58,8 @@ namespace BetterJoyForCemu {
         // persisted beside bindings once a profile is edited.
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
-            "EnableRumble",
+            "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
+            "ControllerAudioEndpointId",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
             "TouchpadStickSensitivity",
@@ -659,6 +663,9 @@ namespace BetterJoyForCemu {
                 ConnectionSequence = controller.virtualControllerSequence,
                 IsConnected = true,
                 Kind = controller.Kind,
+                PadId = controller.PadId,
+                IsUsb = controller.IsUsbConnection,
+                AudioEndpointNameHint = controller.UsbAudioEndpointNameHint,
             };
         }
 
@@ -757,6 +764,13 @@ namespace BetterJoyForCemu {
                     ? UseAsXbox360
                     : (showAsDs4 ? UseAsDualShock4 : UseAsNone);
             }
+
+            if (key == "ControllerAudioEnabled")
+                return "false";
+            if (key == "ControllerAudioVolume")
+                return "75";
+            if (key == "ControllerAudioEndpointId")
+                return String.Empty;
 
             string value = ConfigurationManager.AppSettings[key];
             return value ?? String.Empty;

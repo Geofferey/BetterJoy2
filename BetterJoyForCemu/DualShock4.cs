@@ -33,6 +33,7 @@ namespace BetterJoyForCemu {
         public override bool HasAnalogTriggers => true;
         public override bool UsesNintendoProtocol => false;
         public override ControllerKind Kind => ControllerKind.DualShock4;
+        public override string UsbAudioEndpointNameHint => "Wireless Controller";
 
         public byte[] triggerVal = { 0, 0 }; // raw 0-255 analog L2/R2
         protected override byte[] TriggerVal => triggerVal;
@@ -647,6 +648,23 @@ namespace BetterJoyForCemu {
                 buf[len - 1] = (byte)(crc >> 24);
             }
             return HIDapi.hid_write(handle, buf, new UIntPtr((uint)len)) >= 0;
+        }
+
+        // A wired CUH-ZCT2 exposes a 32 kHz stereo USB Audio Class endpoint. Its firmware chooses
+        // the built-in speaker or an attached headset; this report enables their volume fields.
+        public override void PrepareUsbAudio(int volumePercent) {
+            if (!isUSB || state <= state_.DROPPED)
+                return;
+
+            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+            byte volume = (byte)(volumePercent * 0xFF / 100);
+            byte[] buf = new byte[32];
+            buf[0] = 0x05;
+            buf[1] = 0xB0; // left/right headphone + speaker volume fields are valid
+            buf[19] = volume;
+            buf[20] = volume;
+            buf[22] = volume;
+            HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
         }
     }
 }

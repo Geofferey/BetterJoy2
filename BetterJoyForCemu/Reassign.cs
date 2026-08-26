@@ -68,6 +68,13 @@ namespace BetterJoyForCemu {
         private CheckBox homeLedCheckBox;
         private Label lightColorLabel;
         private Button lightColorButton;
+        private ComboBox controllerAudioEnabledSelector;
+        private ComboBox controllerAudioVolumeSelector;
+        private ComboBox controllerAudioEndpointSelector;
+        private Button controllerAudioTestButton;
+        private Label controllerAudioEnabledLabel;
+        private Label controllerAudioVolumeLabel;
+        private Label controllerAudioEndpointLabel;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
@@ -1008,14 +1015,54 @@ namespace BetterJoyForCemu {
             page.Controls.Add(lightColorLabel);
             page.Controls.Add(lightColorButton);
 
-            page.Controls.Add(CreateDivider(24, 560));
-            AddSectionHeading(page, "Orientation", 577,
+            controllerAudioEnabledLabel = CreateLabel(
+                "Controller audio", 24, 570, ProfileText, false);
+            page.Controls.Add(controllerAudioEnabledLabel);
+            controllerAudioEnabledSelector = CreateProfileComboBox(145, 564, 180);
+            controllerAudioEnabledSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerAudioEnabledSelector.Items.AddRange(new object[] { "Disabled", "Enabled" });
+            controllerAudioEnabledSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
+            page.Controls.Add(controllerAudioEnabledSelector);
+
+            controllerAudioVolumeLabel = CreateLabel("Volume", 356, 570, ProfileText, false);
+            page.Controls.Add(controllerAudioVolumeLabel);
+            controllerAudioVolumeSelector = CreateProfileComboBox(423, 564, 171);
+            controllerAudioVolumeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerAudioVolumeSelector.Items.AddRange(new object[] {
+                "25%", "50%", "75%", "100%",
+            });
+            controllerAudioVolumeSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
+            page.Controls.Add(controllerAudioVolumeSelector);
+
+            controllerAudioEndpointLabel = CreateLabel(
+                "Audio endpoint", 24, 610, ProfileText, false);
+            page.Controls.Add(controllerAudioEndpointLabel);
+            controllerAudioEndpointSelector = CreateProfileComboBox(145, 604, 320);
+            controllerAudioEndpointSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerAudioEndpointSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
+            page.Controls.Add(controllerAudioEndpointSelector);
+
+            controllerAudioTestButton = new Button {
+                Location = new Point(475, 603),
+                Size = new Size(119, 27),
+                Text = "Test speaker",
+            };
+            StyleStandardButton(controllerAudioTestButton, false);
+            controllerAudioTestButton.Click += ControllerAudioTestButton_Click;
+            page.Controls.Add(controllerAudioTestButton);
+            tip_reassign.SetToolTip(controllerAudioEndpointSelector,
+                "Select the Windows playback endpoint exposed by this USB controller.");
+            tip_reassign.SetToolTip(controllerAudioTestButton,
+                "Play a short tone through the selected controller speaker.");
+
+            page.Controls.Add(CreateDivider(24, 650));
+            AddSectionHeading(page, "Orientation", 667,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
                 "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
             AddMappingRow(page, null, btn_default_orientation, "Default orientation",
-                652, 24, 232, 362);
+                742, 24, 232, 362);
 
-            page.AutoScrollMinSize = new Size(0, 710);
+            page.AutoScrollMinSize = new Size(0, 800);
             return page;
         }
 
@@ -1351,6 +1398,93 @@ namespace BetterJoyForCemu {
             lightColorButton.ForeColor = luminance >= 150000 ? Color.Black : Color.White;
         }
 
+        private static int ClosestAudioVolume(int value) {
+            int[] choices = { 25, 50, 75, 100 };
+            return choices.OrderBy(choice => Math.Abs(choice - value)).First();
+        }
+
+        private void LoadControllerAudioEndpoints() {
+            if (controllerAudioEndpointSelector == null)
+                return;
+
+            string selectedId = ControllerMappings.OptionValue(
+                SelectedProfileId, "ControllerAudioEndpointId");
+            ControllerProfileInfo profile = SelectedProfile;
+            List<ControllerAudioEndpoint> endpoints = ControllerAudio.GetRenderEndpoints();
+            controllerAudioEndpointSelector.Items.Clear();
+            controllerAudioEndpointSelector.Items.AddRange(endpoints.Cast<object>().ToArray());
+
+            ControllerAudioEndpoint selected = endpoints.FirstOrDefault(endpoint =>
+                String.Equals(endpoint.Id, selectedId, StringComparison.Ordinal));
+            if (selected == null && profile != null &&
+                !String.IsNullOrEmpty(profile.AudioEndpointNameHint)) {
+                selected = endpoints.FirstOrDefault(endpoint => endpoint.Name.IndexOf(
+                    profile.AudioEndpointNameHint, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+            controllerAudioEndpointSelector.SelectedItem = selected;
+        }
+
+        private void ControllerAudioOptionChanged(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            if (sender == controllerAudioEnabledSelector) {
+                ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioEnabled",
+                    (controllerAudioEnabledSelector.SelectedIndex == 1).ToString().ToLowerInvariant());
+            } else if (sender == controllerAudioVolumeSelector) {
+                ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioVolume",
+                    controllerAudioVolumeSelector.Text.TrimEnd('%'));
+            } else if (sender == controllerAudioEndpointSelector) {
+                ControllerAudioEndpoint endpoint =
+                    controllerAudioEndpointSelector.SelectedItem as ControllerAudioEndpoint;
+                ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioEndpointId",
+                    endpoint?.Id ?? String.Empty);
+            }
+            UpdateControllerAudioControlState();
+        }
+
+        private async void ControllerAudioTestButton_Click(object sender, EventArgs e) {
+            ControllerProfileInfo profile = SelectedProfile;
+            ControllerAudioEndpoint endpoint =
+                controllerAudioEndpointSelector?.SelectedItem as ControllerAudioEndpoint;
+            if (profile == null || !profile.IsConnected || !profile.IsUsb || endpoint == null)
+                return;
+
+            int volume = ControllerMappings.IntOption(
+                profile.ProfileId, "ControllerAudioVolume", 75);
+            string oldText = controllerAudioTestButton.Text;
+            controllerAudioTestButton.Enabled = false;
+            controllerAudioTestButton.Text = "Playing...";
+            try {
+                serviceClient.PrepareUsbAudio(profile.PadId, volume);
+                await Task.Delay(100);
+                await ControllerAudio.PlayTestToneAsync(endpoint.Id, volume);
+            } catch (Exception ex) {
+                MessageBox.Show(this,
+                    "BetterJoy could not play through that controller endpoint.\r\n\r\n" + ex.Message,
+                    "Controller audio", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            } finally {
+                controllerAudioTestButton.Text = oldText;
+                UpdateControllerAudioControlState();
+            }
+        }
+
+        private void UpdateControllerAudioControlState() {
+            ControllerProfileInfo selected = SelectedProfile;
+            bool available = selected != null && selected.IsConnected && selected.IsUsb &&
+                (selected.Kind == ControllerKind.DualSense ||
+                 selected.Kind == ControllerKind.DualShock4);
+            if (controllerAudioEnabledSelector != null)
+                controllerAudioEnabledSelector.Enabled = available;
+            if (controllerAudioVolumeSelector != null)
+                controllerAudioVolumeSelector.Enabled = available;
+            if (controllerAudioEndpointSelector != null)
+                controllerAudioEndpointSelector.Enabled = available;
+            if (controllerAudioTestButton != null)
+                controllerAudioTestButton.Enabled = available &&
+                    controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
+        }
+
         private void LoadProfileOptions(bool hasProfile) {
             // LoadProfileOptions can be triggered by the hardware-refresh timer (twice a second)
             // whenever the controller list changes, not only by the user picking a different
@@ -1372,7 +1506,8 @@ namespace BetterJoyForCemu {
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, rumbleEnabledCheckBox, homeLedCheckBox,
-                lightColorButton,
+                lightColorButton, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
+                controllerAudioEndpointSelector, controllerAudioTestButton,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1420,6 +1555,12 @@ namespace BetterJoyForCemu {
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 UpdateLightColorButton(
                     ControllerMappings.OptionValue(SelectedProfileId, "LightColor"));
+                controllerAudioEnabledSelector.SelectedIndex = ControllerMappings.BoolOption(
+                    SelectedProfileId, "ControllerAudioEnabled") ? 1 : 0;
+                int audioVolume = ControllerMappings.IntOption(
+                    SelectedProfileId, "ControllerAudioVolume", 75);
+                controllerAudioVolumeSelector.SelectedItem = ClosestAudioVolume(audioVolume) + "%";
+                LoadControllerAudioEndpoints();
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(
@@ -1577,6 +1718,9 @@ namespace BetterJoyForCemu {
                             ConnectionSequence = record.ConnectionSequence,
                             IsConnected = true,
                             Kind = record.Kind,
+                            PadId = record.PadId,
+                            IsUsb = record.IsUsb,
+                            AudioEndpointNameHint = record.AudioEndpointNameHint,
                         };
                     }
                 }
@@ -1628,7 +1772,8 @@ namespace BetterJoyForCemu {
                         current.DisplayName != choices[i].DisplayName ||
                         current.IsConnected != choices[i].IsConnected ||
                         current.ConnectionSequence != choices[i].ConnectionSequence ||
-                        current.Kind != choices[i].Kind) {
+                        current.Kind != choices[i].Kind || current.PadId != choices[i].PadId ||
+                        current.IsUsb != choices[i].IsUsb) {
                         changed = true;
                         break;
                     }
@@ -1675,12 +1820,25 @@ namespace BetterJoyForCemu {
             bool hasConfigurableLight = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
+            bool hasControllerAudio = hasConfigurableLight;
+            bool canUseControllerAudio = hasControllerAudio && selected.IsConnected && selected.IsUsb;
             if (lightColorLabel != null)
                 lightColorLabel.Visible = hasConfigurableLight;
             if (lightColorButton != null)
                 lightColorButton.Visible = hasConfigurableLight;
             if (homeLedCheckBox != null)
                 homeLedCheckBox.Visible = selected != null && !hasConfigurableLight;
+            foreach (Control control in new Control[] {
+                controllerAudioEnabledLabel, controllerAudioVolumeLabel,
+                controllerAudioEndpointLabel,
+                controllerAudioEnabledSelector, controllerAudioVolumeSelector,
+                controllerAudioEndpointSelector, controllerAudioTestButton,
+            }) {
+                if (control != null) {
+                    control.Visible = hasControllerAudio;
+                    control.Enabled = canUseControllerAudio;
+                }
+            }
             if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation))
                 touchpadNavigation.Visible = hasTouchpad;
             if (!hasTouchpad && profilePages.TryGetValue("touchpad", out Panel touchpadPage) &&
@@ -1693,6 +1851,7 @@ namespace BetterJoyForCemu {
             btn_apply.Enabled = hasController;
             gameControllersButton.Enabled = hasController;
             LoadProfileOptions(hasController);
+            UpdateControllerAudioControlState();
             UpdateProfilePresentation(selected);
         }
 
