@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
@@ -45,6 +46,7 @@ namespace BetterJoyForCemu {
         // unconfirmed against real hardware for DS4 specifically. If Bluetooth reports come back
         // a different length than 78, that's the first thing to check - see ReceiveRaw.
         private const int DualShock4MaxReportLen = 78;
+        private readonly byte[] dualShock4InputReport = new byte[DualShock4MaxReportLen];
         private long lastDualShock4RawDumpTimestamp = 0;
         private long lastDualShock4ImuLogTimestamp = 0;
         private bool lightbarTransportKnown;
@@ -256,8 +258,26 @@ namespace BetterJoyForCemu {
         protected override int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
 
-            byte[] buf = new byte[DualShock4MaxReportLen];
-            int ret = HIDapi.hid_read_timeout(handle, buf, new UIntPtr((uint)DualShock4MaxReportLen), 5);
+            byte[] buf = dualShock4InputReport;
+            // Audio reports must leave on their own 8ms schedule. A nominal 5ms timed read can
+            // block for 14-19ms on Windows' Bluetooth HID transport; because sending happens on
+            // this same thread, those overruns directly create 20-28ms gaps at the controller
+            // despite a healthy encoded-frame queue. Attach already places this handle in
+            // nonblocking mode, so use hid_read while streaming and yield briefly when no input
+            // is ready. Outside audio playback, retain the ordinary timed read and its lower CPU
+            // wakeup rate.
+            bool nonblockingAudioRead = bluetoothAudioStreaming;
+            long readStartTicks = Stopwatch.GetTimestamp();
+            int ret = nonblockingAudioRead
+                ? HIDapi.hid_read(handle, buf, new UIntPtr((uint)DualShock4MaxReportLen))
+                : HIDapi.hid_read_timeout(handle, buf,
+                    new UIntPtr((uint)DualShock4MaxReportLen), 5);
+            double readMs = (Stopwatch.GetTimestamp() - readStartTicks) * 1000.0 / Stopwatch.Frequency;
+            if (readMs > 8.0)
+                AudioDebugLog.Write("DS4Send", "slow hid_read_timeout ms=" + readMs.ToString("F1") +
+                    " ret=" + ret);
+            if (nonblockingAudioRead && ret == 0)
+                Thread.Yield();
 
             // Packet LENGTH does not reliably indicate transport for this device the way it does
             // for DualSense - confirmed on real hardware: a real capture (dualshock4_raw_debug.log)
@@ -671,7 +691,22 @@ namespace BetterJoyForCemu {
                 buf[len - 2] = (byte)(crc >> 16);
                 buf[len - 1] = (byte)(crc >> 24);
             }
+            if (bt)
+                return SendDualShock4BluetoothControlReport(buf);
             return HIDapi.hid_write(handle, buf, new UIntPtr((uint)len)) >= 0;
+        }
+
+        // Report 0x11 is the DS4's shared Bluetooth control lane: lightbar/effects and audio
+        // configuration all use it. While speaker streaming is active, drain older SBC writes,
+        // submit the control report on the dedicated audio handle, and wait for completion before
+        // allowing newer SBC reports through. This prevents cross-handle reordering without ever
+        // running hidapi reads and writes concurrently on BetterJoy's primary handle.
+        private bool SendDualShock4BluetoothControlReport(byte[] report) {
+            BluetoothAudioWritePool pool = bluetoothAudioWritePool;
+            if (pool != null)
+                return pool.SendControlBarrier(report);
+            return HIDapi.hid_write(handle, report,
+                new UIntPtr((uint)report.Length)) >= 0;
         }
 
         // A wired CUH-ZCT2 exposes a 32 kHz stereo USB Audio Class endpoint. Its firmware chooses
@@ -691,7 +726,10 @@ namespace BetterJoyForCemu {
             HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
         }
 
-        // EXPERIMENTAL, UNVERIFIED ON REAL HARDWARE. Bluetooth exposes no USB Audio Class endpoint
+        // EXPERIMENTAL, PARTIALLY VALIDATED ON REAL HARDWARE: the transport below objectively
+        // reduces Bluetooth audio dropouts but does not eliminate them. Native HID completion is
+        // not a controller playback acknowledgement, so this must not be presented as reliable
+        // until longer hardware testing proves otherwise. Bluetooth exposes no USB Audio Class endpoint
         // - there is nothing for ControllerAudio/WASAPI to open - so the only route to the built-in
         // speaker/headphone jack over BT is smuggling a real Bluetooth audio codec (SBC) inside HID
         // output reports. Report layout, field offsets, and SBC encoder parameters below are
@@ -716,12 +754,16 @@ namespace BetterJoyForCemu {
         private const byte BtAudioValidFlagsHeadphones = 0x10 | 0x20; // HP-L | HP-R
         private const byte BtAudioValidFlagsSpeaker = 0x80; // Speaker
 
-        private const byte BtAudioStreamProtocol4Frames = 0x17;
-        private const int BtAudioStreamReport4FramesLen = 462;
-        private const byte BtAudioStreamProtocol2Frames = 0x14;
-        private const int BtAudioStreamReport2FramesLen = 270;
-        private const int BtAudioStreamFramesPerBigBatch = 4;
-        private const int BtAudioStreamFramesPerSmallBatch = 2;
+        // DS4Windows' validated loopback lane is one 16 kHz SBC frame per 0x12 report. Each frame
+        // is 8 ms, so this avoids both the fragile 0x17 batching boundary and the transaction load
+        // of a 32 kHz one-frame stream.
+        private const byte BtAudioStreamProtocol = 0x12;
+        private const int BtAudioStreamReportLen = 142;
+        private const int BtAudioStreamFramesPerReport = 1;
+        private const int BtAudioSbcFrameLength = 109;
+        private const byte BtAudioBluetoothPollRate = 4;
+        private const byte BtAudioControlFlags = 0xC0 | BtAudioBluetoothPollRate;
+        private const byte BtAudioStreamFlags = 0x40 | BtAudioBluetoothPollRate;
         private const byte BtAudioOutputPathSpeaker = 0x02;
         // The payload target is separate from report 0x11's volume-valid flags. Target 0x02
         // feeds the controller speaker; Sony's headset-only target is 0x24. Merely changing the
@@ -744,7 +786,10 @@ namespace BetterJoyForCemu {
 
             byte[] buf = new byte[BtAudioEnableReportLen];
             buf[0] = BtAudioEnableReportId;
-            buf[1] = 0xC0;
+            // Preserve the same 4 ms Bluetooth input interval used by ordinary DS4 output
+            // reports. The lower six bits are the interval, so bare 0xC0 resets it to zero and
+            // increases inbound radio traffic precisely while speaker traffic needs the link.
+            buf[1] = BtAudioControlFlags;
             // A0 keeps ordinary controller input reports alive while the speaker lane is armed.
             // A2 is accepted by the audio hardware but eventually starves normal HID input on a
             // genuine CUH-ZCT2, which would also make headphone unplug detection impossible.
@@ -764,7 +809,12 @@ namespace BetterJoyForCemu {
             buf[BtAudioEnableReportLen - 2] = (byte)(crc >> 16);
             buf[BtAudioEnableReportLen - 1] = (byte)(crc >> 24);
 
-            HIDapi.hid_write(handle, buf, new UIntPtr((uint)BtAudioEnableReportLen));
+            // When live streaming owns its dedicated HID session, put the enable report through
+            // that same ordered lane and wait for its native completion before any SBC report can
+            // follow. The primary handle remains the fallback for the standalone preparation path.
+            bool prepared = SendDualShock4BluetoothControlReport(buf);
+            if (!prepared)
+                AudioDebugLog.Write("DS4Send", "Bluetooth audio control write failed");
         }
 
         // Phase 2: continuous live streaming, replacing phase 1's fixed-duration test tone.
@@ -799,22 +849,63 @@ namespace BetterJoyForCemu {
         private bool bluetoothAudioRouteHeadphones;
         private byte bluetoothAudioOutputPath = BtAudioOutputPathSpeaker;
 
-        // Frames to accumulate before the first report ever goes out - roughly 96ms (24 * 4ms/
-        // block) of cushion. Without this, sending began the instant 2 frames existed and stayed
-        // at that same bare-minimum depth continuously (every Poll iteration drained pending back
-        // down toward empty), leaving zero margin against any momentary capture hiccup - a classic
-        // "not enough buffer" recipe for underrun artifacts (muffled/distorted, not silence,
-        // since the controller's own decoder still has to do *something* with a starved stream).
-        // One-time priming only, not a maintained floor - the trade is a fixed ~96ms of added
-        // startup latency for continuity; if it still glitches mid-stream (not just at the start),
-        // that points at sustained production/consumption imbalance instead, not a priming gap.
-        private const int BtAudioPrimeFrameCount = 24;
+        // Match DS4Windows' current loopback policy: collect 144 ms of source, submit ten unique
+        // one-frame reports up front to build 80 ms inside the controller decoder, and retain
+        // another eight frames (64 ms) on the host. The old BetterJoy "prime" only waited for a
+        // PC-side queue and then sent one 16 ms report; it did not protect the controller from a
+        // later radio or scheduler gap at all.
+        private const int BtAudioControllerPrimeReportCount = 10;
+        private const int BtAudioRetainedSourceFrameCount = 8;
+        private const int BtAudioStartupFrameCount =
+            BtAudioControllerPrimeReportCount + BtAudioRetainedSourceFrameCount;
+        private const int BtAudioMaximumQueuedFrames = BtAudioStartupFrameCount * 3;
 
-        // One SBC block is 128 samples (BluetoothAudioCapture.cs's fixed 32kHz/8-subband/16-block
-        // encoder config) = 4ms of audio. Must match that file's encoder parameters exactly.
-        private const double BtAudioMsPerBlock = 4.0;
+        // One SBC block is 128 samples (BluetoothAudioCapture.cs's fixed 16kHz/8-subband/16-block
+        // encoder config) = 8 ms of audio. Must match that file's encoder parameters exactly.
+        private const double BtAudioMsPerBlock = 8.0;
         private Stopwatch bluetoothAudioStopwatch;
         private double bluetoothAudioNextSendDeadlineMs;
+        private double bluetoothAudioLastDiagnosticMs;
+        private int bluetoothAudioPrimeReportsRemaining;
+        private byte[] bluetoothAudioSilenceFrame;
+        private long bluetoothAudioSyntheticSilenceFrames;
+        private long bluetoothAudioLastSummarySyntheticSilenceFrames;
+        private double bluetoothAudioLastSendMs;
+        private double bluetoothAudioMaximumSendGapMs;
+        private double bluetoothAudioMaximumLatenessMs;
+        private double bluetoothAudioMaximumWriteMs;
+        private double bluetoothAudioPrimeStartedMs;
+        private int bluetoothAudioSendsSinceSummary;
+        private int bluetoothAudioMinimumPending;
+        private int bluetoothAudioMaximumPending;
+        // Audio owns a second, shareable HID file session. Windows can keep several output
+        // reports in flight on this handle while the primary hidapi session remains exclusively
+        // responsible for input. This is the production DS4Windows transport boundary and avoids
+        // both same-handle thread races and hid_write's lack of native completion telemetry.
+        private BluetoothAudioWritePool bluetoothAudioWritePool;
+        // Owned exclusively by Poll. Windows requires MMCSS registration and reversion to happen
+        // on the same thread, so Start/Stop only change bluetoothAudioStreaming and this handle is
+        // acquired/released from SendQueuedBluetoothAudioIfAny itself.
+        private IntPtr bluetoothAudioMmcssHandle;
+        private bool bluetoothAudioMmcssAttempted;
+
+        private enum AvrtPriority {
+            Low = -1,
+            Normal = 0,
+            High = 1,
+            Critical = 2,
+        }
+
+        [DllImport("avrt.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr AvSetMmThreadCharacteristics(
+            string taskName, ref uint taskIndex);
+
+        [DllImport("avrt.dll", SetLastError = true)]
+        private static extern bool AvSetMmThreadPriority(
+            IntPtr avrtHandle, AvrtPriority priority);
+
+        [DllImport("avrt.dll", SetLastError = true)]
+        private static extern bool AvRevertMmThreadCharacteristics(IntPtr avrtHandle);
 
         public bool IsStreamingBluetoothAudio => bluetoothAudioStreaming;
 
@@ -839,11 +930,21 @@ namespace BetterJoyForCemu {
                     StopBluetoothAudioStream();
                 }
 
+                DisposeBluetoothAudioWritePool();
+                bluetoothAudioWritePool = BluetoothAudioWritePool.TryOpen(path,
+                    out int audioHandleError);
+                if (bluetoothAudioWritePool == null)
+                    AudioDebugLog.Write("DS4Send", "Dedicated audio handle unavailable error=" +
+                        audioHandleError + "; using primary HID handle fallback");
+                else
+                    AudioDebugLog.Write("DS4Send", "Dedicated overlapped audio handle opened");
+
                 PrepareBluetoothAudio(volumePercent, routeToHeadphones);
                 if (!form.StartBluetoothAudioCapture(PadId, endpointId)) {
                     // The service commonly discovers the controller before its session helper is
                     // connected. Do not publish a false active state: OnHelperConnected performs
                     // another profile reconciliation once capture is genuinely available.
+                    DisposeBluetoothAudioWritePool();
                     return;
                 }
 
@@ -853,6 +954,20 @@ namespace BetterJoyForCemu {
                 bluetoothAudioPrimed = false;
                 bluetoothAudioStopwatch = Stopwatch.StartNew();
                 bluetoothAudioNextSendDeadlineMs = 0;
+                bluetoothAudioLastDiagnosticMs = 0;
+                bluetoothAudioPrimeReportsRemaining = 0;
+                bluetoothAudioSyntheticSilenceFrames = 0;
+                bluetoothAudioLastSummarySyntheticSilenceFrames = 0;
+                bluetoothAudioLastSendMs = 0;
+                bluetoothAudioMaximumSendGapMs = 0;
+                bluetoothAudioMaximumLatenessMs = 0;
+                bluetoothAudioMaximumWriteMs = 0;
+                bluetoothAudioPrimeStartedMs = 0;
+                bluetoothAudioSendsSinceSummary = 0;
+                bluetoothAudioMinimumPending = Int32.MaxValue;
+                bluetoothAudioMaximumPending = 0;
+                if (bluetoothAudioSilenceFrame == null)
+                    bluetoothAudioSilenceFrame = CreateBluetoothAudioSilenceFrame();
                 bluetoothAudioVolumePercent = volumePercent;
                 bluetoothAudioEndpointId = endpointId;
                 bluetoothAudioRouteHeadphones = routeToHeadphones;
@@ -880,98 +995,262 @@ namespace BetterJoyForCemu {
                 form.StopBluetoothAudioCapture(PadId);
 
                 if (!bluetoothAudioStreaming)
+                {
+                    DisposeBluetoothAudioWritePool();
                     return;
+                }
 
                 bluetoothAudioStreaming = false;
                 bluetoothAudioVolumePercent = -1;
                 bluetoothAudioEndpointId = String.Empty;
                 bluetoothAudioRouteHeadphones = false;
+                DisposeBluetoothAudioWritePool();
                 AudioDebugLog.Write("DS4Send", "Stop pad=" + PadId);
             }
+        }
+
+        private void DisposeBluetoothAudioWritePool() {
+            BluetoothAudioWritePool pool = bluetoothAudioWritePool;
+            bluetoothAudioWritePool = null;
+            if (pool != null)
+                pool.Dispose();
         }
 
         // Called from HeadlessJoyconHost's helper-pipe read thread as frames arrive - the only
         // part of this feature that legitimately runs off the Poll thread, since it only touches
         // an in-memory queue, never the HID handle itself.
         public void EnqueueBluetoothAudioFrame(byte[] frame) {
+            if (frame == null || frame.Length != BtAudioSbcFrameLength)
+                return;
+
             bluetoothAudioFrameQueue.Enqueue(frame);
+            while (bluetoothAudioFrameQueue.Count > BtAudioMaximumQueuedFrames)
+                bluetoothAudioFrameQueue.TryDequeue(out _);
         }
 
-        // Called once per Poll iteration. Sends at most one batch per call, and only once the
-        // real-time deadline for it has arrived - deliberately not a drain-everything-that's-ready
-        // loop. Poll iterates roughly every ~4ms (DS4's own BT poll interval) while one 4-frame
-        // batch represents 16ms of audio: with no pacing, Poll could drain buffered frames up to
-        // ~4x faster than real playback speed whenever they were available, burning through any
-        // priming cushion in a fraction of the time it took to build and landing right back in a
-        // hand-to-mouth state - "primed but not paced" only delays the same underrun symptom
-        // instead of fixing it. This never blocks/sleeps (Poll must stay free to keep reading) -
-        // it just skips sending until enough wall-clock time has actually passed.
+        // Called once per Poll iteration. Startup deliberately presents ten reports as quickly as
+        // the controller accepts them to create a real hardware cushion; steady state then sends
+        // one 8 ms frame at each wall-clock deadline. This never sleeps or drains the whole source
+        // queue in one call, so controller input continues to share this single HID-owning thread.
         protected override void SendQueuedBluetoothAudioIfAny() {
             lock (bluetoothAudioStateLock) {
-                if (!bluetoothAudioStreaming)
+                if (!bluetoothAudioStreaming) {
+                    ReleaseBluetoothAudioPollScheduling();
                     return;
+                }
+
+                EnsureBluetoothAudioPollScheduling();
 
                 int dequeued = 0;
                 while (bluetoothAudioFrameQueue.TryDequeue(out byte[] frame)) {
                     bluetoothAudioPending.Add(frame);
                     dequeued++;
                 }
-
-                if (!bluetoothAudioPrimed) {
-                    if (bluetoothAudioPending.Count < BtAudioPrimeFrameCount)
-                        return;
-                    bluetoothAudioPrimed = true;
-                    AudioDebugLog.Write("DS4Send", "Primed pending=" + bluetoothAudioPending.Count);
-                }
-
-                if (bluetoothAudioPending.Count < BtAudioStreamFramesPerSmallBatch)
-                    return;
+                if (bluetoothAudioPending.Count > BtAudioMaximumQueuedFrames)
+                    bluetoothAudioPending.RemoveRange(0,
+                        bluetoothAudioPending.Count - BtAudioMaximumQueuedFrames);
 
                 double nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
+
+                if (!bluetoothAudioPrimed) {
+                    if (bluetoothAudioPending.Count < BtAudioStartupFrameCount)
+                        return;
+                    bluetoothAudioPrimed = true;
+                    bluetoothAudioPrimeReportsRemaining = BtAudioControllerPrimeReportCount;
+                    bluetoothAudioPrimeStartedMs = nowMs;
+                    AudioDebugLog.Write("DS4Send", "Source primed pending=" +
+                        bluetoothAudioPending.Count + " controllerPrimeReports=" +
+                        bluetoothAudioPrimeReportsRemaining);
+                }
+
+                if (bluetoothAudioPrimeReportsRemaining > 0) {
+                    if (bluetoothAudioPending.Count < BtAudioStreamFramesPerReport)
+                        return;
+
+                    double primeWriteMs = SendBluetoothAudioFrame(
+                        bluetoothAudioPending[0], ref bluetoothAudioPacketCounter,
+                        out bool primeSubmitted);
+                    bluetoothAudioMaximumWriteMs = Math.Max(
+                        bluetoothAudioMaximumWriteMs, primeWriteMs);
+                    if (!primeSubmitted)
+                        return;
+                    bluetoothAudioPending.RemoveAt(0);
+                    bluetoothAudioPrimeReportsRemaining--;
+                    if (bluetoothAudioPrimeReportsRemaining == 0) {
+                        nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
+                        bluetoothAudioNextSendDeadlineMs = nowMs + BtAudioMsPerBlock;
+                        AudioDebugLog.Write("DS4Send", "Controller primed retained=" +
+                            bluetoothAudioPending.Count + " nextDeadlineMs=" +
+                            bluetoothAudioNextSendDeadlineMs.ToString("F1") +
+                            " primeElapsedMs=" + (nowMs - bluetoothAudioPrimeStartedMs).ToString("F1") +
+                            " maxWriteMs=" + bluetoothAudioMaximumWriteMs.ToString("F2"));
+                        bluetoothAudioMaximumWriteMs = 0;
+                    }
+                    return;
+                }
+
                 if (nowMs < bluetoothAudioNextSendDeadlineMs)
                     return;
 
-                int batchSize = bluetoothAudioPending.Count >= BtAudioStreamFramesPerBigBatch
-                    ? BtAudioStreamFramesPerBigBatch
-                    : BtAudioStreamFramesPerSmallBatch;
+                int batchSize = BtAudioStreamFramesPerReport;
+                bool syntheticSilence = bluetoothAudioPending.Count == 0;
+                byte[] nextFrame = syntheticSilence
+                    ? bluetoothAudioSilenceFrame
+                    : bluetoothAudioPending[0];
+                if (nextFrame == null)
+                    return;
 
-                AudioDebugLog.Write("DS4Send", "pending=" + bluetoothAudioPending.Count +
-                    " dequeuedThisCall=" + dequeued + " batch=" + batchSize +
-                    " nowMs=" + nowMs.ToString("F1") +
-                    " deadlineMs=" + bluetoothAudioNextSendDeadlineMs.ToString("F1"));
+                double latenessMs = nowMs - bluetoothAudioNextSendDeadlineMs;
+                double sendGapMs = bluetoothAudioLastSendMs <= 0
+                    ? 0
+                    : nowMs - bluetoothAudioLastSendMs;
+                double writeMs = SendBluetoothAudioFrame(nextFrame,
+                    ref bluetoothAudioPacketCounter, out bool submitted);
+                if (!submitted)
+                    return;
+                if (syntheticSilence)
+                    bluetoothAudioSyntheticSilenceFrames++;
+                else
+                    bluetoothAudioPending.RemoveAt(0);
 
-                SendBluetoothAudioBatch(bluetoothAudioPending, 0, batchSize, ref bluetoothAudioPacketCounter);
-                bluetoothAudioPending.RemoveRange(0, batchSize);
+                bluetoothAudioLastSendMs = nowMs;
+                bluetoothAudioMaximumSendGapMs = Math.Max(
+                    bluetoothAudioMaximumSendGapMs, sendGapMs);
+                bluetoothAudioMaximumLatenessMs = Math.Max(
+                    bluetoothAudioMaximumLatenessMs, latenessMs);
+                bluetoothAudioMaximumWriteMs = Math.Max(
+                    bluetoothAudioMaximumWriteMs, writeMs);
+                bluetoothAudioSendsSinceSummary++;
+                bluetoothAudioMinimumPending = Math.Min(
+                    bluetoothAudioMinimumPending, bluetoothAudioPending.Count);
+                bluetoothAudioMaximumPending = Math.Max(
+                    bluetoothAudioMaximumPending, bluetoothAudioPending.Count);
+
+                bool anomalousSend = sendGapMs > BtAudioMsPerBlock * 1.5 ||
+                    latenessMs > BtAudioMsPerBlock / 2 || writeMs > 5.0;
+                bool periodicSummary = nowMs - bluetoothAudioLastDiagnosticMs >= 1000.0;
+                BluetoothAudioWriteStatus hidStatus =
+                    default(BluetoothAudioWriteStatus);
+                bool hasHidStatus = bluetoothAudioWritePool != null &&
+                    (anomalousSend || periodicSummary);
+                if (hasHidStatus)
+                    hidStatus = bluetoothAudioWritePool.GetStatus();
+                bool transportAnomaly = hasHidStatus &&
+                    (hidStatus.IntervalSaturations > 0 ||
+                     hidStatus.CompletionFailures > 0 ||
+                     hidStatus.MaximumIntervalCompletionMs > 16.0 ||
+                     hidStatus.OldestPendingMs > 16.0);
+                if (anomalousSend || transportAnomaly || periodicSummary) {
+                    long intervalSilence = bluetoothAudioSyntheticSilenceFrames -
+                        bluetoothAudioLastSummarySyntheticSilenceFrames;
+                    AudioDebugLog.Write("DS4Send", "sends=" +
+                        bluetoothAudioSendsSinceSummary +
+                        " maxGapMs=" + bluetoothAudioMaximumSendGapMs.ToString("F2") +
+                        " maxLateMs=" + bluetoothAudioMaximumLatenessMs.ToString("F2") +
+                        " maxWriteMs=" + bluetoothAudioMaximumWriteMs.ToString("F2") +
+                        " pendingMinMax=" +
+                        (bluetoothAudioMinimumPending == Int32.MaxValue ? 0 :
+                            bluetoothAudioMinimumPending) + "/" + bluetoothAudioMaximumPending +
+                        " dequeuedLast=" + dequeued +
+                        " silence=" + intervalSilence + "/" +
+                        bluetoothAudioSyntheticSilenceFrames +
+                        (hasHidStatus
+                            ? " hidPending=" + hidStatus.PendingWrites +
+                              " hidOldestMs=" + hidStatus.OldestPendingMs.ToString("F2") +
+                              " hidMaxCompleteMs=" +
+                                  hidStatus.MaximumIntervalCompletionMs.ToString("F2") +
+                              " hidSaturated=" + hidStatus.IntervalSaturations +
+                              " hidFailures=" + hidStatus.CompletionFailures +
+                              " hidShort=" + hidStatus.ShortTransfers
+                            : " hid=primary-sync") +
+                        " anomaly=" + (anomalousSend || transportAnomaly));
+                    bluetoothAudioLastDiagnosticMs = nowMs;
+                    bluetoothAudioLastSummarySyntheticSilenceFrames =
+                        bluetoothAudioSyntheticSilenceFrames;
+                    bluetoothAudioMaximumSendGapMs = 0;
+                    bluetoothAudioMaximumLatenessMs = 0;
+                    bluetoothAudioMaximumWriteMs = 0;
+                    bluetoothAudioSendsSinceSummary = 0;
+                    bluetoothAudioMinimumPending = Int32.MaxValue;
+                    bluetoothAudioMaximumPending = 0;
+                }
 
                 // Anchor the next deadline off the target schedule, not "now" - if this call ran a
                 // little late, catch up gradually via subsequent early-arriving Poll iterations
                 // rather than permanently shifting the whole schedule later.
                 bluetoothAudioNextSendDeadlineMs += batchSize * BtAudioMsPerBlock;
+
+                // A pause longer than the controller cushion cannot be repaired by flooding stale
+                // reports. Rebase and resume the 8 ms presentation clock instead.
+                if (nowMs - bluetoothAudioNextSendDeadlineMs >
+                    BtAudioControllerPrimeReportCount * BtAudioMsPerBlock)
+                    bluetoothAudioNextSendDeadlineMs = nowMs + BtAudioMsPerBlock;
             }
         }
 
-        private void SendBluetoothAudioBatch(List<byte[]> frames, int start, int batchSize, ref ushort packetCounter) {
-            byte protocol = batchSize == BtAudioStreamFramesPerBigBatch
-                ? BtAudioStreamProtocol4Frames
-                : BtAudioStreamProtocol2Frames;
-            int reportLen = batchSize == BtAudioStreamFramesPerBigBatch
-                ? BtAudioStreamReport4FramesLen
-                : BtAudioStreamReport2FramesLen;
+        private void EnsureBluetoothAudioPollScheduling() {
+            if (bluetoothAudioMmcssHandle != IntPtr.Zero || bluetoothAudioMmcssAttempted)
+                return;
+
+            bluetoothAudioMmcssAttempted = true;
+            try {
+                uint taskIndex = 0;
+                bluetoothAudioMmcssHandle = AvSetMmThreadCharacteristics("Pro Audio", ref taskIndex);
+                if (bluetoothAudioMmcssHandle != IntPtr.Zero) {
+                    AvSetMmThreadPriority(bluetoothAudioMmcssHandle, AvrtPriority.Critical);
+                    AudioDebugLog.Write("DS4Send", "Poll thread registered with MMCSS Pro Audio");
+                }
+            } catch (DllNotFoundException) {
+                bluetoothAudioMmcssHandle = IntPtr.Zero;
+            } catch (EntryPointNotFoundException) {
+                bluetoothAudioMmcssHandle = IntPtr.Zero;
+            }
+        }
+
+        private void ReleaseBluetoothAudioPollScheduling() {
+            if (bluetoothAudioMmcssHandle != IntPtr.Zero) {
+                // This method is reached from SendQueuedBluetoothAudioIfAny on the same Poll
+                // thread that registered the handle, as required by avrt.dll.
+                try { AvRevertMmThreadCharacteristics(bluetoothAudioMmcssHandle); } catch { }
+                bluetoothAudioMmcssHandle = IntPtr.Zero;
+            }
+            bluetoothAudioMmcssAttempted = false;
+        }
+
+        private static byte[] CreateBluetoothAudioSilenceFrame() {
+            try {
+                using (var encoder = new SbcEncoder(16000, SbcSubBandCount.Sb8, 48,
+                    SbcChannelMode.JointStereo, SbcAllocationMode.Snr, SbcBlockCount.Blk16)) {
+                    var pcm = new byte[encoder.CodeSize];
+                    var frame = new byte[encoder.FrameSize];
+                    int encoded = encoder.Encode(pcm, frame);
+                    return encoded == BtAudioSbcFrameLength ? frame : null;
+                }
+            } catch {
+                // The real capture encoder uses the same native library. If it is unavailable,
+                // audio startup will fail independently; simply leave the continuity fallback
+                // disabled rather than allowing a secondary initialization failure to escape.
+                return null;
+            }
+        }
+
+        private double SendBluetoothAudioFrame(byte[] frame, ref ushort packetCounter,
+            out bool submitted) {
+            byte protocol = BtAudioStreamProtocol;
+            int reportLen = BtAudioStreamReportLen;
 
             byte[] buf = new byte[reportLen];
             buf[0] = protocol;
-            buf[1] = 0x40;
+            // Preserve the 4 ms input interval on every audio report. Sending bare 0x40 here
+            // repeatedly resets the controller to interval zero, creating avoidable inbound
+            // Bluetooth traffic that competes with the outbound SBC stream.
+            buf[1] = BtAudioStreamFlags;
             buf[2] = 0xa0; // preserve ordinary HID input while carrying outbound SBC audio
             buf[3] = (byte)(packetCounter & 0xFF);
             buf[4] = (byte)((packetCounter >> 8) & 0xFF);
             buf[5] = bluetoothAudioOutputPath;
 
-            int offset = 6;
-            for (int i = 0; i < batchSize; i++) {
-                byte[] frame = frames[start + i];
-                Buffer.BlockCopy(frame, 0, buf, offset, frame.Length);
-                offset += frame.Length;
-            }
+            Buffer.BlockCopy(frame, 0, buf, 6, frame.Length);
 
             uint crc = Crc32(0xA2, buf, reportLen - 4);
             buf[reportLen - 4] = (byte)crc;
@@ -979,10 +1258,405 @@ namespace BetterJoyForCemu {
             buf[reportLen - 2] = (byte)(crc >> 16);
             buf[reportLen - 1] = (byte)(crc >> 24);
 
-            if (HIDapi.hid_write(handle, buf, new UIntPtr((uint)reportLen)) < 0)
-                LogDualShock4RawDump("Bluetooth audio stream write failed");
+            // Submission is intentionally separate from completion. The dedicated overlapped
+            // pool exposes actual HIDCLASS completion latency in the once-per-second summary;
+            // hid_write's return time on the fallback handle cannot provide that information.
+            long writeStartTicks = Stopwatch.GetTimestamp();
+            bool hardFailure = false;
+            submitted = bluetoothAudioWritePool != null
+                ? bluetoothAudioWritePool.TrySend(buf, out hardFailure)
+                : HIDapi.hid_write(handle, buf, new UIntPtr((uint)reportLen)) >= 0;
+            double writeMs = (Stopwatch.GetTimestamp() - writeStartTicks) * 1000.0 / Stopwatch.Frequency;
+            if (!submitted && hardFailure)
+                AudioDebugLog.Write("DS4Send", "Bluetooth audio native write failed");
+            else if (writeMs > 5.0)
+                AudioDebugLog.Write("DS4Send", "slow audio submit ms=" +
+                    writeMs.ToString("F1"));
 
-            packetCounter += (ushort)batchSize;
+            if (submitted)
+                packetCounter++;
+            return writeMs;
+        }
+
+        private struct BluetoothAudioWriteStatus {
+            public readonly int PendingWrites;
+            public readonly long CompletionFailures;
+            public readonly long ShortTransfers;
+            public readonly long IntervalSaturations;
+            public readonly double OldestPendingMs;
+            public readonly double MaximumIntervalCompletionMs;
+
+            public BluetoothAudioWriteStatus(int pendingWrites,
+                long completionFailures, long shortTransfers,
+                long intervalSaturations, double oldestPendingMs,
+                double maximumIntervalCompletionMs) {
+                PendingWrites = pendingWrites;
+                CompletionFailures = completionFailures;
+                ShortTransfers = shortTransfers;
+                IntervalSaturations = intervalSaturations;
+                OldestPendingMs = oldestPendingMs;
+                MaximumIntervalCompletionMs = maximumIntervalCompletionMs;
+            }
+        }
+
+        // A DS4 Bluetooth audio report is an ordinary HID output report, but Windows does not
+        // guarantee that a synchronous hid_write return corresponds to delivery through the
+        // Bluetooth stack. Keep a bounded set of native OVERLAPPED writes on a second shared HID
+        // file session, matching DS4Windows' production transport. The 640-byte backing buffers
+        // are intentional: genuine CUH-ZCT2 HIDCLASS completions have been observed reporting up
+        // to 547 bytes even for shorter variable-length output reports.
+        private sealed class BluetoothAudioWritePool : IDisposable {
+            private const int SlotCount = 32;
+            private const int NativeBackingBufferLength = 640;
+            private const uint GenericRead = 0x80000000;
+            private const uint GenericWrite = 0x40000000;
+            private const uint FileShareRead = 0x00000001;
+            private const uint FileShareWrite = 0x00000002;
+            private const uint OpenExisting = 3;
+            private const uint FileFlagOverlapped = 0x40000000;
+            private const uint WaitObject0 = 0;
+            private const uint WaitTimeout = 258;
+            private const int ErrorIoPending = 997;
+            private static readonly IntPtr InvalidHandleValue = new IntPtr(-1);
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct NativeOverlappedState {
+                public IntPtr Internal;
+                public IntPtr InternalHigh;
+                public uint Offset;
+                public uint OffsetHigh;
+                public IntPtr EventHandle;
+            }
+
+            private readonly object gate = new object();
+            private readonly IntPtr nativeHandle;
+            private readonly byte[][] buffers = new byte[SlotCount][];
+            private readonly GCHandle[] pins = new GCHandle[SlotCount];
+            private readonly IntPtr[] events = new IntPtr[SlotCount];
+            private readonly IntPtr[] overlapped = new IntPtr[SlotCount];
+            private readonly bool[] outstanding = new bool[SlotCount];
+            private readonly int[] expectedLengths = new int[SlotCount];
+            private readonly long[] submittedTimestamps = new long[SlotCount];
+            private int nextSlot;
+            private bool disposed;
+            private long completionFailures;
+            private long shortTransfers;
+            private long maximumIntervalCompletionTicks;
+            private long intervalSaturations;
+
+            private BluetoothAudioWritePool(IntPtr nativeHandle) {
+                this.nativeHandle = nativeHandle;
+                try {
+                    int overlappedSize = Marshal.SizeOf(typeof(NativeOverlappedState));
+                    for (int slot = 0; slot < SlotCount; slot++) {
+                        buffers[slot] = new byte[NativeBackingBufferLength];
+                        pins[slot] = GCHandle.Alloc(buffers[slot],
+                            GCHandleType.Pinned);
+                        events[slot] = CreateEventW(IntPtr.Zero, true, true, null);
+                        if (events[slot] == IntPtr.Zero)
+                            throw new IOException(
+                                "Could not create a DS4 audio completion event.");
+                        overlapped[slot] = Marshal.AllocHGlobal(overlappedSize);
+                        ResetOverlapped(slot);
+                    }
+                } catch {
+                    ReleaseAllocatedSlots(false);
+                    throw;
+                }
+            }
+
+            public static BluetoothAudioWritePool TryOpen(string devicePath,
+                out int error) {
+                error = 0;
+                if (String.IsNullOrEmpty(devicePath)) {
+                    error = 87;
+                    return null;
+                }
+
+                IntPtr nativeHandle = CreateFileW(devicePath,
+                    GenericRead | GenericWrite, FileShareRead | FileShareWrite,
+                    IntPtr.Zero, OpenExisting, FileFlagOverlapped, IntPtr.Zero);
+                if (nativeHandle == IntPtr.Zero ||
+                    nativeHandle == InvalidHandleValue) {
+                    error = Marshal.GetLastWin32Error();
+                    return null;
+                }
+
+                try {
+                    return new BluetoothAudioWritePool(nativeHandle);
+                } catch {
+                    error = Marshal.GetLastWin32Error();
+                    CloseHandle(nativeHandle);
+                    return null;
+                }
+            }
+
+            public bool TrySend(byte[] report, out bool hardFailure) {
+                hardFailure = false;
+                if (report == null || report.Length == 0 ||
+                    report.Length > NativeBackingBufferLength) {
+                    hardFailure = true;
+                    return false;
+                }
+
+                lock (gate) {
+                    if (disposed) {
+                        hardFailure = true;
+                        return false;
+                    }
+
+                    long failuresBefore = completionFailures;
+                    ReapCompletedNoLock();
+                    if (completionFailures != failuresBefore) {
+                        hardFailure = true;
+                        return false;
+                    }
+
+                    int slot = FindFreeSlotNoLock();
+                    if (slot < 0) {
+                        intervalSaturations++;
+                        return false;
+                    }
+
+                    if (!SubmitNoLock(slot, report, out int submitError)) {
+                        completionFailures++;
+                        hardFailure = true;
+                        AudioDebugLog.Write("DS4Send",
+                            "Overlapped audio submit failed error=" + submitError);
+                        return false;
+                    }
+                    return true;
+                }
+            }
+
+            public bool SendControlBarrier(byte[] report) {
+                if (report == null || report.Length == 0 ||
+                    report.Length > NativeBackingBufferLength)
+                    return false;
+
+                lock (gate) {
+                    if (disposed)
+                        return false;
+
+                    long failuresBeforeDrain = completionFailures;
+                    ReapCompletedNoLock();
+                    if (completionFailures != failuresBeforeDrain)
+                        return false;
+                    for (int slot = 0; slot < SlotCount; slot++) {
+                        if (!outstanding[slot])
+                            continue;
+                        if (WaitForSingleObject(events[slot], 1000) != WaitObject0)
+                            return false;
+                    }
+                    ReapCompletedNoLock();
+                    if (completionFailures != failuresBeforeDrain)
+                        return false;
+
+                    int controlSlot = FindFreeSlotNoLock();
+                    int submitError = 0;
+                    if (controlSlot < 0 ||
+                        !SubmitNoLock(controlSlot, report, out submitError)) {
+                        if (submitError != 0)
+                            AudioDebugLog.Write("DS4Send",
+                                "Overlapped audio control submit failed error=" + submitError);
+                        return false;
+                    }
+
+                    if (WaitForSingleObject(events[controlSlot], 1000) !=
+                        WaitObject0) {
+                        CancelIoEx(nativeHandle, overlapped[controlSlot]);
+                        return false;
+                    }
+
+                    long failuresBefore = completionFailures;
+                    ReapCompletedNoLock();
+                    return completionFailures == failuresBefore &&
+                        !outstanding[controlSlot];
+                }
+            }
+
+            public BluetoothAudioWriteStatus GetStatus() {
+                lock (gate) {
+                    if (disposed)
+                        return default(BluetoothAudioWriteStatus);
+
+                    ReapCompletedNoLock();
+                    int pending = 0;
+                    long oldestTicks = 0;
+                    long now = Stopwatch.GetTimestamp();
+                    for (int slot = 0; slot < SlotCount; slot++) {
+                        if (!outstanding[slot])
+                            continue;
+                        pending++;
+                        oldestTicks = Math.Max(oldestTicks,
+                            now - submittedTimestamps[slot]);
+                    }
+
+                    long intervalMaximum = maximumIntervalCompletionTicks;
+                    long saturations = intervalSaturations;
+                    maximumIntervalCompletionTicks = 0;
+                    intervalSaturations = 0;
+                    return new BluetoothAudioWriteStatus(pending,
+                        completionFailures, shortTransfers, saturations,
+                        oldestTicks * 1000.0 / Stopwatch.Frequency,
+                        intervalMaximum * 1000.0 / Stopwatch.Frequency);
+                }
+            }
+
+            private int FindFreeSlotNoLock() {
+                for (int offset = 0; offset < SlotCount; offset++) {
+                    int candidate = (nextSlot + offset) % SlotCount;
+                    if (!outstanding[candidate])
+                        return candidate;
+                }
+                return -1;
+            }
+
+            private bool SubmitNoLock(int slot, byte[] report,
+                out int submitError) {
+                Array.Clear(buffers[slot], 0, buffers[slot].Length);
+                Buffer.BlockCopy(report, 0, buffers[slot], 0, report.Length);
+                ResetEvent(events[slot]);
+                ResetOverlapped(slot);
+                bool completedSynchronously = WriteFile(nativeHandle,
+                    pins[slot].AddrOfPinnedObject(), (uint)report.Length,
+                    IntPtr.Zero, overlapped[slot]);
+                submitError = completedSynchronously ? 0 :
+                    Marshal.GetLastWin32Error();
+                if (!completedSynchronously && submitError != ErrorIoPending) {
+                    SetEvent(events[slot]);
+                    return false;
+                }
+
+                outstanding[slot] = true;
+                expectedLengths[slot] = report.Length;
+                submittedTimestamps[slot] = Stopwatch.GetTimestamp();
+                nextSlot = (slot + 1) % SlotCount;
+                return true;
+            }
+
+            private void ReapCompletedNoLock() {
+                for (int slot = 0; slot < SlotCount; slot++) {
+                    if (!outstanding[slot] ||
+                        WaitForSingleObject(events[slot], 0) != WaitObject0)
+                        continue;
+
+                    bool completed = GetOverlappedResult(nativeHandle,
+                        overlapped[slot], out uint transferred, false);
+                    long completionTicks = Stopwatch.GetTimestamp() -
+                        submittedTimestamps[slot];
+                    maximumIntervalCompletionTicks = Math.Max(
+                        maximumIntervalCompletionTicks, completionTicks);
+                    outstanding[slot] = false;
+                    if (!completed) {
+                        completionFailures++;
+                        continue;
+                    }
+
+                    // HIDCLASS legitimately reports zero bytes for some output completions.
+                    // A nonzero short completion is retained as telemetry, not retried (which
+                    // would duplicate an SBC packet and make the artifact worse).
+                    if (transferred != 0 && transferred < expectedLengths[slot])
+                        shortTransfers++;
+                }
+            }
+
+            private void ResetOverlapped(int slot) {
+                var value = new NativeOverlappedState {
+                    EventHandle = events[slot]
+                };
+                Marshal.StructureToPtr(value, overlapped[slot], false);
+            }
+
+            public void Dispose() {
+                lock (gate) {
+                    if (disposed)
+                        return;
+                    disposed = true;
+                    ReleaseAllocatedSlots(true);
+                    CloseHandle(nativeHandle);
+                }
+            }
+
+            private void ReleaseAllocatedSlots(bool cancelOutstanding) {
+                for (int slot = 0; slot < SlotCount; slot++) {
+                    bool safeToFree = true;
+                    if (events[slot] != IntPtr.Zero && cancelOutstanding &&
+                        outstanding[slot] &&
+                        WaitForSingleObject(events[slot], 0) != WaitObject0) {
+                        CancelIoEx(nativeHandle, overlapped[slot]);
+                        safeToFree = WaitForSingleObject(events[slot], 250) ==
+                            WaitObject0;
+                    }
+                    if (!safeToFree) {
+                        // The kernel can still reference this OVERLAPPED and pinned buffer. A
+                        // bounded teardown leak is safer than freeing live native I/O memory.
+                        events[slot] = IntPtr.Zero;
+                        overlapped[slot] = IntPtr.Zero;
+                        pins[slot] = default(GCHandle);
+                        continue;
+                    }
+
+                    if (events[slot] != IntPtr.Zero) {
+                        CloseHandle(events[slot]);
+                        events[slot] = IntPtr.Zero;
+                    }
+                    if (overlapped[slot] != IntPtr.Zero) {
+                        Marshal.FreeHGlobal(overlapped[slot]);
+                        overlapped[slot] = IntPtr.Zero;
+                    }
+                    if (pins[slot].IsAllocated)
+                        pins[slot].Free();
+                }
+            }
+
+            [DllImport("kernel32.dll", EntryPoint = "CreateFileW",
+                CharSet = CharSet.Unicode, ExactSpelling = true,
+                SetLastError = true)]
+            private static extern IntPtr CreateFileW(string fileName,
+                uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+                uint creationDisposition, uint flagsAndAttributes,
+                IntPtr templateFile);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool WriteFile(IntPtr file, IntPtr buffer,
+                uint bytesToWrite, IntPtr bytesWritten, IntPtr nativeOverlapped);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool GetOverlappedResult(IntPtr file,
+                IntPtr nativeOverlapped, out uint bytesTransferred,
+                [MarshalAs(UnmanagedType.Bool)] bool wait);
+
+            [DllImport("kernel32.dll", EntryPoint = "CreateEventW",
+                CharSet = CharSet.Unicode, ExactSpelling = true,
+                SetLastError = true)]
+            private static extern IntPtr CreateEventW(IntPtr eventAttributes,
+                [MarshalAs(UnmanagedType.Bool)] bool manualReset,
+                [MarshalAs(UnmanagedType.Bool)] bool initialState,
+                string name);
+
+            [DllImport("kernel32.dll")]
+            private static extern uint WaitForSingleObject(IntPtr handle,
+                uint milliseconds);
+
+            [DllImport("kernel32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool ResetEvent(IntPtr handle);
+
+            [DllImport("kernel32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool SetEvent(IntPtr handle);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool CancelIoEx(IntPtr handle,
+                IntPtr nativeOverlapped);
+
+            [DllImport("kernel32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool CloseHandle(IntPtr handle);
         }
     }
 }

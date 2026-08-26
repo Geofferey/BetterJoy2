@@ -13,7 +13,7 @@ namespace BetterJoyForCemu {
     // Pipeline: EventSyncedLoopbackCapture (below, built on NAudio's WasapiCapture - already a
     // project dependency) on the selected/default render endpoint -> downmix to stereo float
     // (matches nefarius/DS4AudioStreamer's Downmixer.cs, MIT) -> SampleRateResampler
-    // (SampleRateResampler.cs, libsamplerate) -> the controller-selected encoder: DS4 uses 32 kHz
+    // (SampleRateResampler.cs, libsamplerate) -> the controller-selected encoder: DS4 uses 16 kHz
     // PCM into SBC while DualSense uses 48 kHz float into fixed 200-byte Opus frames. Controller
     // report construction stays in DualShock4.cs/DualSense.cs. An earlier attempt used NAudio's
     // own MediaFoundationResampler here to
@@ -27,6 +27,16 @@ namespace BetterJoyForCemu {
     // occasional ~100ms bursts - the bursty version measurably produced periodic audio skips on
     // real hardware, since DualShock4Controller's stream worker expects roughly steady arrival to
     // pace its own real-time output against.
+    //
+    // A DiscontinuityAwareLoopbackCapture variant (driving AudioClient/AudioCaptureClient
+    // directly, to surface WASAPI's AudioClientBufferFlags.DataDiscontinuity - which
+    // WasapiCapture's DataAvailable never exposes) was tried here and reverted the same day: on
+    // real hardware it produced a genuine 14.2-SECOND capture-thread stall (confirmed via this
+    // file's own callbackIntervalMs logging), far worse than anything seen before it, most likely
+    // a bug in that from-scratch capture loop rather than proof of a real engine-level problem.
+    // WasapiCapture's own internal loop is the proven, working implementation - stick with it
+    // rather than re-attempting the from-scratch replacement without a way to test it directly
+    // against real hardware first.
     internal sealed class EventSyncedLoopbackCapture : WasapiCapture {
         public EventSyncedLoopbackCapture(MMDevice captureDevice) : base(captureDevice, true, 0) { }
 
@@ -36,7 +46,10 @@ namespace BetterJoyForCemu {
 
     internal sealed class BluetoothAudioCapture : IDisposable {
         private const int TargetChannels = 2;
-        private const int DualShock4SampleRate = 32000;
+        // DS4Windows' current loopback transport uses 16 kHz SBC so one 109-byte frame represents
+        // 8 ms of audio. That permits the controller's reliable one-frame 0x12 report lane at
+        // half the HID transaction rate of the old 32 kHz/4 ms form.
+        private const int DualShock4SampleRate = 16000;
         private const int DualSenseOpusSampleRate = 48000;
         // Sony's Bluetooth media clock presents one 480-sample Opus packet every 10.667 ms,
         // consuming 512 frames from a normal 48 kHz render stream. A continuous 45 kHz resample
@@ -57,6 +70,10 @@ namespace BetterJoyForCemu {
         private readonly object lifecycleLock = new object();
         private Stopwatch debugStopwatch;
         private double debugLastCallbackMs;
+        private double debugLastSummaryMs;
+        private double debugMaximumCallbackIntervalMs;
+        private int debugCallbacksSinceSummary;
+        private int debugFramesEncodedSinceSummary;
 
         public BluetoothAudioCapture(Action<byte[]> onFrame) {
             this.onFrame = onFrame;
@@ -122,6 +139,10 @@ namespace BetterJoyForCemu {
                 opusCarry = new float[0];
                 debugStopwatch = Stopwatch.StartNew();
                 debugLastCallbackMs = 0;
+                debugLastSummaryMs = 0;
+                debugMaximumCallbackIntervalMs = 0;
+                debugCallbacksSinceSummary = 0;
+                debugFramesEncodedSinceSummary = 0;
             }
 
             newCapture.DataAvailable += OnDataAvailable;
@@ -248,11 +269,25 @@ namespace BetterJoyForCemu {
                 double nowMs = debugStopwatch.Elapsed.TotalMilliseconds;
                 double intervalMs = nowMs - debugLastCallbackMs;
                 debugLastCallbackMs = nowMs;
-                AudioDebugLog.Write("Capture", "callbackIntervalMs=" + intervalMs.ToString("F1") +
-                    " bytesRecorded=" + e.BytesRecorded + " inputFrames=" + inputFrames +
-                    " used=" + used + " generated=" + generated + " framesEncoded=" + framesEncoded +
-                    " preResampleMaxLRDiff=" + preResampleMaxDiff.ToString("F4") +
-                    " postResampleMaxLRDiff=" + postResampleMaxDiff.ToString("F4"));
+                debugMaximumCallbackIntervalMs = Math.Max(
+                    debugMaximumCallbackIntervalMs, intervalMs);
+                debugCallbacksSinceSummary++;
+                debugFramesEncodedSinceSummary += framesEncoded;
+                if (intervalMs > 15.0 || e.BytesRecorded == 0 ||
+                    nowMs - debugLastSummaryMs >= 1000.0) {
+                    debugLastSummaryMs = nowMs;
+                    AudioDebugLog.Write("Capture", "callbackIntervalMs=" + intervalMs.ToString("F1") +
+                        " maxCallbackIntervalMs=" + debugMaximumCallbackIntervalMs.ToString("F1") +
+                        " callbacks=" + debugCallbacksSinceSummary +
+                        " bytesRecorded=" + e.BytesRecorded + " inputFrames=" + inputFrames +
+                        " used=" + used + " generated=" + generated +
+                        " framesEncoded=" + debugFramesEncodedSinceSummary +
+                        " preResampleMaxLRDiff=" + preResampleMaxDiff.ToString("F4") +
+                        " postResampleMaxLRDiff=" + postResampleMaxDiff.ToString("F4"));
+                    debugMaximumCallbackIntervalMs = 0;
+                    debugCallbacksSinceSummary = 0;
+                    debugFramesEncodedSinceSummary = 0;
+                }
             }
         }
 
