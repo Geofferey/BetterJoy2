@@ -54,6 +54,8 @@ namespace BetterJoyForCemu {
         private byte lightbarRed;
         private byte lightbarGreen;
         private byte lightbarBlue = 255;
+        private byte currentLeftMotor;
+        private byte currentRightMotor;
         private long lightbarApplyEarliestTimestamp;
         private bool connectionLightFlashStarted;
         // Common DS4 status byte 0, bit 5 is the physical headphone detect signal. -1 means no
@@ -165,6 +167,13 @@ namespace BetterJoyForCemu {
         }
 
         public override void SetLightColor(byte red, byte green, byte blue) {
+            // ApplyControllerProfileOptions runs periodically. Avoid emitting the same effect
+            // report (and, while audio is active, an ordered audio-lane barrier) every scan.
+            if (lightbarTransportKnown && !lightbarUpdatePending &&
+                lightbarRed == red && lightbarGreen == green &&
+                lightbarBlue == blue)
+                return;
+
             lightbarRed = red;
             lightbarGreen = green;
             lightbarBlue = blue;
@@ -659,30 +668,91 @@ namespace BetterJoyForCemu {
             return (raw - bias) * (2.0f * AccelLsbPerG / range) / AccelLsbPerG;
         }
 
-        // DualShock 4 main output report. USB uses report 0x05 with the common payload directly
-        // after the report ID. Bluetooth uses report 0x11, requests HID+CRC handling in its
-        // hardware-control byte, and appends an A2-seeded CRC32. In both forms valid_flag0 bit 1
-        // marks the RGB fields as authoritative. Layout follows the kernel hid-playstation DS4
-        // output structures so connection color and later profile changes share one path.
+        // DualShock 4 main output state. USB uses report 0x05 with the common payload directly
+        // after the report ID. Bluetooth uses report 0x11, requests HID+CRC handling, and appends
+        // an A2-seeded CRC32. Rumble, lightbar, and Bluetooth audio configuration share this one
+        // report, so compose them from tracked state instead of letting feature-specific reports
+        // silently replace each other.
         private bool SendDualShock4Lightbar(byte red, byte green, byte blue) {
+            lock (bluetoothAudioStateLock) {
+                return SendDualShock4OutputStateNoLock(false, true,
+                    bluetoothAudioStreaming, red, green, blue);
+            }
+        }
+
+        private void SendDualShock4Rumble(byte leftMotor, byte rightMotor) {
+            lock (bluetoothAudioStateLock) {
+                // Rumble-disabled profiles enqueue a stop during each reconciliation. Preserve a
+                // real nonzero -> zero transition, but do not churn the shared output lane when
+                // both physical motors are already stopped.
+                if (leftMotor == 0 && rightMotor == 0 &&
+                    currentLeftMotor == 0 && currentRightMotor == 0)
+                    return;
+
+                currentLeftMotor = leftMotor;
+                currentRightMotor = rightMotor;
+                SendDualShock4OutputStateNoLock(true, false,
+                    bluetoothAudioStreaming);
+            }
+        }
+
+        private bool SendDualShock4OutputStateNoLock(bool rumbleValid,
+            bool lightbarValid, bool audioValid, byte? outputRed = null,
+            byte? outputGreen = null, byte? outputBlue = null) {
             bool bt = !isUSB;
             int len = bt ? 78 : 32;
             byte[] buf = new byte[len];
             int commonOffset;
             if (bt) {
                 buf[0] = 0x11;
-                buf[1] = 0xC4; // HID | CRC32 | 4 ms Bluetooth poll interval
-                buf[2] = 0x00; // audio control
+                buf[1] = BtAudioControlFlags;
+                // A0 keeps ordinary input reports alive while the speaker/headset lane is armed.
+                // A conventional zero here replaces the controller's audio-plane state, so every
+                // effect report emitted during streaming must retain A0 as well.
+                buf[2] = audioValid ? (byte)0xA0 : (byte)0x00;
                 commonOffset = 3;
             } else {
                 buf[0] = 0x05;
                 commonOffset = 1;
             }
 
-            buf[commonOffset] = 0x02; // DS4_OUTPUT_VALID_FLAG0_LED
-            buf[commonOffset + 5] = red;
-            buf[commonOffset + 6] = green;
-            buf[commonOffset + 7] = blue;
+            // An audio control report is a complete state publication. Assert current motor and
+            // lightbar values with it so arming/rerouting audio cannot cancel either effect.
+            if (audioValid) {
+                rumbleValid = true;
+                lightbarValid = true;
+            }
+
+            byte validFlags = 0;
+            if (rumbleValid)
+                validFlags |= 0x01;
+            if (lightbarValid)
+                validFlags |= 0x02;
+            if (bt && audioValid)
+                validFlags |= bluetoothAudioRouteHeadphones
+                    ? BtAudioValidFlagsHeadphones
+                    : BtAudioValidFlagsSpeaker;
+            buf[commonOffset] = validFlags;
+
+            // Common DS4 effect layout: flag bytes at +0/+1, reserved/copycat byte at +2,
+            // right-fast motor at +3, left-heavy motor at +4, then RGB at +5/+6/+7.
+            buf[commonOffset + 3] = currentRightMotor;
+            buf[commonOffset + 4] = currentLeftMotor;
+            buf[commonOffset + 5] = outputRed ?? lightbarRed;
+            buf[commonOffset + 6] = outputGreen ?? lightbarGreen;
+            buf[commonOffset + 7] = outputBlue ?? lightbarBlue;
+
+            if (bt && audioValid) {
+                int volumePercent = Math.Max(0,
+                    Math.Min(100, bluetoothAudioVolumePercent));
+                byte volume = (byte)(volumePercent * 0x50 / 100);
+                if (bluetoothAudioRouteHeadphones) {
+                    buf[21] = volume;
+                    buf[22] = volume;
+                } else {
+                    buf[24] = volume;
+                }
+            }
 
             if (bt) {
                 uint crc = Crc32(0xA2, buf, len - 4);
@@ -690,9 +760,8 @@ namespace BetterJoyForCemu {
                 buf[len - 3] = (byte)(crc >> 8);
                 buf[len - 2] = (byte)(crc >> 16);
                 buf[len - 1] = (byte)(crc >> 24);
-            }
-            if (bt)
                 return SendDualShock4BluetoothControlReport(buf);
+            }
             return HIDapi.hid_write(handle, buf, new UIntPtr((uint)len)) >= 0;
         }
 
@@ -740,8 +809,6 @@ namespace BetterJoyForCemu {
         // at the exact same offsets (8/9/10) SendDualShock4Lightbar already uses, and both agree on
         // the Crc32(0xA2, ...) checksum this codebase already uses elsewhere. The SBC codec itself
         // comes from the native libsbc.dll (GPL-2.0, nefarius/libsbc) via SbcEncoder.cs.
-        private const byte BtAudioEnableReportId = 0x11;
-        private const int BtAudioEnableReportLen = 78;
         // Narrowed from the reference's proven 0xF3 (rumble|lightbar|flash|HP-L|HP-R|mic|speaker
         // all "valid" at once) - the reference's own documented flag meanings, just a subset of
         // them, kept out of the lightbar/rumble report so pressing the test-tone button (phase 1)
@@ -781,40 +848,17 @@ namespace BetterJoyForCemu {
             if (isUSB || state <= state_.DROPPED)
                 return;
 
-            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
-            byte volume = (byte)(volumePercent * 0x50 / 100); // range is 0-0x50 (80 decimal), not 0-0xFF
-
-            byte[] buf = new byte[BtAudioEnableReportLen];
-            buf[0] = BtAudioEnableReportId;
-            // Preserve the same 4 ms Bluetooth input interval used by ordinary DS4 output
-            // reports. The lower six bits are the interval, so bare 0xC0 resets it to zero and
-            // increases inbound radio traffic precisely while speaker traffic needs the link.
-            buf[1] = BtAudioControlFlags;
-            // A0 keeps ordinary controller input reports alive while the speaker lane is armed.
-            // A2 is accepted by the audio hardware but eventually starves normal HID input on a
-            // genuine CUH-ZCT2, which would also make headphone unplug detection impossible.
-            buf[2] = 0xA0;
-            if (routeToHeadphones) {
-                buf[3] = BtAudioValidFlagsHeadphones;
-                buf[21] = volume; // headphone left volume
-                buf[22] = volume; // headphone right volume
-            } else {
-                buf[3] = BtAudioValidFlagsSpeaker;
-                buf[24] = volume; // speaker volume
+            lock (bluetoothAudioStateLock) {
+                bluetoothAudioVolumePercent = Math.Max(0,
+                    Math.Min(100, volumePercent));
+                bluetoothAudioRouteHeadphones = routeToHeadphones;
+                // Publish one complete A0 state through the ordered control lane: audio routing,
+                // volume, current motors, and current lightbar. No later feature-specific output
+                // report is then allowed to replace the active audio mode with byte 2 == 0.
+                if (!SendDualShock4OutputStateNoLock(true, true, true))
+                    AudioDebugLog.Write("DS4Send",
+                        "Bluetooth audio control write failed");
             }
-
-            uint crc = Crc32(0xA2, buf, BtAudioEnableReportLen - 4);
-            buf[BtAudioEnableReportLen - 4] = (byte)crc;
-            buf[BtAudioEnableReportLen - 3] = (byte)(crc >> 8);
-            buf[BtAudioEnableReportLen - 2] = (byte)(crc >> 16);
-            buf[BtAudioEnableReportLen - 1] = (byte)(crc >> 24);
-
-            // When live streaming owns its dedicated HID session, put the enable report through
-            // that same ordered lane and wait for its native completion before any SBC report can
-            // follow. The primary handle remains the fallback for the standalone preparation path.
-            bool prepared = SendDualShock4BluetoothControlReport(buf);
-            if (!prepared)
-                AudioDebugLog.Write("DS4Send", "Bluetooth audio control write failed");
         }
 
         // Phase 2: continuous live streaming, replacing phase 1's fixed-duration test tone.
@@ -944,6 +988,9 @@ namespace BetterJoyForCemu {
                     // The service commonly discovers the controller before its session helper is
                     // connected. Do not publish a false active state: OnHelperConnected performs
                     // another profile reconciliation once capture is genuinely available.
+                    bluetoothAudioVolumePercent = -1;
+                    bluetoothAudioRouteHeadphones = false;
+                    SendDualShock4OutputStateNoLock(true, true, false);
                     DisposeBluetoothAudioWritePool();
                     return;
                 }
@@ -1004,9 +1051,25 @@ namespace BetterJoyForCemu {
                 bluetoothAudioVolumePercent = -1;
                 bluetoothAudioEndpointId = String.Empty;
                 bluetoothAudioRouteHeadphones = false;
+                // Explicitly release A0 audio-plane ownership while the ordered handle still
+                // exists, restoring the latest motor/lightbar state in the same transaction.
+                SendDualShock4OutputStateNoLock(true, true, false);
                 DisposeBluetoothAudioWritePool();
                 AudioDebugLog.Write("DS4Send", "Stop pad=" + PadId);
             }
+        }
+
+        // Controller's generic feedback queue already normalizes virtual-controller feedback to
+        // an amplitude. DS4 still needs its own wire-format drain: right is the light/fast motor,
+        // left is the heavy/slow motor. Until now this override was absent, so queued DS4 rumble
+        // was never sent to the physical controller at all.
+        protected override void SendQueuedRumbleIfAny() {
+            if (rumble_obj.queue.Count == 0)
+                return;
+
+            float amp = rumble_obj.queue.Dequeue()[2];
+            byte motor = (byte)(Math.Max(0f, Math.Min(1f, amp)) * 255f);
+            SendDualShock4Rumble(motor, motor);
         }
 
         private void DisposeBluetoothAudioWritePool() {
