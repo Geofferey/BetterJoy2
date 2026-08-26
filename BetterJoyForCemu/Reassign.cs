@@ -240,7 +240,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -274,6 +274,7 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> touchpadMouseButtons = new List<SplitButton>();
         private SplitButton btn_ratchet_gyro;
         private SplitButton btn_guide;
+        private SplitButton btn_mic_mute;
         private SplitButton btn_touchpad_click;
         private SplitButton btn_touchpad_tap;
         private SplitButton btn_touchpad_two_finger_tap;
@@ -371,6 +372,7 @@ namespace BetterJoyForCemu {
 
             btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
             btn_guide = new SplitButton { Name = "btn_guide" };
+            btn_mic_mute = new SplitButton { Name = "btn_mic_mute" };
             btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
             btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
             btn_touchpad_two_finger_tap = new SplitButton {
@@ -740,15 +742,16 @@ namespace BetterJoyForCemu {
             AddMappingRow(page, lbl_capture, btn_capture, "Capture button", 157, 24, 150, 430);
             AddMappingRow(page, lbl_home, btn_home, "Home / PS button", 196, 24, 150, 430);
             AddMappingRow(page, null, btn_guide, "Guide / PS output", 235, 24, 150, 430);
-            AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 274, 24, 150, 430);
+            AddMappingRow(page, null, btn_mic_mute, "Microphone button", 274, 24, 150, 430);
+            AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 313, 24, 150, 430);
 
-            page.Controls.Add(CreateDivider(24, 323));
-            AddSectionHeading(page, "Joy-Con rail buttons", 340,
+            page.Controls.Add(CreateDivider(24, 362));
+            AddSectionHeading(page, "Joy-Con rail buttons", 379,
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 401, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 401, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 442, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 442, 315, 440, 154);
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 440, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 440, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 481, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 481, 315, 440, 154);
             return page;
         }
 

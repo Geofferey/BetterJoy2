@@ -78,8 +78,12 @@ namespace BetterJoyForCemu {
             TOUCHPAD_TWO_FINGER_TAP = 22,
             TOUCHPAD_TWO_FINGER_SCROLL_UP = 23,
             TOUCHPAD_TWO_FINGER_SCROLL_DOWN = 24,
+            // Physical microphone-mute button on DualSense. Keep this in the canonical input
+            // space instead of consuming it inside DualSense.cs so it can participate in every
+            // normal binding/chord (including future audio toggle and volume actions).
+            MIC_MUTE = 25,
         };
-        protected const int ButtonCount = (int)Button.TOUCHPAD_TWO_FINGER_SCROLL_DOWN + 1;
+        protected const int ButtonCount = (int)Button.MIC_MUTE + 1;
 
         // For UdpServer
         public int PadId = 0;
@@ -2204,8 +2208,11 @@ namespace BetterJoyForCemu {
                 Simulate(MappingValue("capture"));
             if (buttons_down[(int)Button.HOME])
                 Simulate(MappingValue("home"));
+            if (buttons_down[(int)Button.MIC_MUTE])
+                Simulate(MappingValue("mic_mute"));
             SimulateContinous((int)Button.CAPTURE, MappingValue("capture"));
             SimulateContinous((int)Button.HOME, MappingValue("home"));
+            SimulateContinous((int)Button.MIC_MUTE, MappingValue("mic_mute"));
             if (HasTouchpad) {
                 if (buttons_down[(int)Button.TOUCHPAD])
                     Simulate(MappingValue("touchpad_click"), false, false);

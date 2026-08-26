@@ -628,7 +628,8 @@ namespace BetterJoyForCemu {
                 byte btn3 = r[9 + o];
                 b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
                 b[(int)Button.TOUCHPAD] = (btn3 & 0x02) != 0;
-                // Mute/paddles remain unmapped; SL/SR have no DualSense equivalent.
+                b[(int)Button.MIC_MUTE] = (btn3 & 0x04) != 0;
+                // Edge paddles remain unmapped; SL/SR have no DualSense equivalent.
 
                 buttons = b;
                 CommitButtonState();

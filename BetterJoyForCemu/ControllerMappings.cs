@@ -37,7 +37,7 @@ namespace BetterJoyForCemu {
         public const string DefaultLightColor = "#0000FF";
 
         public static readonly string[] Keys = {
-            "capture", "home", "guide", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
+            "capture", "home", "guide", "mic_mute", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
             // independent activation keys below.
