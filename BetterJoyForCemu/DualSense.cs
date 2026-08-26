@@ -6,8 +6,11 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using Concentus;
+using Concentus.Enums;
 
 namespace BetterJoyForCemu {
     // DualSenseController : Controller - step 4 Phase J of DOCS/CONTROLLERS-REFACTOR.md's
@@ -122,6 +125,47 @@ namespace BetterJoyForCemu {
         private bool bluetoothAudioRouteHeadphones;
         private Stopwatch bluetoothAudioStopwatch;
         private double bluetoothAudioNextSendDeadlineMs;
+        // Bluetooth audio owns a second, shareable HID session while streaming. Its bounded
+        // OVERLAPPED write pool lets Windows keep reports moving during short scheduler/storage
+        // stalls without ever racing hidapi reads on this controller's primary handle.
+        private BluetoothAudioWritePool bluetoothAudioWritePool;
+        private byte[] bluetoothAudioSilenceFrame;
+        // Owned exclusively by Poll. AVRT registration and release must happen on the same thread.
+        private IntPtr bluetoothAudioMmcssHandle;
+        private bool bluetoothAudioMmcssAttempted;
+        // Cross-stage timing telemetry. Capture/IPC arrivals are recorded by the helper-pipe
+        // thread; the remaining counters belong to Poll under bluetoothAudioStateLock.
+        private long bluetoothAudioLastEnqueueTimestamp;
+        private long bluetoothAudioMaximumEnqueueGapTicks;
+        private long bluetoothAudioFramesEnqueued;
+        private double bluetoothAudioLastSendMs;
+        private double bluetoothAudioMaximumSendGapMs;
+        private double bluetoothAudioMaximumLatenessMs;
+        private double bluetoothAudioMaximumSubmitMs;
+        private double bluetoothAudioLastDiagnosticMs;
+        private long bluetoothAudioSyntheticSilenceFrames;
+        private long bluetoothAudioLastSummarySyntheticSilenceFrames;
+        private int bluetoothAudioSendsSinceSummary;
+        private int bluetoothAudioMinimumPending;
+        private int bluetoothAudioMaximumPending;
+
+        private enum AvrtPriority {
+            Low = -1,
+            Normal = 0,
+            High = 1,
+            Critical = 2,
+        }
+
+        [DllImport("avrt.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr AvSetMmThreadCharacteristics(
+            string taskName, ref uint taskIndex);
+
+        [DllImport("avrt.dll", SetLastError = true)]
+        private static extern bool AvSetMmThreadPriority(
+            IntPtr avrtHandle, AvrtPriority priority);
+
+        [DllImport("avrt.dll", SetLastError = true)]
+        private static extern bool AvRevertMmThreadCharacteristics(IntPtr avrtHandle);
 
         protected override float GyroSubSamplePeriod => measuredGyroSubSamplePeriod;
         // See GyroMath.cs's GyroStickBiasCorrection declaration - opts DualSense's gyro-stick into
@@ -881,9 +925,22 @@ namespace BetterJoyForCemu {
                     StopBluetoothAudioStream();
                 }
 
+                DisposeBluetoothAudioWritePool();
+                bluetoothAudioWritePool = BluetoothAudioWritePool.TryOpen(path,
+                    out int audioHandleError);
+                if (bluetoothAudioWritePool == null)
+                    AudioDebugLog.Write("DualSenseSend",
+                        "Dedicated audio handle unavailable error=" + audioHandleError +
+                        "; using primary HID handle fallback");
+                else
+                    AudioDebugLog.Write("DualSenseSend",
+                        "Dedicated overlapped audio handle opened");
+
                 if (!form.StartBluetoothAudioCapture(PadId, endpointId,
-                    BluetoothAudioCodec.DualSenseOpus))
+                    BluetoothAudioCodec.DualSenseOpus)) {
+                    DisposeBluetoothAudioWritePool();
                     return;
+                }
 
                 while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
                 bluetoothAudioPending.Clear();
@@ -891,6 +948,21 @@ namespace BetterJoyForCemu {
                 bluetoothAudioPrimed = false;
                 bluetoothAudioStopwatch = Stopwatch.StartNew();
                 bluetoothAudioNextSendDeadlineMs = 0;
+                if (bluetoothAudioSilenceFrame == null)
+                    bluetoothAudioSilenceFrame = CreateBluetoothAudioSilenceFrame();
+                Interlocked.Exchange(ref bluetoothAudioLastEnqueueTimestamp, 0);
+                Interlocked.Exchange(ref bluetoothAudioMaximumEnqueueGapTicks, 0);
+                Interlocked.Exchange(ref bluetoothAudioFramesEnqueued, 0);
+                bluetoothAudioLastSendMs = 0;
+                bluetoothAudioMaximumSendGapMs = 0;
+                bluetoothAudioMaximumLatenessMs = 0;
+                bluetoothAudioMaximumSubmitMs = 0;
+                bluetoothAudioLastDiagnosticMs = 0;
+                bluetoothAudioSyntheticSilenceFrames = 0;
+                bluetoothAudioLastSummarySyntheticSilenceFrames = 0;
+                bluetoothAudioSendsSinceSummary = 0;
+                bluetoothAudioMinimumPending = Int32.MaxValue;
+                bluetoothAudioMaximumPending = 0;
                 bluetoothAudioVolumePercent = volumePercent;
                 bluetoothAudioEndpointId = endpointId;
                 bluetoothAudioRouteHeadphones = routeToHeadphones;
@@ -926,6 +998,7 @@ namespace BetterJoyForCemu {
                 bluetoothAudioRouteHeadphones = false;
                 bluetoothAudioPending.Clear();
                 while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
+                DisposeBluetoothAudioWritePool();
                 restoreControllerOutput = state > state_.DROPPED;
                 AudioDebugLog.Write("DualSenseSend", "Stop pad=" + PadId);
             }
@@ -943,18 +1016,49 @@ namespace BetterJoyForCemu {
             if (frame == null || frame.Length != BtAudioOpusFrameLength)
                 return;
 
+            long now = Stopwatch.GetTimestamp();
+            long previous = Interlocked.Exchange(
+                ref bluetoothAudioLastEnqueueTimestamp, now);
+            if (previous != 0)
+                InterlockedMaximum(ref bluetoothAudioMaximumEnqueueGapTicks,
+                    now - previous);
+            Interlocked.Increment(ref bluetoothAudioFramesEnqueued);
             bluetoothAudioFrameQueue.Enqueue(frame);
             while (bluetoothAudioFrameQueue.Count > BtAudioMaximumQueuedFrames)
                 bluetoothAudioFrameQueue.TryDequeue(out _);
         }
 
+        private void DisposeBluetoothAudioWritePool() {
+            BluetoothAudioWritePool pool = bluetoothAudioWritePool;
+            bluetoothAudioWritePool = null;
+            pool?.Dispose();
+        }
+
+        private static void InterlockedMaximum(ref long target, long candidate) {
+            long observed = Volatile.Read(ref target);
+            while (candidate > observed) {
+                long replaced = Interlocked.CompareExchange(ref target,
+                    candidate, observed);
+                if (replaced == observed)
+                    return;
+                observed = replaced;
+            }
+        }
+
         protected override void SendQueuedBluetoothAudioIfAny() {
             lock (bluetoothAudioStateLock) {
-                if (!bluetoothAudioStreaming)
+                if (!bluetoothAudioStreaming) {
+                    ReleaseBluetoothAudioPollScheduling();
                     return;
+                }
 
-                while (bluetoothAudioFrameQueue.TryDequeue(out byte[] queuedFrame))
+                EnsureBluetoothAudioPollScheduling();
+
+                int dequeued = 0;
+                while (bluetoothAudioFrameQueue.TryDequeue(out byte[] queuedFrame)) {
                     bluetoothAudioPending.Add(queuedFrame);
+                    dequeued++;
+                }
                 if (bluetoothAudioPending.Count > BtAudioMaximumQueuedFrames)
                     bluetoothAudioPending.RemoveRange(0,
                         bluetoothAudioPending.Count - BtAudioMaximumQueuedFrames);
@@ -967,28 +1071,170 @@ namespace BetterJoyForCemu {
                         bluetoothAudioPending.Count);
                 }
 
-                if (bluetoothAudioPending.Count == 0)
-                    return;
-
                 double nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
                 if (nowMs < bluetoothAudioNextSendDeadlineMs)
                     return;
 
-                byte[] frame = bluetoothAudioPending[0];
-                bluetoothAudioPending.RemoveAt(0);
+                bool syntheticSilence = bluetoothAudioPending.Count == 0;
+                byte[] frame = syntheticSilence
+                    ? bluetoothAudioSilenceFrame
+                    : bluetoothAudioPending[0];
+                if (frame == null)
+                    return;
+
+                double latenessMs = nowMs - bluetoothAudioNextSendDeadlineMs;
+                double sendGapMs = bluetoothAudioLastSendMs <= 0
+                    ? 0
+                    : nowMs - bluetoothAudioLastSendMs;
+                long submitStartTicks = Stopwatch.GetTimestamp();
+                bool submitted;
                 lock (outputReportLock) {
+                    byte outputSequenceBefore = bluetoothOutputSequence;
+                    byte packetSequenceBefore = bluetoothAudioPacketSequence;
                     byte[] report = BuildBluetoothSpeakerReport(frame);
-                    int written = HIDapi.hid_write(handle, report,
-                        new UIntPtr((uint)report.Length));
-                    if (written >= 0)
+                    bool hardFailure = false;
+                    submitted = bluetoothAudioWritePool != null
+                        ? bluetoothAudioWritePool.TrySend(report, out hardFailure)
+                        : HIDapi.hid_write(handle, report,
+                            new UIntPtr((uint)report.Length)) >= 0;
+                    if (!submitted && hardFailure) {
+                        DisposeBluetoothAudioWritePool();
+                        AudioDebugLog.Write("DualSenseSend",
+                            "Dedicated audio write failed; using primary HID handle fallback");
+                        submitted = HIDapi.hid_write(handle, report,
+                            new UIntPtr((uint)report.Length)) >= 0;
+                    }
+
+                    if (submitted) {
                         bluetoothOutputStateDirty = false;
-                    else
-                        LogDualSenseRawDump("Bluetooth speaker report write failed");
+                    } else {
+                        // Building a carrier reserves both protocol sequence values. A saturated
+                        // native pool did not publish it, so preserve contiguous wire sequences for
+                        // the retry rather than creating a phantom lost packet ourselves.
+                        bluetoothOutputSequence = outputSequenceBefore;
+                        bluetoothAudioPacketSequence = packetSequenceBefore;
+                    }
+                }
+                double submitMs = (Stopwatch.GetTimestamp() - submitStartTicks) *
+                    1000.0 / Stopwatch.Frequency;
+
+                if (!submitted)
+                    return;
+                if (syntheticSilence)
+                    bluetoothAudioSyntheticSilenceFrames++;
+                else
+                    bluetoothAudioPending.RemoveAt(0);
+
+                bluetoothAudioLastSendMs = nowMs;
+                bluetoothAudioMaximumSendGapMs = Math.Max(
+                    bluetoothAudioMaximumSendGapMs, sendGapMs);
+                bluetoothAudioMaximumLatenessMs = Math.Max(
+                    bluetoothAudioMaximumLatenessMs, latenessMs);
+                bluetoothAudioMaximumSubmitMs = Math.Max(
+                    bluetoothAudioMaximumSubmitMs, submitMs);
+                bluetoothAudioSendsSinceSummary++;
+                bluetoothAudioMinimumPending = Math.Min(
+                    bluetoothAudioMinimumPending, bluetoothAudioPending.Count);
+                bluetoothAudioMaximumPending = Math.Max(
+                    bluetoothAudioMaximumPending, bluetoothAudioPending.Count);
+
+                if (nowMs - bluetoothAudioLastDiagnosticMs >= 1000.0) {
+                    BluetoothAudioWriteStatus hidStatus = bluetoothAudioWritePool != null
+                        ? bluetoothAudioWritePool.GetStatus()
+                        : default(BluetoothAudioWriteStatus);
+                    long enqueueGapTicks = Interlocked.Exchange(
+                        ref bluetoothAudioMaximumEnqueueGapTicks, 0);
+                    long enqueued = Interlocked.Exchange(
+                        ref bluetoothAudioFramesEnqueued, 0);
+                    long intervalSilence = bluetoothAudioSyntheticSilenceFrames -
+                        bluetoothAudioLastSummarySyntheticSilenceFrames;
+                    AudioDebugLog.Write("DualSenseSend", "sends=" +
+                        bluetoothAudioSendsSinceSummary +
+                        " maxGapMs=" + bluetoothAudioMaximumSendGapMs.ToString("F2") +
+                        " maxLateMs=" + bluetoothAudioMaximumLatenessMs.ToString("F2") +
+                        " maxSubmitMs=" + bluetoothAudioMaximumSubmitMs.ToString("F2") +
+                        " pendingMinMax=" +
+                        (bluetoothAudioMinimumPending == Int32.MaxValue ? 0 :
+                            bluetoothAudioMinimumPending) + "/" +
+                        bluetoothAudioMaximumPending +
+                        " dequeuedLast=" + dequeued +
+                        " enqueued=" + enqueued +
+                        " maxEnqueueGapMs=" +
+                        (enqueueGapTicks * 1000.0 / Stopwatch.Frequency).ToString("F2") +
+                        " silence=" + intervalSilence + "/" +
+                        bluetoothAudioSyntheticSilenceFrames +
+                        (bluetoothAudioWritePool != null
+                            ? " hidPending=" + hidStatus.PendingWrites +
+                              " hidOldestMs=" + hidStatus.OldestPendingMs.ToString("F2") +
+                              " hidMaxCompleteMs=" +
+                                  hidStatus.MaximumIntervalCompletionMs.ToString("F2") +
+                              " hidSaturated=" + hidStatus.IntervalSaturations +
+                              " hidFailures=" + hidStatus.CompletionFailures +
+                              " hidShort=" + hidStatus.ShortTransfers
+                            : " hid=primary-sync"));
+                    bluetoothAudioLastDiagnosticMs = nowMs;
+                    bluetoothAudioLastSummarySyntheticSilenceFrames =
+                        bluetoothAudioSyntheticSilenceFrames;
+                    bluetoothAudioMaximumSendGapMs = 0;
+                    bluetoothAudioMaximumLatenessMs = 0;
+                    bluetoothAudioMaximumSubmitMs = 0;
+                    bluetoothAudioSendsSinceSummary = 0;
+                    bluetoothAudioMinimumPending = Int32.MaxValue;
+                    bluetoothAudioMaximumPending = 0;
                 }
 
                 bluetoothAudioNextSendDeadlineMs += BtAudioFrameCadenceMs;
                 if (nowMs - bluetoothAudioNextSendDeadlineMs > BtAudioFrameCadenceMs * 4)
                     bluetoothAudioNextSendDeadlineMs = nowMs + BtAudioFrameCadenceMs;
+            }
+        }
+
+        private void EnsureBluetoothAudioPollScheduling() {
+            if (bluetoothAudioMmcssHandle != IntPtr.Zero || bluetoothAudioMmcssAttempted)
+                return;
+
+            bluetoothAudioMmcssAttempted = true;
+            try {
+                uint taskIndex = 0;
+                bluetoothAudioMmcssHandle = AvSetMmThreadCharacteristics(
+                    "Pro Audio", ref taskIndex);
+                if (bluetoothAudioMmcssHandle != IntPtr.Zero) {
+                    AvSetMmThreadPriority(bluetoothAudioMmcssHandle,
+                        AvrtPriority.Critical);
+                    AudioDebugLog.Write("DualSenseSend",
+                        "Poll thread registered with MMCSS Pro Audio");
+                }
+            } catch (DllNotFoundException) {
+                bluetoothAudioMmcssHandle = IntPtr.Zero;
+            } catch (EntryPointNotFoundException) {
+                bluetoothAudioMmcssHandle = IntPtr.Zero;
+            }
+        }
+
+        private void ReleaseBluetoothAudioPollScheduling() {
+            if (bluetoothAudioMmcssHandle != IntPtr.Zero) {
+                try {
+                    AvRevertMmThreadCharacteristics(bluetoothAudioMmcssHandle);
+                } catch { }
+                bluetoothAudioMmcssHandle = IntPtr.Zero;
+            }
+            bluetoothAudioMmcssAttempted = false;
+        }
+
+        private static byte[] CreateBluetoothAudioSilenceFrame() {
+            try {
+                IOpusEncoder encoder = OpusCodecFactory.CreateEncoder(48000, 2,
+                    OpusApplication.OPUS_APPLICATION_AUDIO);
+                encoder.Bitrate = 160000;
+                encoder.UseVBR = false;
+                encoder.Complexity = 0;
+                var samples = new float[480 * 2];
+                var frame = new byte[BtAudioOpusFrameLength];
+                int encoded = encoder.Encode(new ReadOnlySpan<float>(samples), 480,
+                    new Span<byte>(frame), frame.Length);
+                return encoded == BtAudioOpusFrameLength ? frame : null;
+            } catch {
+                return null;
             }
         }
 
@@ -1198,6 +1444,333 @@ namespace BetterJoyForCemu {
             buf[buf.Length - 2] = (byte)(crc >> 16);
             buf[buf.Length - 1] = (byte)(crc >> 24);
             HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
+        }
+
+        private struct BluetoothAudioWriteStatus {
+            public readonly int PendingWrites;
+            public readonly long CompletionFailures;
+            public readonly long ShortTransfers;
+            public readonly long IntervalSaturations;
+            public readonly double OldestPendingMs;
+            public readonly double MaximumIntervalCompletionMs;
+
+            public BluetoothAudioWriteStatus(int pendingWrites,
+                long completionFailures, long shortTransfers,
+                long intervalSaturations, double oldestPendingMs,
+                double maximumIntervalCompletionMs) {
+                PendingWrites = pendingWrites;
+                CompletionFailures = completionFailures;
+                ShortTransfers = shortTransfers;
+                IntervalSaturations = intervalSaturations;
+                OldestPendingMs = oldestPendingMs;
+                MaximumIntervalCompletionMs = maximumIntervalCompletionMs;
+            }
+        }
+
+        // DualSense 0x36 media carriers are ordinary HID output reports. Keep a bounded number of
+        // native OVERLAPPED writes in flight on a second shared file session so a transient Windows
+        // Bluetooth/HIDCLASS completion stall does not block the controller's input Poll thread.
+        // The primary hidapi handle remains the sole input owner.
+        private sealed class BluetoothAudioWritePool : IDisposable {
+            private const int SlotCount = 32;
+            private const int NativeBackingBufferLength = 640;
+            private const uint GenericRead = 0x80000000;
+            private const uint GenericWrite = 0x40000000;
+            private const uint FileShareRead = 0x00000001;
+            private const uint FileShareWrite = 0x00000002;
+            private const uint OpenExisting = 3;
+            private const uint FileFlagOverlapped = 0x40000000;
+            private const uint WaitObject0 = 0;
+            private const int ErrorIoPending = 997;
+            private static readonly IntPtr InvalidHandleValue = new IntPtr(-1);
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct NativeOverlappedState {
+                public IntPtr Internal;
+                public IntPtr InternalHigh;
+                public uint Offset;
+                public uint OffsetHigh;
+                public IntPtr EventHandle;
+            }
+
+            private readonly object gate = new object();
+            private readonly IntPtr nativeHandle;
+            private readonly byte[][] buffers = new byte[SlotCount][];
+            private readonly GCHandle[] pins = new GCHandle[SlotCount];
+            private readonly IntPtr[] events = new IntPtr[SlotCount];
+            private readonly IntPtr[] overlapped = new IntPtr[SlotCount];
+            private readonly bool[] outstanding = new bool[SlotCount];
+            private readonly int[] expectedLengths = new int[SlotCount];
+            private readonly long[] submittedTimestamps = new long[SlotCount];
+            private int nextSlot;
+            private bool disposed;
+            private long completionFailures;
+            private long shortTransfers;
+            private long maximumIntervalCompletionTicks;
+            private long intervalSaturations;
+
+            private BluetoothAudioWritePool(IntPtr nativeHandle) {
+                this.nativeHandle = nativeHandle;
+                try {
+                    int overlappedSize = Marshal.SizeOf(typeof(NativeOverlappedState));
+                    for (int slot = 0; slot < SlotCount; slot++) {
+                        buffers[slot] = new byte[NativeBackingBufferLength];
+                        pins[slot] = GCHandle.Alloc(buffers[slot],
+                            GCHandleType.Pinned);
+                        events[slot] = CreateEventW(IntPtr.Zero, true, true, null);
+                        if (events[slot] == IntPtr.Zero)
+                            throw new IOException(
+                                "Could not create a DualSense audio completion event.");
+                        overlapped[slot] = Marshal.AllocHGlobal(overlappedSize);
+                        ResetOverlapped(slot);
+                    }
+                } catch {
+                    ReleaseAllocatedSlots(false);
+                    throw;
+                }
+            }
+
+            public static BluetoothAudioWritePool TryOpen(string devicePath,
+                out int error) {
+                error = 0;
+                if (String.IsNullOrEmpty(devicePath)) {
+                    error = 87;
+                    return null;
+                }
+
+                IntPtr nativeHandle = CreateFileW(devicePath,
+                    GenericRead | GenericWrite, FileShareRead | FileShareWrite,
+                    IntPtr.Zero, OpenExisting, FileFlagOverlapped, IntPtr.Zero);
+                if (nativeHandle == IntPtr.Zero ||
+                    nativeHandle == InvalidHandleValue) {
+                    error = Marshal.GetLastWin32Error();
+                    return null;
+                }
+
+                try {
+                    return new BluetoothAudioWritePool(nativeHandle);
+                } catch {
+                    error = Marshal.GetLastWin32Error();
+                    CloseHandle(nativeHandle);
+                    return null;
+                }
+            }
+
+            public bool TrySend(byte[] report, out bool hardFailure) {
+                hardFailure = false;
+                if (report == null || report.Length == 0 ||
+                    report.Length > NativeBackingBufferLength) {
+                    hardFailure = true;
+                    return false;
+                }
+
+                lock (gate) {
+                    if (disposed) {
+                        hardFailure = true;
+                        return false;
+                    }
+
+                    if (!ReapCompletedNoLock()) {
+                        hardFailure = true;
+                        return false;
+                    }
+
+                    int slot = FindFreeSlotNoLock();
+                    if (slot < 0) {
+                        intervalSaturations++;
+                        return false;
+                    }
+
+                    if (!SubmitNoLock(slot, report)) {
+                        completionFailures++;
+                        hardFailure = true;
+                        return false;
+                    }
+                    return true;
+                }
+            }
+
+            private int FindFreeSlotNoLock() {
+                for (int offset = 0; offset < SlotCount; offset++) {
+                    int candidate = (nextSlot + offset) % SlotCount;
+                    if (!outstanding[candidate])
+                        return candidate;
+                }
+                return -1;
+            }
+
+            private bool SubmitNoLock(int slot, byte[] report) {
+                Array.Clear(buffers[slot], 0, buffers[slot].Length);
+                Buffer.BlockCopy(report, 0, buffers[slot], 0, report.Length);
+                ResetEvent(events[slot]);
+                ResetOverlapped(slot);
+                bool completedSynchronously = WriteFile(nativeHandle,
+                    pins[slot].AddrOfPinnedObject(), (uint)report.Length,
+                    IntPtr.Zero, overlapped[slot]);
+                int error = completedSynchronously ? 0 : Marshal.GetLastWin32Error();
+                if (!completedSynchronously && error != ErrorIoPending) {
+                    SetEvent(events[slot]);
+                    AudioDebugLog.Write("DualSenseSend",
+                        "Overlapped audio submit failed error=" + error);
+                    return false;
+                }
+
+                outstanding[slot] = true;
+                expectedLengths[slot] = report.Length;
+                submittedTimestamps[slot] = Stopwatch.GetTimestamp();
+                nextSlot = (slot + 1) % SlotCount;
+                return true;
+            }
+
+            private bool ReapCompletedNoLock() {
+                bool success = true;
+                for (int slot = 0; slot < SlotCount; slot++) {
+                    if (!outstanding[slot] ||
+                        WaitForSingleObject(events[slot], 0) != WaitObject0)
+                        continue;
+
+                    bool completed = GetOverlappedResult(nativeHandle,
+                        overlapped[slot], out uint transferred, false);
+                    long completionTicks = Stopwatch.GetTimestamp() -
+                        submittedTimestamps[slot];
+                    maximumIntervalCompletionTicks = Math.Max(
+                        maximumIntervalCompletionTicks, completionTicks);
+                    outstanding[slot] = false;
+                    if (!completed) {
+                        completionFailures++;
+                        success = false;
+                    } else if (transferred != 0 &&
+                        transferred < expectedLengths[slot]) {
+                        shortTransfers++;
+                    }
+                }
+                return success;
+            }
+
+            public BluetoothAudioWriteStatus GetStatus() {
+                lock (gate) {
+                    if (disposed)
+                        return default(BluetoothAudioWriteStatus);
+
+                    ReapCompletedNoLock();
+                    int pending = 0;
+                    long oldestTicks = 0;
+                    long now = Stopwatch.GetTimestamp();
+                    for (int slot = 0; slot < SlotCount; slot++) {
+                        if (!outstanding[slot])
+                            continue;
+                        pending++;
+                        oldestTicks = Math.Max(oldestTicks,
+                            now - submittedTimestamps[slot]);
+                    }
+
+                    long intervalMaximum = maximumIntervalCompletionTicks;
+                    long saturations = intervalSaturations;
+                    maximumIntervalCompletionTicks = 0;
+                    intervalSaturations = 0;
+                    return new BluetoothAudioWriteStatus(pending,
+                        completionFailures, shortTransfers, saturations,
+                        oldestTicks * 1000.0 / Stopwatch.Frequency,
+                        intervalMaximum * 1000.0 / Stopwatch.Frequency);
+                }
+            }
+
+            private void ResetOverlapped(int slot) {
+                var value = new NativeOverlappedState {
+                    EventHandle = events[slot]
+                };
+                Marshal.StructureToPtr(value, overlapped[slot], false);
+            }
+
+            public void Dispose() {
+                lock (gate) {
+                    if (disposed)
+                        return;
+                    disposed = true;
+                    ReleaseAllocatedSlots(true);
+                    CloseHandle(nativeHandle);
+                }
+            }
+
+            private void ReleaseAllocatedSlots(bool cancelOutstanding) {
+                for (int slot = 0; slot < SlotCount; slot++) {
+                    bool safeToFree = true;
+                    if (events[slot] != IntPtr.Zero && cancelOutstanding &&
+                        outstanding[slot] &&
+                        WaitForSingleObject(events[slot], 0) != WaitObject0) {
+                        CancelIoEx(nativeHandle, overlapped[slot]);
+                        safeToFree = WaitForSingleObject(events[slot], 250) ==
+                            WaitObject0;
+                    }
+                    if (!safeToFree) {
+                        // Kernel I/O can still own this memory. A bounded teardown leak is safer
+                        // than freeing a live OVERLAPPED structure or pinned report buffer.
+                        events[slot] = IntPtr.Zero;
+                        overlapped[slot] = IntPtr.Zero;
+                        pins[slot] = default(GCHandle);
+                        continue;
+                    }
+
+                    if (events[slot] != IntPtr.Zero) {
+                        CloseHandle(events[slot]);
+                        events[slot] = IntPtr.Zero;
+                    }
+                    if (overlapped[slot] != IntPtr.Zero) {
+                        Marshal.FreeHGlobal(overlapped[slot]);
+                        overlapped[slot] = IntPtr.Zero;
+                    }
+                    if (pins[slot].IsAllocated)
+                        pins[slot].Free();
+                }
+            }
+
+            [DllImport("kernel32.dll", EntryPoint = "CreateFileW",
+                CharSet = CharSet.Unicode, ExactSpelling = true,
+                SetLastError = true)]
+            private static extern IntPtr CreateFileW(string fileName,
+                uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+                uint creationDisposition, uint flagsAndAttributes,
+                IntPtr templateFile);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool WriteFile(IntPtr file, IntPtr buffer,
+                uint bytesToWrite, IntPtr bytesWritten, IntPtr nativeOverlapped);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool GetOverlappedResult(IntPtr file,
+                IntPtr nativeOverlapped, out uint bytesTransferred,
+                [MarshalAs(UnmanagedType.Bool)] bool wait);
+
+            [DllImport("kernel32.dll", EntryPoint = "CreateEventW",
+                CharSet = CharSet.Unicode, ExactSpelling = true,
+                SetLastError = true)]
+            private static extern IntPtr CreateEventW(IntPtr eventAttributes,
+                [MarshalAs(UnmanagedType.Bool)] bool manualReset,
+                [MarshalAs(UnmanagedType.Bool)] bool initialState,
+                string name);
+
+            [DllImport("kernel32.dll")]
+            private static extern uint WaitForSingleObject(IntPtr handle,
+                uint milliseconds);
+
+            [DllImport("kernel32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool ResetEvent(IntPtr handle);
+
+            [DllImport("kernel32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool SetEvent(IntPtr handle);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool CancelIoEx(IntPtr handle,
+                IntPtr nativeOverlapped);
+
+            [DllImport("kernel32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool CloseHandle(IntPtr handle);
         }
     }
 }
