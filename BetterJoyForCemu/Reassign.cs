@@ -75,6 +75,7 @@ namespace BetterJoyForCemu {
         private Label controllerAudioEnabledLabel;
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
+        private CheckBox controllerAudioRouteHeadphonesCheckBox;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
@@ -1058,6 +1059,14 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(controllerAudioTestButton,
                 "Play a short tone through the selected controller speaker.");
 
+            controllerAudioRouteHeadphonesCheckBox = CreateProfileCheckBox(
+                "Route Bluetooth audio to headphones", 24, 644, "ControllerAudioRouteHeadphones");
+            page.Controls.Add(controllerAudioRouteHeadphonesCheckBox);
+            tip_reassign.SetToolTip(controllerAudioRouteHeadphonesCheckBox,
+                "DualShock 4 only. No automatic headphone-jack detection exists for this - check " +
+                "this once headphones are plugged in, or the controller's own speaker keeps " +
+                "playing (and headphone output won't be proper stereo) regardless of the jack.");
+
             page.Controls.Add(CreateDivider(24, 690));
             AddSectionHeading(page, "Orientation", 707,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
@@ -1489,6 +1498,11 @@ namespace BetterJoyForCemu {
             if (controllerAudioTestButton != null)
                 controllerAudioTestButton.Enabled = available && selected.IsUsb &&
                     controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
+            if (controllerAudioRouteHeadphonesCheckBox != null) {
+                bool isDs4 = selected != null && selected.Kind == ControllerKind.DualShock4;
+                controllerAudioRouteHeadphonesCheckBox.Visible = isDs4;
+                controllerAudioRouteHeadphonesCheckBox.Enabled = available && isDs4;
+            }
         }
 
         private void LoadProfileOptions(bool hasProfile) {
@@ -1514,6 +1528,7 @@ namespace BetterJoyForCemu {
                 swapAbCheckBox, swapXyCheckBox, rumbleEnabledCheckBox, homeLedCheckBox,
                 lightColorButton, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
+                controllerAudioRouteHeadphonesCheckBox,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1567,6 +1582,8 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "ControllerAudioVolume", 75);
                 controllerAudioVolumeSelector.SelectedItem = ClosestAudioVolume(audioVolume) + "%";
                 LoadControllerAudioEndpoints();
+                controllerAudioRouteHeadphonesCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "ControllerAudioRouteHeadphones");
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(

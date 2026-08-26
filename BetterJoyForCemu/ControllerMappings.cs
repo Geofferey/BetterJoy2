@@ -59,7 +59,7 @@ namespace BetterJoyForCemu {
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
-            "ControllerAudioEndpointId",
+            "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
             "TouchpadStickSensitivity",
@@ -771,6 +771,8 @@ namespace BetterJoyForCemu {
                 return "75";
             if (key == "ControllerAudioEndpointId")
                 return String.Empty;
+            if (key == "ControllerAudioRouteHeadphones")
+                return "false";
 
             string value = ConfigurationManager.AppSettings[key];
             return value ?? String.Empty;

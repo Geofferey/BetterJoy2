@@ -690,11 +690,16 @@ namespace BetterJoyForCemu {
         private const byte BtAudioEnableReportId = 0x11;
         private const int BtAudioEnableReportLen = 78;
         // Narrowed from the reference's proven 0xF3 (rumble|lightbar|flash|HP-L|HP-R|mic|speaker
-        // all "valid" at once) down to just HP-L(0x10)|HP-R(0x20)|Speaker(0x80) - the same 0xB0
-        // convention PrepareUsbAudio already uses - so pressing the test-tone button doesn't also
-        // blank the lightbar or cancel rumble as a side effect. Deliberate, not a guess: the bit
-        // meanings are the reference's own documented flags, just a subset of them.
-        private const byte BtAudioValidFlags = 0xB0;
+        // all "valid" at once) - the reference's own documented flag meanings, just a subset of
+        // them, kept out of the lightbar/rumble report so pressing the test-tone button (phase 1)
+        // or streaming (phase 2) doesn't also blank the lightbar or cancel rumble as a side
+        // effect. Selected per output path, not asserted together: an earlier version marked
+        // BOTH HP and speaker "valid" always (0xB0, matching PrepareUsbAudio's USB convention),
+        // zeroing whichever path wasn't in use rather than leaving its valid bit off entirely -
+        // "valid but zero" is a different assertion to the hardware than "not specified at all",
+        // and on real hardware that killed audio output completely, not just misrouted it.
+        private const byte BtAudioValidFlagsHeadphones = 0x10 | 0x20; // HP-L | HP-R
+        private const byte BtAudioValidFlagsSpeaker = 0x80; // Speaker
 
         private const byte BtAudioStreamProtocol4Frames = 0x17;
         private const int BtAudioStreamReport4FramesLen = 462;
@@ -703,11 +708,19 @@ namespace BetterJoyForCemu {
         private const int BtAudioStreamFramesPerBigBatch = 4;
         private const int BtAudioStreamFramesPerSmallBatch = 2;
         private const byte BtAudioOutputPathSpeaker = 0x02;
+        // The payload target is separate from report 0x11's volume-valid flags. Target 0x02
+        // feeds the controller speaker; Sony's headset-only target is 0x24. Merely changing the
+        // volume fields while continuing to label every SBC packet as speaker audio can produce
+        // signal at the jack, but it remains the speaker route rather than the proper stereo
+        // headphone lane.
+        private const byte BtAudioOutputPathHeadphones = 0x24;
 
         // Enables the DS4's Bluetooth audio DAC and sets its volume - report 0x11, same ID
         // SendDualShock4Lightbar's BT branch already uses. Must be sent once before any audio
-        // stream reports; the controller ignores those otherwise.
-        public void PrepareBluetoothAudio(int volumePercent) {
+        // stream reports; the controller ignores those otherwise. Only the selected path's valid
+        // flag and volume byte(s) are ever written - see the const comment above for why the
+        // other path is left unclaimed rather than valid-but-zero.
+        public void PrepareBluetoothAudio(int volumePercent, bool routeToHeadphones) {
             if (isUSB || state <= state_.DROPPED)
                 return;
 
@@ -718,10 +731,14 @@ namespace BetterJoyForCemu {
             buf[0] = BtAudioEnableReportId;
             buf[1] = 0xC0;
             buf[2] = 0xA2;
-            buf[3] = BtAudioValidFlags;
-            buf[21] = volume; // left channel volume
-            buf[22] = volume; // right channel volume
-            buf[24] = volume; // speaker volume
+            if (routeToHeadphones) {
+                buf[3] = BtAudioValidFlagsHeadphones;
+                buf[21] = volume; // headphone left volume
+                buf[22] = volume; // headphone right volume
+            } else {
+                buf[3] = BtAudioValidFlagsSpeaker;
+                buf[24] = volume; // speaker volume
+            }
 
             uint crc = Crc32(0xA2, buf, BtAudioEnableReportLen - 4);
             buf[BtAudioEnableReportLen - 4] = (byte)crc;
@@ -748,19 +765,21 @@ namespace BetterJoyForCemu {
         // Poll's own natural iteration rate (driven by real HID read timing, typically a few ms)
         // paces output well enough on its own; no artificial sleep needed. One concurrent stream,
         // matching the reference project's own scope ("demo only supports one controller").
-        // bluetoothAudioPending is a plain List, not a concurrent collection, even though
-        // Start/StopBluetoothAudioStream run on whatever thread calls them (Program.cs's periodic
-        // profile reconciliation) while SendQueuedBluetoothAudioIfAny only ever runs on Poll. Safe
-        // without a lock because only Start touches the list from outside Poll, and only before
-        // publishing bluetoothAudioStreaming = true as the very last thing it does (a volatile
-        // write) - Poll's SendQueuedBluetoothAudioIfAny gates every touch of the list behind
-        // reading that same flag first. Stop never touches the list at all. Don't add code that
-        // touches bluetoothAudioPending outside that ordering without adding real synchronization.
+        // Start/StopBluetoothAudioStream run on Program.cs's profile-reconciliation thread while
+        // SendQueuedBluetoothAudioIfAny runs on Poll. Live profile changes can restart an existing
+        // stream, so the old publish-once ordering is no longer sufficient to protect the pending
+        // List. Serialize lifecycle transitions with Poll's pending-list work; encoded-frame
+        // delivery itself remains a ConcurrentQueue because it comes from the helper pipe thread.
         private readonly ConcurrentQueue<byte[]> bluetoothAudioFrameQueue = new ConcurrentQueue<byte[]>();
         private readonly List<byte[]> bluetoothAudioPending = new List<byte[]>();
+        private readonly object bluetoothAudioStateLock = new object();
         private volatile bool bluetoothAudioStreaming;
         private bool bluetoothAudioPrimed;
         private ushort bluetoothAudioPacketCounter;
+        private int bluetoothAudioVolumePercent = -1;
+        private string bluetoothAudioEndpointId = String.Empty;
+        private bool bluetoothAudioRouteHeadphones;
+        private byte bluetoothAudioOutputPath = BtAudioOutputPathSpeaker;
 
         // Frames to accumulate before the first report ever goes out - roughly 96ms (24 * 4ms/
         // block) of cushion. Without this, sending began the instant 2 frames existed and stayed
@@ -781,31 +800,61 @@ namespace BetterJoyForCemu {
 
         public bool IsStreamingBluetoothAudio => bluetoothAudioStreaming;
 
-        public void StartBluetoothAudioStream(int volumePercent, string endpointId) {
-            if (isUSB || state <= state_.DROPPED || bluetoothAudioStreaming)
-                return;
+        public void StartBluetoothAudioStream(int volumePercent, string endpointId, bool routeToHeadphones) {
+            lock (bluetoothAudioStateLock) {
+                if (isUSB || state <= state_.DROPPED)
+                    return;
 
-            PrepareBluetoothAudio(volumePercent);
-            form.StartBluetoothAudioCapture(PadId, endpointId);
+                volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+                endpointId = endpointId ?? String.Empty;
+                if (bluetoothAudioStreaming) {
+                    bool settingsMatch = bluetoothAudioVolumePercent == volumePercent &&
+                        String.Equals(bluetoothAudioEndpointId, endpointId, StringComparison.Ordinal) &&
+                        bluetoothAudioRouteHeadphones == routeToHeadphones;
+                    if (settingsMatch)
+                        return;
 
-            while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
-            bluetoothAudioPending.Clear();
-            bluetoothAudioPacketCounter = 0;
-            bluetoothAudioPrimed = false;
-            bluetoothAudioStopwatch = Stopwatch.StartNew();
-            bluetoothAudioNextSendDeadlineMs = 0;
-            bluetoothAudioStreaming = true;
-            AudioDebugLog.Write("DS4Send", "Start pad=" + PadId + " volume=" + volumePercent +
-                " endpoint=" + (endpointId ?? "(default)"));
+                    // Program reconciles profile options periodically. A changed endpoint requires
+                    // a new helper capture, while volume or route changes require a fresh report
+                    // 0x11. Stop and restart as one ordered transition instead of leaving the old
+                    // stream alive with stale settings. The lock is reentrant for this call.
+                    StopBluetoothAudioStream();
+                }
+
+                PrepareBluetoothAudio(volumePercent, routeToHeadphones);
+                form.StartBluetoothAudioCapture(PadId, endpointId);
+
+                while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
+                bluetoothAudioPending.Clear();
+                bluetoothAudioPacketCounter = 0;
+                bluetoothAudioPrimed = false;
+                bluetoothAudioStopwatch = Stopwatch.StartNew();
+                bluetoothAudioNextSendDeadlineMs = 0;
+                bluetoothAudioVolumePercent = volumePercent;
+                bluetoothAudioEndpointId = endpointId;
+                bluetoothAudioRouteHeadphones = routeToHeadphones;
+                bluetoothAudioOutputPath = routeToHeadphones
+                    ? BtAudioOutputPathHeadphones
+                    : BtAudioOutputPathSpeaker;
+                bluetoothAudioStreaming = true;
+                AudioDebugLog.Write("DS4Send", "Start pad=" + PadId + " volume=" + volumePercent +
+                    " endpoint=" + (String.IsNullOrEmpty(endpointId) ? "(default)" : endpointId) +
+                    " headphones=" + routeToHeadphones);
+            }
         }
 
         public void StopBluetoothAudioStream() {
-            if (!bluetoothAudioStreaming)
-                return;
+            lock (bluetoothAudioStateLock) {
+                if (!bluetoothAudioStreaming)
+                    return;
 
-            bluetoothAudioStreaming = false;
-            form.StopBluetoothAudioCapture(PadId);
-            AudioDebugLog.Write("DS4Send", "Stop pad=" + PadId);
+                bluetoothAudioStreaming = false;
+                form.StopBluetoothAudioCapture(PadId);
+                bluetoothAudioVolumePercent = -1;
+                bluetoothAudioEndpointId = String.Empty;
+                bluetoothAudioRouteHeadphones = false;
+                AudioDebugLog.Write("DS4Send", "Stop pad=" + PadId);
+            }
         }
 
         // Called from HeadlessJoyconHost's helper-pipe read thread as frames arrive - the only
@@ -825,45 +874,47 @@ namespace BetterJoyForCemu {
         // instead of fixing it. This never blocks/sleeps (Poll must stay free to keep reading) -
         // it just skips sending until enough wall-clock time has actually passed.
         protected override void SendQueuedBluetoothAudioIfAny() {
-            if (!bluetoothAudioStreaming)
-                return;
-
-            int dequeued = 0;
-            while (bluetoothAudioFrameQueue.TryDequeue(out byte[] frame)) {
-                bluetoothAudioPending.Add(frame);
-                dequeued++;
-            }
-
-            if (!bluetoothAudioPrimed) {
-                if (bluetoothAudioPending.Count < BtAudioPrimeFrameCount)
+            lock (bluetoothAudioStateLock) {
+                if (!bluetoothAudioStreaming)
                     return;
-                bluetoothAudioPrimed = true;
-                AudioDebugLog.Write("DS4Send", "Primed pending=" + bluetoothAudioPending.Count);
+
+                int dequeued = 0;
+                while (bluetoothAudioFrameQueue.TryDequeue(out byte[] frame)) {
+                    bluetoothAudioPending.Add(frame);
+                    dequeued++;
+                }
+
+                if (!bluetoothAudioPrimed) {
+                    if (bluetoothAudioPending.Count < BtAudioPrimeFrameCount)
+                        return;
+                    bluetoothAudioPrimed = true;
+                    AudioDebugLog.Write("DS4Send", "Primed pending=" + bluetoothAudioPending.Count);
+                }
+
+                if (bluetoothAudioPending.Count < BtAudioStreamFramesPerSmallBatch)
+                    return;
+
+                double nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
+                if (nowMs < bluetoothAudioNextSendDeadlineMs)
+                    return;
+
+                int batchSize = bluetoothAudioPending.Count >= BtAudioStreamFramesPerBigBatch
+                    ? BtAudioStreamFramesPerBigBatch
+                    : BtAudioStreamFramesPerSmallBatch;
+
+                AudioDebugLog.Write("DS4Send", "pending=" + bluetoothAudioPending.Count +
+                    " dequeuedThisCall=" + dequeued + " batch=" + batchSize +
+                    " nowMs=" + nowMs.ToString("F1") +
+                    " deadlineMs=" + bluetoothAudioNextSendDeadlineMs.ToString("F1"));
+
+                SendBluetoothAudioBatch(bluetoothAudioPending, 0, batchSize, ref bluetoothAudioPacketCounter);
+                bluetoothAudioPending.RemoveRange(0, batchSize);
+
+                // Anchor the next deadline off the target schedule, not "now" - if this call ran a
+                // little late, catch up gradually via subsequent early-arriving Poll iterations
+                // rather than permanently shifting the whole schedule later.
+                bluetoothAudioNextSendDeadlineMs += batchSize * BtAudioMsPerBlock;
             }
-
-            if (bluetoothAudioPending.Count < BtAudioStreamFramesPerSmallBatch)
-                return;
-
-            double nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
-            if (nowMs < bluetoothAudioNextSendDeadlineMs)
-                return;
-
-            int batchSize = bluetoothAudioPending.Count >= BtAudioStreamFramesPerBigBatch
-                ? BtAudioStreamFramesPerBigBatch
-                : BtAudioStreamFramesPerSmallBatch;
-
-            AudioDebugLog.Write("DS4Send", "pending=" + bluetoothAudioPending.Count +
-                " dequeuedThisCall=" + dequeued + " batch=" + batchSize +
-                " nowMs=" + nowMs.ToString("F1") +
-                " deadlineMs=" + bluetoothAudioNextSendDeadlineMs.ToString("F1"));
-
-            SendBluetoothAudioBatch(bluetoothAudioPending, 0, batchSize, ref bluetoothAudioPacketCounter);
-            bluetoothAudioPending.RemoveRange(0, batchSize);
-
-            // Anchor the next deadline off the target schedule, not "now" - if this call ran a
-            // little late, catch up gradually via subsequent early-arriving Poll iterations rather
-            // than permanently shifting the whole schedule later (classic drift-correcting pacer).
-            bluetoothAudioNextSendDeadlineMs += batchSize * BtAudioMsPerBlock;
         }
 
         private void SendBluetoothAudioBatch(List<byte[]> frames, int start, int batchSize, ref ushort packetCounter) {
@@ -880,7 +931,7 @@ namespace BetterJoyForCemu {
             buf[2] = 0xa2;
             buf[3] = (byte)(packetCounter & 0xFF);
             buf[4] = (byte)((packetCounter >> 8) & 0xFF);
-            buf[5] = BtAudioOutputPathSpeaker;
+            buf[5] = bluetoothAudioOutputPath;
 
             int offset = 6;
             for (int i = 0; i < batchSize; i++) {

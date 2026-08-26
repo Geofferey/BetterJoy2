@@ -159,6 +159,14 @@ namespace BetterJoyForCemu {
                 var stereo = new float[frames * 2];
                 Downmix(samples, stereo, frames, sourceChannels);
 
+                // Diagnostic only - reports how different L and R actually are right after
+                // downmix, to localize a reported "right channel only" symptom: if this is
+                // already ~0 here, the source capture/downmix itself has no stereo content to
+                // lose; if it's clearly nonzero here but ~0 after resampling below, the resampler
+                // is the culprit; if it stays nonzero all the way through, the loss (if any) is
+                // downstream of this file entirely (SBC encode or the controller's own hardware).
+                float preResampleMaxDiff = MaxChannelDiff(stereo, frames);
+
                 // Prepend whatever libsamplerate didn't consume last callback - it doesn't
                 // guarantee draining everything given to it in one Process() call.
                 float[] input;
@@ -177,6 +185,7 @@ namespace BetterJoyForCemu {
                 int maxOutFrames = (int)Math.Ceiling(inputFrames * resampler.Ratio) + 16;
                 var resampled = new float[maxOutFrames * 2];
                 (int used, int generated) = resampler.Process(input, inputFrames, resampled, maxOutFrames, false);
+                float postResampleMaxDiff = MaxChannelDiff(resampled, generated);
 
                 int unusedFrames = inputFrames - used;
                 if (unusedFrames > 0) {
@@ -201,7 +210,9 @@ namespace BetterJoyForCemu {
                 debugLastCallbackMs = nowMs;
                 AudioDebugLog.Write("Capture", "callbackIntervalMs=" + intervalMs.ToString("F1") +
                     " bytesRecorded=" + e.BytesRecorded + " inputFrames=" + inputFrames +
-                    " used=" + used + " generated=" + generated + " framesEncoded=" + framesEncoded);
+                    " used=" + used + " generated=" + generated + " framesEncoded=" + framesEncoded +
+                    " preResampleMaxLRDiff=" + preResampleMaxDiff.ToString("F4") +
+                    " postResampleMaxLRDiff=" + postResampleMaxDiff.ToString("F4"));
             }
         }
 
@@ -241,6 +252,18 @@ namespace BetterJoyForCemu {
                 Buffer.BlockCopy(pcm, offset, pcmCarry, 0, remaining);
 
             return framesEncoded;
+        }
+
+        // Diagnostic only - largest |L-R| across an interleaved stereo buffer's first frameCount
+        // frames. Near 0 means the two channels are effectively identical at this point.
+        private static float MaxChannelDiff(float[] stereoInterleaved, int frameCount) {
+            float maxDiff = 0f;
+            for (int i = 0; i < frameCount; i++) {
+                float diff = Math.Abs(stereoInterleaved[i * 2] - stereoInterleaved[i * 2 + 1]);
+                if (diff > maxDiff)
+                    maxDiff = diff;
+            }
+            return maxDiff;
         }
 
         // Ported from nefarius/DS4AudioStreamer's Downmixer.DownmixToStereo (MIT). Always called,

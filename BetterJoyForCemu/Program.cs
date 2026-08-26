@@ -141,7 +141,8 @@ namespace BetterJoyForCemu {
                     if (!jc.isUSB && jc is DualShock4Controller ds4) {
                         if (audioEnabled)
                             ds4.StartBluetoothAudioStream(audioVolume,
-                                ControllerMappings.OptionValue(profileId, "ControllerAudioEndpointId"));
+                                ControllerMappings.OptionValue(profileId, "ControllerAudioEndpointId"),
+                                ControllerMappings.BoolOption(profileId, "ControllerAudioRouteHeadphones"));
                         else
                             ds4.StopBluetoothAudioStream();
                     }
