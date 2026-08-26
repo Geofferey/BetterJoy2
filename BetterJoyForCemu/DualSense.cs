@@ -322,6 +322,7 @@ namespace BetterJoyForCemu {
         // outside every path that normally logs a drop).
         public override void PowerOff() {
             if (state > state_.DROPPED && !isUSB) {
+                StopBluetoothAudioStream();
                 BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 state = state_.DROPPED;
             }
@@ -897,11 +898,20 @@ namespace BetterJoyForCemu {
         public void StopBluetoothAudioStream() {
             bool restoreControllerOutput = false;
             lock (bluetoothAudioStateLock) {
+                // Sent unconditionally, before the bluetoothAudioStreaming check below: Start's
+                // live-settings-change restart path stops the old stream and starts a new one as
+                // two separate fire-and-forget pipe messages with no delivery confirmation, so
+                // this flag can end up false while the helper is still actually capturing.
+                // OnDetachingWhileAttached is the one guaranteed last chance to clean that up
+                // before the handle closes - a stop sent to an already-idle helper is a harmless
+                // no-op (BluetoothAudioCapture.Stop is idempotent), but skipping it here when it
+                // turns out to be needed orphans the capture with nothing left to ever stop it.
+                form.StopBluetoothAudioCapture(PadId);
+
                 if (!bluetoothAudioStreaming)
                     return;
 
                 bluetoothAudioStreaming = false;
-                form.StopBluetoothAudioCapture(PadId);
                 bluetoothAudioVolumePercent = -1;
                 bluetoothAudioEndpointId = String.Empty;
                 bluetoothAudioRouteHeadphones = false;
