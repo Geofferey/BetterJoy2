@@ -94,6 +94,9 @@ namespace BetterJoyForCemu {
         private const int BtAudioSpeakerOffset = 142;
         private const int BtAudioSpeakerDataOffset = 144;
         private const int BtAudioOpusFrameLength = 200;
+        private const int BtMicrophoneOpusFrameOffset = 3;
+        private const int BtMicrophoneOpusFrameLength = 71;
+        private const int BtMicrophonePcmFrames = 480;
         private const byte BtAudioSpeakerPacketType = 0x93;
         private const byte BtAudioHeadsetPacketType = 0x96;
         private const int BtAudioPrimeFrameCount = 8;
@@ -118,7 +121,6 @@ namespace BetterJoyForCemu {
         private readonly List<byte[]> bluetoothAudioPending = new List<byte[]>();
         private readonly object bluetoothAudioStateLock = new object();
         private volatile bool bluetoothAudioStreaming;
-        private bool bluetoothAudioPrimed;
         private byte bluetoothAudioPacketSequence;
         private int bluetoothAudioVolumePercent = -1;
         private string bluetoothAudioEndpointId = String.Empty;
@@ -148,6 +150,21 @@ namespace BetterJoyForCemu {
         private int bluetoothAudioSendsSinceSummary;
         private int bluetoothAudioMinimumPending;
         private int bluetoothAudioMaximumPending;
+
+        // Bluetooth microphone packets share report ID 0x31 with ordinary controller input, but
+        // carry a distinct transport tag and a fixed 71-byte, 48 kHz mono Opus frame. Keep the
+        // capture/decode worker off the HID poll thread; the controller file owns Sony's framing,
+        // while ViiperMicrophoneEndpoint owns only the generic virtual UAC delivery edge.
+        private readonly ConcurrentQueue<byte[]> bluetoothMicrophoneFrameQueue =
+            new ConcurrentQueue<byte[]>();
+        private readonly AutoResetEvent bluetoothMicrophoneSignal = new AutoResetEvent(false);
+        private volatile bool bluetoothMicrophoneRequested;
+        private volatile bool bluetoothMicrophoneStreaming;
+        private volatile bool bluetoothMicrophoneMuted;
+        private volatile bool bluetoothMicrophoneDisablePending;
+        private volatile bool bluetoothMicrophoneControlPending;
+        private Thread bluetoothMicrophoneThread;
+        private bool bluetoothSpeakerPrimed;
 
         private enum AvrtPriority {
             Low = -1,
@@ -366,9 +383,11 @@ namespace BetterJoyForCemu {
         // outside every path that normally logs a drop).
         public override void PowerOff() {
             if (state > state_.DROPPED && !isUSB) {
+                StopBluetoothMicrophone();
                 StopBluetoothAudioStream();
                 BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 state = state_.DROPPED;
+                AbandonBluetoothMediaTransport();
             }
         }
 
@@ -492,6 +511,16 @@ namespace BetterJoyForCemu {
                 // stale Bluetooth link). Keep them in lockstep here, at the one place isUSB itself
                 // is corrected. See DOCS/CONTROLLERS-REFACTOR.md step 7.
                 connection = isUSB ? 0x01 : 0x02;
+
+                // Mic-duplex frames are media, not controller state. They intentionally use the
+                // same 0x31 report ID and length as Bluetooth gamepad input, so they must be
+                // separated before any stick/button/IMU parsing. Byte 1 bit 1 identifies the mic
+                // lane; byte 2 is its sequence and bytes 3..73 are one fixed Opus frame.
+                if (!isUSB && IsBluetoothMicrophoneFrame(dsBuf)) {
+                    EnqueueBluetoothMicrophoneFrame(dsBuf);
+                    return dsRet;
+                }
+
                 lightbarTransportKnown = true;
                 if (lightbarUpdatePending) {
                     long lightbarNow = Stopwatch.GetTimestamp();
@@ -683,6 +712,9 @@ namespace BetterJoyForCemu {
                 b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
                 b[(int)Button.TOUCHPAD] = (btn3 & 0x02) != 0;
                 b[(int)Button.MIC_MUTE] = (btn3 & 0x04) != 0;
+                if (b[(int)Button.MIC_MUTE] && !down_[(int)Button.MIC_MUTE] &&
+                    bluetoothMicrophoneRequested)
+                    SetBluetoothMicrophoneMuted(!bluetoothMicrophoneMuted);
                 // Edge paddles remain unmapped; SL/SR have no DualSense equivalent.
 
                 buttons = b;
@@ -899,7 +931,228 @@ namespace BetterJoyForCemu {
             return corrected / AccelLsbPerG;
         }
 
+        private static bool IsBluetoothMicrophoneFrame(byte[] report) {
+            return report != null && report.Length == DualSenseMaxReportLen &&
+                report[0] == 0x31 && (report[1] & 0x02) != 0;
+        }
+
+        private void EnqueueBluetoothMicrophoneFrame(byte[] report) {
+            if (!bluetoothMicrophoneStreaming || report == null ||
+                report.Length < BtMicrophoneOpusFrameOffset + BtMicrophoneOpusFrameLength)
+                return;
+
+            byte[] frame = new byte[BtMicrophoneOpusFrameLength];
+            Buffer.BlockCopy(report, BtMicrophoneOpusFrameOffset, frame, 0, frame.Length);
+            bluetoothMicrophoneFrameQueue.Enqueue(frame);
+            while (bluetoothMicrophoneFrameQueue.Count > 16)
+                bluetoothMicrophoneFrameQueue.TryDequeue(out _);
+            bluetoothMicrophoneSignal.Set();
+        }
+
+        public void StartBluetoothMicrophone() {
+            if (isUSB || state <= state_.DROPPED)
+                return;
+
+            bluetoothMicrophoneRequested = true;
+            Thread worker = bluetoothMicrophoneThread;
+            if (worker != null && worker.IsAlive)
+                return;
+
+            bluetoothMicrophoneThread = new Thread(BluetoothMicrophoneWorker) {
+                IsBackground = true,
+                Name = "BetterJoyDualSenseMicrophone"
+            };
+            bluetoothMicrophoneThread.Start();
+        }
+
+        public void StopBluetoothMicrophone() {
+            bluetoothMicrophoneRequested = false;
+            bluetoothMicrophoneSignal.Set();
+            Thread worker = bluetoothMicrophoneThread;
+            if (worker != null && worker.IsAlive &&
+                Thread.CurrentThread.ManagedThreadId != worker.ManagedThreadId)
+                worker.Join(1500);
+            if (worker == null || !worker.IsAlive)
+                bluetoothMicrophoneThread = null;
+        }
+
+        private void BluetoothMicrophoneWorker() {
+            bool failureReported = false;
+            try {
+                while (bluetoothMicrophoneRequested && state > state_.DROPPED) {
+                    ViiperMicrophoneEndpoint endpoint = null;
+                    try {
+                        endpoint = ViiperMicrophoneEndpoint.Open();
+                        if (!bluetoothMicrophoneRequested)
+                            return;
+
+                        form.AppendTextBox(failureReported
+                            ? "DualSense Bluetooth microphone backend recovered.\r\n"
+                            : "DualSense Bluetooth microphone is available as a Windows recording device.\r\n");
+                        failureReported = false;
+
+                        IOpusDecoder decoder = OpusCodecFactory.CreateDecoder(48000, 1);
+                        short[] monoPcm = new short[BtMicrophonePcmFrames];
+                        byte[] stereoPcm = new byte[BtMicrophonePcmFrames * 2 * sizeof(short)];
+                        while (bluetoothMicrophoneRequested && state > state_.DROPPED) {
+                            bluetoothMicrophoneSignal.WaitOne(250);
+                            bool interfaceActive = endpoint.IsMicrophoneInterfaceActive();
+                            if (interfaceActive != bluetoothMicrophoneStreaming) {
+                                lock (bluetoothAudioStateLock) {
+                                    if (interfaceActive)
+                                        EnsureBluetoothMediaTransport();
+                                    bluetoothMicrophoneStreaming = interfaceActive;
+                                    if (interfaceActive)
+                                        bluetoothMicrophoneDisablePending = false;
+                                    else
+                                        bluetoothMicrophoneDisablePending = true;
+                                    lock (outputReportLock)
+                                        bluetoothOutputStateDirty = true;
+                                    if (!interfaceActive)
+                                        StopBluetoothMediaTransportIfIdle();
+                                }
+                            }
+
+                            byte[] opusFrame;
+                            while (bluetoothMicrophoneStreaming &&
+                                bluetoothMicrophoneRequested &&
+                                bluetoothMicrophoneFrameQueue.TryDequeue(out opusFrame)) {
+                                int decoded = decoder.Decode(new ReadOnlySpan<byte>(opusFrame),
+                                    new Span<short>(monoPcm), BtMicrophonePcmFrames, false);
+                                if (decoded <= 0)
+                                    continue;
+
+                                bool muted = bluetoothMicrophoneMuted;
+                                Array.Clear(stereoPcm, 0, stereoPcm.Length);
+                                int frames = Math.Min(decoded, BtMicrophonePcmFrames);
+                                if (!muted) {
+                                    for (int frame = 0; frame < frames; frame++) {
+                                        short sample = monoPcm[frame];
+                                        int offset = frame * 4;
+                                        stereoPcm[offset] = (byte)sample;
+                                        stereoPcm[offset + 1] = (byte)(sample >> 8);
+                                        stereoPcm[offset + 2] = (byte)sample;
+                                        stereoPcm[offset + 3] = (byte)(sample >> 8);
+                                    }
+                                }
+                                endpoint.WriteMicrophonePcm(stereoPcm);
+                            }
+                        }
+                    } catch (Exception ex) {
+                        if (bluetoothMicrophoneRequested && !failureReported) {
+                            form.AppendTextBox("DualSense Bluetooth microphone unavailable; " +
+                                "retrying automatically: " + ex.Message + "\r\n");
+                            failureReported = true;
+                        }
+                    } finally {
+                        CleanupBluetoothMicrophoneAttempt(endpoint);
+                    }
+
+                    if (bluetoothMicrophoneRequested && state > state_.DROPPED)
+                        bluetoothMicrophoneSignal.WaitOne(10000);
+                }
+            } finally {
+                bluetoothMicrophoneThread = null;
+            }
+        }
+
+        private void CleanupBluetoothMicrophoneAttempt(
+            ViiperMicrophoneEndpoint endpoint) {
+            while (bluetoothMicrophoneFrameQueue.TryDequeue(out _)) { }
+            endpoint?.Dispose();
+            lock (bluetoothAudioStateLock) {
+                if (bluetoothMicrophoneStreaming)
+                    bluetoothMicrophoneDisablePending = true;
+                bluetoothMicrophoneStreaming = false;
+                lock (outputReportLock)
+                    bluetoothOutputStateDirty = true;
+                StopBluetoothMediaTransportIfIdle();
+            }
+        }
+
+        private void SetBluetoothMicrophoneMuted(bool muted) {
+            bluetoothMicrophoneMuted = muted;
+            lock (bluetoothAudioStateLock) {
+                // The mic button is useful even before an application opens the recording
+                // endpoint. Publish its LED/mute state through one FE media carrier, then release
+                // the temporary clock again if neither audio direction needs it.
+                if (bluetoothMicrophoneRequested && !isUSB &&
+                    state > state_.DROPPED) {
+                    EnsureBluetoothMediaTransport();
+                    bluetoothMicrophoneControlPending = true;
+                }
+                lock (outputReportLock)
+                    bluetoothOutputStateDirty = true;
+            }
+        }
+
         public bool IsStreamingBluetoothAudio => bluetoothAudioStreaming;
+
+        // The 0x36 media clock is shared by speaker output and microphone duplex. Either lane may
+        // keep it alive independently; in microphone-only mode valid encoded silence supplies the
+        // carrier without starting desktop loopback capture or producing audible output.
+        private void EnsureBluetoothMediaTransport() {
+            if (bluetoothAudioStopwatch != null)
+                return;
+
+            DisposeBluetoothAudioWritePool();
+            bluetoothAudioWritePool = BluetoothAudioWritePool.TryOpen(path,
+                out int audioHandleError);
+            if (bluetoothAudioWritePool == null)
+                AudioDebugLog.Write("DualSenseSend",
+                    "Dedicated audio handle unavailable error=" + audioHandleError +
+                    "; using primary HID handle fallback");
+            else
+                AudioDebugLog.Write("DualSenseSend",
+                    "Dedicated overlapped audio handle opened");
+
+            while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
+            bluetoothAudioPending.Clear();
+            bluetoothAudioPacketSequence = 0;
+            bluetoothSpeakerPrimed = false;
+            bluetoothAudioStopwatch = Stopwatch.StartNew();
+            bluetoothAudioNextSendDeadlineMs = 0;
+            if (bluetoothAudioSilenceFrame == null)
+                bluetoothAudioSilenceFrame = CreateBluetoothAudioSilenceFrame();
+            Interlocked.Exchange(ref bluetoothAudioLastEnqueueTimestamp, 0);
+            Interlocked.Exchange(ref bluetoothAudioMaximumEnqueueGapTicks, 0);
+            Interlocked.Exchange(ref bluetoothAudioFramesEnqueued, 0);
+            bluetoothAudioLastSendMs = 0;
+            bluetoothAudioMaximumSendGapMs = 0;
+            bluetoothAudioMaximumLatenessMs = 0;
+            bluetoothAudioMaximumSubmitMs = 0;
+            bluetoothAudioLastDiagnosticMs = 0;
+            bluetoothAudioSyntheticSilenceFrames = 0;
+            bluetoothAudioLastSummarySyntheticSilenceFrames = 0;
+            bluetoothAudioSendsSinceSummary = 0;
+            bluetoothAudioMinimumPending = Int32.MaxValue;
+            bluetoothAudioMaximumPending = 0;
+        }
+
+        private void StopBluetoothMediaTransportIfIdle() {
+            if (bluetoothAudioStreaming || bluetoothMicrophoneStreaming ||
+                bluetoothMicrophoneDisablePending ||
+                bluetoothMicrophoneControlPending)
+                return;
+            bluetoothAudioPending.Clear();
+            while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
+            DisposeBluetoothAudioWritePool();
+            bluetoothAudioStopwatch = null;
+            bluetoothSpeakerPrimed = false;
+        }
+
+        private void AbandonBluetoothMediaTransport() {
+            lock (bluetoothAudioStateLock) {
+                // Once the physical link is leaving there is no controller left to acknowledge a
+                // final FE carrier. Drop the pending barrier so the dedicated HID handles are not
+                // retained until process exit.
+                bluetoothMicrophoneDisablePending = false;
+                bluetoothMicrophoneControlPending = false;
+                bluetoothMicrophoneStreaming = false;
+                bluetoothAudioStreaming = false;
+                StopBluetoothMediaTransportIfIdle();
+            }
+        }
 
         public void StartBluetoothAudioStream(int volumePercent, string endpointId,
             bool routeToHeadphones) {
@@ -925,44 +1178,15 @@ namespace BetterJoyForCemu {
                     StopBluetoothAudioStream();
                 }
 
-                DisposeBluetoothAudioWritePool();
-                bluetoothAudioWritePool = BluetoothAudioWritePool.TryOpen(path,
-                    out int audioHandleError);
-                if (bluetoothAudioWritePool == null)
-                    AudioDebugLog.Write("DualSenseSend",
-                        "Dedicated audio handle unavailable error=" + audioHandleError +
-                        "; using primary HID handle fallback");
-                else
-                    AudioDebugLog.Write("DualSenseSend",
-                        "Dedicated overlapped audio handle opened");
-
                 if (!form.StartBluetoothAudioCapture(PadId, endpointId,
                     BluetoothAudioCodec.DualSenseOpus)) {
-                    DisposeBluetoothAudioWritePool();
                     return;
                 }
 
+                EnsureBluetoothMediaTransport();
                 while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
                 bluetoothAudioPending.Clear();
-                bluetoothAudioPacketSequence = 0;
-                bluetoothAudioPrimed = false;
-                bluetoothAudioStopwatch = Stopwatch.StartNew();
-                bluetoothAudioNextSendDeadlineMs = 0;
-                if (bluetoothAudioSilenceFrame == null)
-                    bluetoothAudioSilenceFrame = CreateBluetoothAudioSilenceFrame();
-                Interlocked.Exchange(ref bluetoothAudioLastEnqueueTimestamp, 0);
-                Interlocked.Exchange(ref bluetoothAudioMaximumEnqueueGapTicks, 0);
-                Interlocked.Exchange(ref bluetoothAudioFramesEnqueued, 0);
-                bluetoothAudioLastSendMs = 0;
-                bluetoothAudioMaximumSendGapMs = 0;
-                bluetoothAudioMaximumLatenessMs = 0;
-                bluetoothAudioMaximumSubmitMs = 0;
-                bluetoothAudioLastDiagnosticMs = 0;
-                bluetoothAudioSyntheticSilenceFrames = 0;
-                bluetoothAudioLastSummarySyntheticSilenceFrames = 0;
-                bluetoothAudioSendsSinceSummary = 0;
-                bluetoothAudioMinimumPending = Int32.MaxValue;
-                bluetoothAudioMaximumPending = 0;
+                bluetoothSpeakerPrimed = false;
                 bluetoothAudioVolumePercent = volumePercent;
                 bluetoothAudioEndpointId = endpointId;
                 bluetoothAudioRouteHeadphones = routeToHeadphones;
@@ -996,10 +1220,12 @@ namespace BetterJoyForCemu {
                 bluetoothAudioVolumePercent = -1;
                 bluetoothAudioEndpointId = String.Empty;
                 bluetoothAudioRouteHeadphones = false;
+                bluetoothSpeakerPrimed = false;
                 bluetoothAudioPending.Clear();
                 while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
-                DisposeBluetoothAudioWritePool();
-                restoreControllerOutput = state > state_.DROPPED;
+                StopBluetoothMediaTransportIfIdle();
+                restoreControllerOutput = !bluetoothMicrophoneStreaming &&
+                    state > state_.DROPPED;
                 AudioDebugLog.Write("DualSenseSend", "Stop pad=" + PadId);
             }
 
@@ -1047,7 +1273,12 @@ namespace BetterJoyForCemu {
 
         protected override void SendQueuedBluetoothAudioIfAny() {
             lock (bluetoothAudioStateLock) {
-                if (!bluetoothAudioStreaming) {
+                bool speakerActive = bluetoothAudioStreaming;
+                bool microphoneActive = bluetoothMicrophoneStreaming;
+                bool microphoneDisablePending = bluetoothMicrophoneDisablePending;
+                bool microphoneControlPending = bluetoothMicrophoneControlPending;
+                if (!speakerActive && !microphoneActive &&
+                    !microphoneDisablePending && !microphoneControlPending) {
                     ReleaseBluetoothAudioPollScheduling();
                     return;
                 }
@@ -1063,19 +1294,23 @@ namespace BetterJoyForCemu {
                     bluetoothAudioPending.RemoveRange(0,
                         bluetoothAudioPending.Count - BtAudioMaximumQueuedFrames);
 
-                if (!bluetoothAudioPrimed) {
-                    if (bluetoothAudioPending.Count < BtAudioPrimeFrameCount)
+                if (speakerActive && !bluetoothSpeakerPrimed) {
+                    if (bluetoothAudioPending.Count < BtAudioPrimeFrameCount &&
+                        !microphoneActive)
                         return;
-                    bluetoothAudioPrimed = true;
-                    AudioDebugLog.Write("DualSenseSend", "Primed pending=" +
-                        bluetoothAudioPending.Count);
+                    if (bluetoothAudioPending.Count >= BtAudioPrimeFrameCount) {
+                        bluetoothSpeakerPrimed = true;
+                        AudioDebugLog.Write("DualSenseSend", "Primed pending=" +
+                            bluetoothAudioPending.Count);
+                    }
                 }
 
                 double nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
                 if (nowMs < bluetoothAudioNextSendDeadlineMs)
                     return;
 
-                bool syntheticSilence = bluetoothAudioPending.Count == 0;
+                bool syntheticSilence = !speakerActive || !bluetoothSpeakerPrimed ||
+                    bluetoothAudioPending.Count == 0;
                 byte[] frame = syntheticSilence
                     ? bluetoothAudioSilenceFrame
                     : bluetoothAudioPending[0];
@@ -1186,6 +1421,15 @@ namespace BetterJoyForCemu {
                 bluetoothAudioNextSendDeadlineMs += BtAudioFrameCadenceMs;
                 if (nowMs - bluetoothAudioNextSendDeadlineMs > BtAudioFrameCadenceMs * 4)
                     bluetoothAudioNextSendDeadlineMs = nowMs + BtAudioFrameCadenceMs;
+
+                // Publish one in-order FE carrier before releasing a microphone-only media
+                // clock. Without this barrier the controller can continue transmitting mic input
+                // after Windows closes the endpoint because it never observes the disable state.
+                if (microphoneDisablePending || microphoneControlPending) {
+                    bluetoothMicrophoneDisablePending = false;
+                    bluetoothMicrophoneControlPending = false;
+                    StopBluetoothMediaTransportIfIdle();
+                }
             }
         }
 
@@ -1245,7 +1489,10 @@ namespace BetterJoyForCemu {
             bluetoothOutputSequence = (byte)((bluetoothOutputSequence + 1) & 0x0F);
             report[2] = 0x91;
             report[3] = 0x07;
-            report[4] = 0xFE; // speaker output active; Bluetooth microphone transport disabled
+            // 0xFF enables the controller-to-host microphone lane; 0xFE leaves only host-to-
+            // controller audio active. A valid encoded-silence speaker frame remains present in
+            // mic-only mode because both directions share this media clock.
+            report[4] = bluetoothMicrophoneStreaming ? (byte)0xFF : (byte)0xFE;
             for (int i = 5; i <= 9; i++)
                 report[i] = 0x80;
             report[10] = bluetoothAudioPacketSequence++;
@@ -1271,10 +1518,21 @@ namespace BetterJoyForCemu {
             report[BtAudioStateOffset + 5] = bluetoothAudioRouteHeadphones
                 ? (byte)0
                 : speakerVolume;
-            report[BtAudioStateOffset + 6] = 0xFF;
+            // DualSense's physical microphone gain is 0x00..0x40. Muting is intentionally
+            // represented both here and in the mute/power-save state below so the hardware LED,
+            // captured PCM, and Windows endpoint agree.
+            report[BtAudioStateOffset + 6] = bluetoothMicrophoneStreaming
+                ? (byte)0x40
+                : (byte)0x00;
             report[BtAudioStateOffset + 7] = bluetoothAudioRouteHeadphones
                 ? (byte)0x00
                 : (byte)0x09;
+            report[BtAudioStateOffset + 8] = bluetoothMicrophoneMuted
+                ? (byte)0x01
+                : (byte)0x00;
+            report[BtAudioStateOffset + 9] = bluetoothMicrophoneMuted
+                ? (byte)0x10
+                : (byte)0x00;
             report[BtAudioStateOffset + 37] = 0x0A;
             report[BtAudioStateOffset + 44] = lightbarRed;
             report[BtAudioStateOffset + 45] = lightbarGreen;
@@ -1310,7 +1568,9 @@ namespace BetterJoyForCemu {
         }
 
         protected override void OnDetachingWhileAttached() {
+            StopBluetoothMicrophone();
             StopBluetoothAudioStream();
+            AbandonBluetoothMediaTransport();
         }
 
         // DualSense baseline rumble - both motors driven by the same single amplitude value
@@ -1332,7 +1592,9 @@ namespace BetterJoyForCemu {
                 currentLeftMotor = leftMotor;
                 currentRightMotor = rightMotor;
                 bluetoothOutputStateDirty = true;
-                if (!isUSB && bluetoothAudioStreaming)
+                if (!isUSB && (bluetoothAudioStreaming ||
+                    bluetoothMicrophoneStreaming || bluetoothMicrophoneDisablePending ||
+                    bluetoothMicrophoneControlPending))
                     return;
 
                 bool bt = !isUSB;
@@ -1406,7 +1668,9 @@ namespace BetterJoyForCemu {
                     return;
                 }
 
-                if (bluetoothAudioStreaming)
+                if (bluetoothAudioStreaming || bluetoothMicrophoneStreaming ||
+                    bluetoothMicrophoneDisablePending ||
+                    bluetoothMicrophoneControlPending)
                     return;
 
                 if (!lightbarControlReleased) {

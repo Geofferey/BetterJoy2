@@ -7,6 +7,7 @@
 #define MyViGEmBusInstaller "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 #define MyHidHideInstaller "HidHide_1.5.230_x64.exe"
 #define MyFakerInputInstaller "FakerInput_Setup_0.1.1_x64.msi"
+#define MyUsbipInstaller "USBip-0.9.7.7-x64.exe"
 
 [Setup]
 ; Same GUID as the project's ProjectGuid, so upgrades are detected correctly across releases.
@@ -39,6 +40,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "vigembus"; Description: "Install the ViGEmBus driver (required for XInput/DS4 output)"; GroupDescription: "Drivers:"; Flags: checkedonce
 Name: "hidhide"; Description: "Install the HidHide driver (hides controllers from other programs, e.g. Steam)"; GroupDescription: "Drivers:"; Flags: unchecked
 Name: "fakerinput"; Description: "Install FakerInput virtual mouse (works in elevated apps, UAC, and before login in service mode)"; GroupDescription: "Drivers:"; Flags: unchecked
+Name: "dualsensemic"; Description: "Install the Bluetooth microphone backend (VIIPER + signed usbip-win2 driver)"; GroupDescription: "Drivers:"; Flags: checkedonce
 
 [Files]
 ; Everything from the Release build, except runtime-generated state that shouldn't ship pre-populated
@@ -71,6 +73,7 @@ Type: filesandordirs; Name: "{app}"
 var
   HidHideExitCode: Integer;
   FakerInputExitCode: Integer;
+  UsbipExitCode: Integer;
 
 // Real service-status polling via the SCM API - sc.exe stop only requests the stop and returns
 // as soon as the SCM acknowledges the request, not once the service has actually finished
@@ -158,6 +161,23 @@ begin
   end;
 end;
 
+// VIIPER itself is a bundled user-mode sidecar started on demand by BetterJoy. Only usbip-win2
+// needs installation: it supplies the signed virtual USB host controller that exposes VIIPER's
+// DualSense audio-only device as an ordinary Windows recording endpoint.
+procedure InstallDualSenseMicrophoneBackend;
+var
+  ResultCode: Integer;
+begin
+  if WizardIsTaskSelected('dualsensemic') then begin
+    if Exec(ExpandConstant('{app}\Drivers\{#MyUsbipInstaller}'),
+        '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RESTARTEXITCODE=3010', '', SW_HIDE,
+        ewWaitUntilTerminated, ResultCode) then
+      UsbipExitCode := ResultCode
+    else
+      UsbipExitCode := -1;
+  end;
+end;
+
 // sc.exe's binPath value has to be one single argument containing the (space-containing,
 // quoted) exe path followed by " -service" - the outer quotes let the command-line parser
 // treat the whole thing as one token for sc.exe, the escaped inner quotes are what sc.exe
@@ -214,11 +234,14 @@ begin
   if CurStep = ssPostInstall then begin
     InstallFakerInput;
     InstallHidHide;
+    InstallDualSenseMicrophoneBackend;
     InstallService;
   end;
 end;
 
 function NeedsRestart(): Boolean;
 begin
-  Result := (HidHideExitCode = 3010) or (FakerInputExitCode = 3010) or (FakerInputExitCode = 1641);
+  Result := (HidHideExitCode = 3010) or
+    (FakerInputExitCode = 3010) or (FakerInputExitCode = 1641) or
+    (UsbipExitCode = 3010) or (UsbipExitCode = 1641);
 end;

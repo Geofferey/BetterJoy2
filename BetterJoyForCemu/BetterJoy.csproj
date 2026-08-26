@@ -182,6 +182,7 @@
     <Compile Include="IJoyconHost.cs" />
     <Compile Include="InputHelper.cs" />
     <Compile Include="InputIpcProtocol.cs" />
+    <Compile Include="ViiperMicrophoneEndpoint.cs" />
     <Compile Include="InputState.cs" />
     <Compile Include="GyroMath.cs" />
     <Compile Include="GyroMouseOrientation.cs" />
@@ -236,6 +237,18 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Drivers\FakerInput-LICENSE.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\VIIPER-0.1.0-x64.exe">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\VIIPER-LICENSE.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\USBip-0.9.7.7-x64.exe">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\USBip-0.9.7.7-LICENSE.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <None Include="packages.config" />

@@ -153,6 +153,14 @@ namespace BetterJoyForCemu {
                     if (jc is DualSenseController dualSense) {
                         bool requireHeadphones = ControllerMappings.BoolOption(
                             profileId, "ControllerAudioRouteHeadphones");
+                        // The built-in Bluetooth microphone is independent of the 3.5 mm jack.
+                        // Controller audio remains the single opt-in for the physical media
+                        // transport; a missing optional virtual-mic backend must not disturb the
+                        // existing speaker/headset path.
+                        if (!jc.isUSB && audioEnabled)
+                            dualSense.StartBluetoothMicrophone();
+                        else
+                            dualSense.StopBluetoothMicrophone();
                         if (!jc.isUSB && audioEnabled &&
                             (!requireHeadphones || dualSense.HeadphonesConnected))
                             dualSense.StartBluetoothAudioStream(audioVolume,

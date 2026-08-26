@@ -305,6 +305,15 @@ this repository:
   loopback and stereo-downmix design used by the shared capture pipeline was adapted from the
   MIT-licensed DS4AudioStreamer work credited above, while libsamplerate performs the continuous
   controller-specific clock conversion before SBC or Opus encoding.
+* DualSense Bluetooth microphone transport uses the public 71-byte mono Opus input-report format
+  documented and exercised by [hbashton/DS4Windows](https://github.com/hbashton/DS4Windows), then
+  decodes it independently in BetterJoy with Concentus. The optional Windows recording endpoint is
+  provided by [VIIPER](https://github.com/Alia5/VIIPER) (GPL-3.0 standalone server) over its public
+  V5 localhost framing API, with the signed virtual USB host controller from
+  [usbip-win2](https://github.com/vadimgrn/usbip-win2). BetterJoy does not link against either
+  project: it launches the separately licensed VIIPER process on demand and exchanges framed PCM
+  over TCP. The physical mic button controls hardware/software mute while remaining available to
+  the ordinary binding system.
 
 ## Implementations studied during the motion-control rework
 

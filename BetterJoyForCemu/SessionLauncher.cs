@@ -141,6 +141,14 @@ namespace BetterJoyForCemu {
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CloseHandle(IntPtr handle);
 
+        [DllImport("userenv.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);
+
         // LocalSystem holds SeTcbPrivilege/SeAssignPrimaryTokenPrivilege/SeIncreaseQuotaPrivilege
         // but they are not enabled by default - CreateProcessAsUser fails without them.
         private static void EnablePrivilege(IntPtr token, string privilegeName) {
@@ -164,6 +172,7 @@ namespace BetterJoyForCemu {
             IntPtr serviceToken = IntPtr.Zero;
             IntPtr userToken = IntPtr.Zero;
             IntPtr primaryToken = IntPtr.Zero;
+            IntPtr environmentBlock = IntPtr.Zero;
 
             try {
                 if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out serviceToken))
@@ -198,6 +207,20 @@ namespace BetterJoyForCemu {
                 // .NET string here risks corrupting that string everywhere else it's used.
                 var mutableCommandLine = new StringBuilder(commandLine, commandLine.Length + 16);
 
+                // Without a real per-user block here, CreateProcessAsUser (despite the
+                // CREATE_UNICODE_ENVIRONMENT flag already being set below) gives the child
+                // process the *calling* process's environment - this service's own SYSTEM
+                // environment - even though it correctly runs under the target user's security
+                // token. %APPDATA%/%USERPROFILE%/etc. would then resolve to SYSTEM's profile,
+                // which the user's token has no write access to. InputHelper never surfaced this
+                // (it only ever touches explicit ProgramData paths, never a %...% variable), but
+                // it broke VIIPER outright: confirmed via the Windows Event Log and a live port
+                // check - VIIPER's launch never produced a listening process at all, consistent
+                // with it crashing immediately trying to write its key file under a resolved
+                // %APPDATA% it has no access to. Best-effort: if this fails, fall through with
+                // IntPtr.Zero exactly as before rather than aborting the whole launch.
+                CreateEnvironmentBlock(out environmentBlock, primaryToken, false);
+
                 bool created = CreateProcessAsUser(
                     primaryToken,
                     null,
@@ -206,7 +229,7 @@ namespace BetterJoyForCemu {
                     IntPtr.Zero,
                     false,
                     CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
-                    IntPtr.Zero,
+                    environmentBlock,
                     null,
                     ref startupInfo,
                     out PROCESS_INFORMATION processInfo);
@@ -222,6 +245,7 @@ namespace BetterJoyForCemu {
                 if (serviceToken != IntPtr.Zero) CloseHandle(serviceToken);
                 if (userToken != IntPtr.Zero) CloseHandle(userToken);
                 if (primaryToken != IntPtr.Zero) CloseHandle(primaryToken);
+                if (environmentBlock != IntPtr.Zero) DestroyEnvironmentBlock(environmentBlock);
             }
         }
     }
