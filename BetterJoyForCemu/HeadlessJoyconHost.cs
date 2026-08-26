@@ -177,6 +177,12 @@ namespace BetterJoyForCemu {
                         case InputMessageType.KeyUp: Program.OnKeyUp(msg.A); break;
                         case InputMessageType.MouseButtonDown: Program.OnMouseButtonDown(msg.A); break;
                         case InputMessageType.MouseButtonUp: Program.OnMouseButtonUp(msg.A); break;
+                        case InputMessageType.AudioFrame: {
+                            byte[] frame = reader.ReadBytes(msg.B);
+                            (Program.mgr?.j.FirstOrDefault(j => j.PadId == msg.A) as DualShock4Controller)
+                                ?.EnqueueBluetoothAudioFrame(frame);
+                            break;
+                        }
                     }
                 }
             } catch {
@@ -449,6 +455,40 @@ namespace BetterJoyForCemu {
                 SendMessage(InputMessageType.SimulateScroll, up ? 1 : 0);
         }
 
+        // Sent directly, not through outgoingMessages/WriteMessage: those exist to keep a
+        // controller's report-rate poll thread off pipe I/O (see SendMessage's comment) and carry
+        // no notion of a fallback when no helper is connected - there is none here, Session 0
+        // genuinely cannot do WASAPI loopback capture. Start/stop only fire on connect/disconnect/
+        // a settings toggle, not at report rate, so a brief synchronous write is fine.
+        public void StartBluetoothAudioCapture(int padId, string endpointId) {
+            lock (pipeLock) {
+                if (!helperReady || pipe == null || !pipe.IsConnected)
+                    return;
+                try {
+                    var writer = new BinaryWriter(pipe);
+                    new InputMessage { Type = InputMessageType.StartAudioCapture, A = padId }.WriteTo(writer);
+                    writer.Write(endpointId ?? String.Empty);
+                    writer.Flush();
+                } catch {
+                    // best-effort - if the helper is gone, there's simply nothing to capture from
+                }
+            }
+        }
+
+        public void StopBluetoothAudioCapture(int padId) {
+            lock (pipeLock) {
+                if (!helperReady || pipe == null || !pipe.IsConnected)
+                    return;
+                try {
+                    var writer = new BinaryWriter(pipe);
+                    new InputMessage { Type = InputMessageType.StopAudioCapture, A = padId }.WriteTo(writer);
+                    writer.Flush();
+                } catch {
+                    // best-effort
+                }
+            }
+        }
+
         // ---------------------------------------------------------------------------------
         // GUI control pipe (live status + rumble test/join-split/calibration commands) - see
         // ServiceControlProtocol. Unlike the input helper pipe above, this one is long-lived
@@ -560,9 +600,6 @@ namespace BetterJoyForCemu {
                         case ControlMessageType.PrepareUsbAudio:
                             PrepareUsbAudio(reader.ReadByte(), reader.ReadByte());
                             break;
-                        case ControlMessageType.PlayBluetoothAudioTest:
-                            PlayBluetoothAudioTest(reader.ReadByte(), reader.ReadByte());
-                            break;
                     }
                 }
             } catch {
@@ -602,16 +639,6 @@ namespace BetterJoyForCemu {
         private void PrepareUsbAudio(int padId, int volumePercent) {
             Controller controller = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
             controller?.PrepareUsbAudio(volumePercent);
-        }
-
-        // Runs off-thread since it blocks for the tone's duration (~650ms) streaming HID output
-        // reports - the control pipe's read loop must stay free to keep handling other messages.
-        private void PlayBluetoothAudioTest(int padId, int volumePercent) {
-            Controller controller = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
-            if (controller == null || !controller.SupportsBluetoothAudioTest)
-                return;
-
-            Task.Run(() => controller.PlayBluetoothAudioTest(volumePercent));
         }
 
         private void JoinOrSplitByPadId(int padId, bool forceSelfPair) {

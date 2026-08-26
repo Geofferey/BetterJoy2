@@ -297,12 +297,12 @@ namespace BetterJoyForCemu {
         public virtual void PrepareUsbAudio(int volumePercent) { }
 
         // Bluetooth exposes no audio-class endpoint at all, so there is nothing for Windows/WASAPI
-        // to open - a controller that supports this instead streams an encoded audio codec directly
-        // inside HID output reports (see DualShock4's override). Experimental and DS4-only; blocks
-        // the calling thread for the tone's duration, so callers must run it off any latency-
-        // sensitive thread.
-        public virtual bool SupportsBluetoothAudioTest => false;
-        public virtual void PlayBluetoothAudioTest(int volumePercent) { }
+        // to open - DualShock4Controller instead streams an SBC-encoded live capture directly
+        // inside HID output reports (see its StartBluetoothAudioStream/StopBluetoothAudioStream
+        // and Program.cs's connect/disconnect hook). Not promoted to a virtual member here since
+        // DS4 is currently the only controller with a Bluetooth audio implementation - Program.cs
+        // reaches it via a plain type check, matching how narrowly-applicable behavior is handled
+        // elsewhere in this class hierarchy (e.g. SupportsPairing-gated Joy-Con-only members).
 
         // Calibrated stick position, gyro/accel readings, and filtered orientation - written by
         // each subclass's own report-parsing code (Joycon.ExtractIMUValues stays Nintendo-report-
@@ -486,6 +486,7 @@ namespace BetterJoyForCemu {
                     SetLEDByPlayerNum(requestedLed);
                 }
                 SendQueuedRumbleIfAny();
+                SendQueuedBluetoothAudioIfAny();
 
                 int a;
                 try {
@@ -573,6 +574,19 @@ namespace BetterJoyForCemu {
         // rumble_obj (DualSenseController overrides it too, for its own simpler dual-motor rumble)
         // - kept as a hook since the actual encoding/wire format is device-specific.
         protected virtual void SendQueuedRumbleIfAny() { }
+
+        // Same reasoning as SendQueuedRumbleIfAny: hidapi's device functions are documented as
+        // thread-unsafe when called concurrently on the same handle, and every other write in this
+        // codebase already only ever happens from this controller's own Poll thread, interleaved
+        // sequentially with its own reads - never from a second thread. DualShock4Controller's
+        // Bluetooth audio stream originally ran its own background thread calling hid_write
+        // concurrently with Poll's hid_read_timeout here; on real hardware that corrupted both the
+        // audio stream and unrelated input parsing (battery status went bad too) - a live
+        // demonstration of exactly the hazard hidapi's docs warn about. Draining one batch per
+        // Poll iteration instead keeps everything on this single thread, matching every other
+        // output path, and needs no artificial pacing/sleep - Poll's own natural iteration rate
+        // (driven by real HID read timing) already provides smooth-enough cadence.
+        protected virtual void SendQueuedBluetoothAudioIfAny() { }
 
         // Generic MAC-based duplicate-connection dedup, shared by every device type - if another
         // already-connected entry has the same PadMacAddress as this one, it's the same physical

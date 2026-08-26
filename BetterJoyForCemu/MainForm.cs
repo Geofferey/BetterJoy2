@@ -327,6 +327,11 @@ namespace BetterJoyForCemu {
             desktopInput.Scroll(up);
         }
 
+        // No-op: BetterJoy always runs as the service now (see IsBetterJoyServiceRunning's
+        // comment above) - MainForm never actually owns a live Controller that could call this.
+        public void StartBluetoothAudioCapture(int padId, string endpointId) { }
+        public void StopBluetoothAudioCapture(int padId) { }
+
         // Only ever consulted after a direct pipe-connect attempt has already failed, to decide
         // which error message to show - "not installed/not running, go start it" vs. "reported
         // Running but unreachable, something's interfering." There is no local fallback either

@@ -72,7 +72,6 @@ namespace BetterJoyForCemu {
         private ComboBox controllerAudioVolumeSelector;
         private ComboBox controllerAudioEndpointSelector;
         private Button controllerAudioTestButton;
-        private Button controllerAudioBtTestButton;
         private Label controllerAudioEnabledLabel;
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
@@ -1052,22 +1051,12 @@ namespace BetterJoyForCemu {
             controllerAudioTestButton.Click += ControllerAudioTestButton_Click;
             page.Controls.Add(controllerAudioTestButton);
             tip_reassign.SetToolTip(controllerAudioEndpointSelector,
-                "Select the Windows playback endpoint exposed by this USB controller.");
+                "Select the Windows audio endpoint for this controller. USB: the playback device " +
+                "the test tone plays through. Bluetooth (DualShock 4 only, experimental): the " +
+                "device live audio is captured from and streamed to the controller's speaker " +
+                "while Controller audio is Enabled and it's connected over Bluetooth.");
             tip_reassign.SetToolTip(controllerAudioTestButton,
                 "Play a short tone through the selected controller speaker.");
-
-            controllerAudioBtTestButton = new Button {
-                Location = new Point(145, 644),
-                Size = new Size(320, 27),
-                Text = "Test tone over Bluetooth (experimental)",
-            };
-            StyleStandardButton(controllerAudioBtTestButton, false);
-            controllerAudioBtTestButton.Click += ControllerAudioBtTestButton_Click;
-            page.Controls.Add(controllerAudioBtTestButton);
-            tip_reassign.SetToolTip(controllerAudioBtTestButton,
-                "DualShock 4 only. SBC-encodes a short tone and streams it to the controller's " +
-                "speaker over Bluetooth using an unofficial, unverified report format - listen " +
-                "for the tone to confirm it actually works on your hardware before relying on it.");
 
             page.Controls.Add(CreateDivider(24, 690));
             AddSectionHeading(page, "Orientation", 707,
@@ -1483,31 +1472,12 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // No local playback to await (the tone only ever exists inside HID reports the service
-        // process writes) - just disable the button for the streamed tone's known ~650ms duration.
-        private async void ControllerAudioBtTestButton_Click(object sender, EventArgs e) {
-            ControllerProfileInfo profile = SelectedProfile;
-            if (profile == null || !profile.IsConnected || profile.IsUsb ||
-                profile.Kind != ControllerKind.DualShock4)
-                return;
-
-            int volume = ControllerMappings.IntOption(
-                profile.ProfileId, "ControllerAudioVolume", 75);
-            string oldText = controllerAudioBtTestButton.Text;
-            controllerAudioBtTestButton.Enabled = false;
-            controllerAudioBtTestButton.Text = "Playing...";
-            try {
-                serviceClient.PlayBluetoothAudioTest(profile.PadId, volume);
-                await Task.Delay(750);
-            } finally {
-                controllerAudioBtTestButton.Text = oldText;
-                UpdateControllerAudioControlState();
-            }
-        }
-
         private void UpdateControllerAudioControlState() {
             ControllerProfileInfo selected = SelectedProfile;
-            bool available = selected != null && selected.IsConnected && selected.IsUsb &&
+            // No longer USB-only: Enabled/Volume/Endpoint also drive DualShock4Controller's
+            // automatic Bluetooth streaming lifecycle now (see Program.cs's
+            // ApplyControllerProfileOptions), so they need to be editable over Bluetooth too.
+            bool available = selected != null && selected.IsConnected &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
             if (controllerAudioEnabledSelector != null)
@@ -1517,11 +1487,8 @@ namespace BetterJoyForCemu {
             if (controllerAudioEndpointSelector != null)
                 controllerAudioEndpointSelector.Enabled = available;
             if (controllerAudioTestButton != null)
-                controllerAudioTestButton.Enabled = available &&
+                controllerAudioTestButton.Enabled = available && selected.IsUsb &&
                     controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
-            if (controllerAudioBtTestButton != null)
-                controllerAudioBtTestButton.Enabled = selected != null && selected.IsConnected &&
-                    !selected.IsUsb && selected.Kind == ControllerKind.DualShock4;
         }
 
         private void LoadProfileOptions(bool hasProfile) {
@@ -1860,10 +1827,6 @@ namespace BetterJoyForCemu {
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
             bool hasControllerAudio = hasConfigurableLight;
-            bool canUseControllerAudio = hasControllerAudio && selected.IsConnected && selected.IsUsb;
-            bool hasBluetoothAudioTest = selected != null && selected.Kind == ControllerKind.DualShock4;
-            if (controllerAudioBtTestButton != null)
-                controllerAudioBtTestButton.Visible = hasBluetoothAudioTest;
             if (lightColorLabel != null)
                 lightColorLabel.Visible = hasConfigurableLight;
             if (lightColorButton != null)
@@ -1876,11 +1839,11 @@ namespace BetterJoyForCemu {
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
             }) {
-                if (control != null) {
+                if (control != null)
                     control.Visible = hasControllerAudio;
-                    control.Enabled = canUseControllerAudio;
-                }
             }
+            // UpdateControllerAudioControlState (called below) is the source of truth for
+            // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
             if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation))
                 touchpadNavigation.Visible = hasTouchpad;
             if (!hasTouchpad && profilePages.TryGetValue("touchpad", out Panel touchpadPage) &&

@@ -148,6 +148,14 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Program.cs's periodic ApplyControllerProfileOptions only reaches attached controllers,
+        // so a mid-stream disconnect would otherwise leave the stream worker thread parked in
+        // BlockingCollection.Take forever and the input helper's WASAPI capture running with
+        // nowhere for its frames to go. Stop explicitly here instead, before the handle closes.
+        protected override void OnDetachingWhileAttached() {
+            StopBluetoothAudioStream();
+        }
+
         public override void SetLightColor(byte red, byte green, byte blue) {
             lightbarRed = red;
             lightbarGreen = green;
@@ -695,9 +703,6 @@ namespace BetterJoyForCemu {
         private const int BtAudioStreamFramesPerBigBatch = 4;
         private const int BtAudioStreamFramesPerSmallBatch = 2;
         private const byte BtAudioOutputPathSpeaker = 0x02;
-        private const int BtAudioSampleRateHz = 32000;
-        private const int BtAudioChannels = 2;
-        private const int BtAudioBytesPerSample = 2; // 16-bit PCM
 
         // Enables the DS4's Bluetooth audio DAC and sets its volume - report 0x11, same ID
         // SendDualShock4Lightbar's BT branch already uses. Must be sent once before any audio
@@ -727,117 +732,173 @@ namespace BetterJoyForCemu {
             HIDapi.hid_write(handle, buf, new UIntPtr((uint)BtAudioEnableReportLen));
         }
 
-        public override bool SupportsBluetoothAudioTest => true;
+        // Phase 2: continuous live streaming, replacing phase 1's fixed-duration test tone.
+        // EnqueueBluetoothAudioFrame receives already-SBC-encoded frames captured/encoded in the
+        // per-session input helper process (see BluetoothAudioCapture.cs and
+        // IJoyconHost.StartBluetoothAudioCapture - Session 0 cannot do WASAPI loopback capture
+        // itself) and forwarded here over the existing helper pipe.
+        //
+        // Sending used to happen on a dedicated background thread, calling hid_write concurrently
+        // with Poll's own hid_read_timeout on the same handle. hidapi's own docs call device
+        // functions thread-unsafe when called concurrently, and on real hardware that concurrency
+        // corrupted both the audio stream and unrelated input parsing (battery status went bad
+        // too). Fixed by moving sending onto Poll itself (SendQueuedBluetoothAudioIfAny, called
+        // once per Poll iteration, same pattern as SendQueuedRumbleIfAny) - every read and write
+        // for this handle now happens from that one thread, like everything else in this class.
+        // Poll's own natural iteration rate (driven by real HID read timing, typically a few ms)
+        // paces output well enough on its own; no artificial sleep needed. One concurrent stream,
+        // matching the reference project's own scope ("demo only supports one controller").
+        // bluetoothAudioPending is a plain List, not a concurrent collection, even though
+        // Start/StopBluetoothAudioStream run on whatever thread calls them (Program.cs's periodic
+        // profile reconciliation) while SendQueuedBluetoothAudioIfAny only ever runs on Poll. Safe
+        // without a lock because only Start touches the list from outside Poll, and only before
+        // publishing bluetoothAudioStreaming = true as the very last thing it does (a volatile
+        // write) - Poll's SendQueuedBluetoothAudioIfAny gates every touch of the list behind
+        // reading that same flag first. Stop never touches the list at all. Don't add code that
+        // touches bluetoothAudioPending outside that ordering without adding real synchronization.
+        private readonly ConcurrentQueue<byte[]> bluetoothAudioFrameQueue = new ConcurrentQueue<byte[]>();
+        private readonly List<byte[]> bluetoothAudioPending = new List<byte[]>();
+        private volatile bool bluetoothAudioStreaming;
+        private bool bluetoothAudioPrimed;
+        private ushort bluetoothAudioPacketCounter;
 
-        public override void PlayBluetoothAudioTest(int volumePercent) {
-            if (isUSB || state <= state_.DROPPED)
+        // Frames to accumulate before the first report ever goes out - roughly 96ms (24 * 4ms/
+        // block) of cushion. Without this, sending began the instant 2 frames existed and stayed
+        // at that same bare-minimum depth continuously (every Poll iteration drained pending back
+        // down toward empty), leaving zero margin against any momentary capture hiccup - a classic
+        // "not enough buffer" recipe for underrun artifacts (muffled/distorted, not silence,
+        // since the controller's own decoder still has to do *something* with a starved stream).
+        // One-time priming only, not a maintained floor - the trade is a fixed ~96ms of added
+        // startup latency for continuity; if it still glitches mid-stream (not just at the start),
+        // that points at sustained production/consumption imbalance instead, not a priming gap.
+        private const int BtAudioPrimeFrameCount = 24;
+
+        // One SBC block is 128 samples (BluetoothAudioCapture.cs's fixed 32kHz/8-subband/16-block
+        // encoder config) = 4ms of audio. Must match that file's encoder parameters exactly.
+        private const double BtAudioMsPerBlock = 4.0;
+        private Stopwatch bluetoothAudioStopwatch;
+        private double bluetoothAudioNextSendDeadlineMs;
+
+        public bool IsStreamingBluetoothAudio => bluetoothAudioStreaming;
+
+        public void StartBluetoothAudioStream(int volumePercent, string endpointId) {
+            if (isUSB || state <= state_.DROPPED || bluetoothAudioStreaming)
                 return;
 
             PrepareBluetoothAudio(volumePercent);
+            form.StartBluetoothAudioCapture(PadId, endpointId);
 
-            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
-            float amplitude = 0.18f * volumePercent / 100.0f;
-
-            using (var encoder = new SbcEncoder(BtAudioSampleRateHz, SbcSubBandCount.Sb8, 48,
-                       SbcChannelMode.JointStereo, SbcAllocationMode.Snr, SbcBlockCount.Blk16)) {
-                int samplesPerBlock = encoder.CodeSize / (BtAudioChannels * BtAudioBytesPerSample);
-                var duration = TimeSpan.FromMilliseconds(650);
-                int totalSamples = (int)(BtAudioSampleRateHz * duration.TotalSeconds);
-                int blockCount = Math.Max(1, (totalSamples + samplesPerBlock - 1) / samplesPerBlock);
-                if (blockCount % 2 != 0)
-                    blockCount++; // keep the stream loop's 4/2-frame batching exhaustive
-                totalSamples = blockCount * samplesPerBlock;
-                int fadeSamples = Math.Max(1, BtAudioSampleRateHz / 50);
-
-                var frames = new List<byte[]>(blockCount);
-                byte[] pcmBlock = new byte[encoder.CodeSize];
-                byte[] sbcBlock = new byte[encoder.FrameSize];
-                double phase = 0;
-                for (int block = 0; block < blockCount; block++) {
-                    for (int i = 0; i < samplesPerBlock; i++) {
-                        int sample = block * samplesPerBlock + i;
-                        int remaining = totalSamples - sample;
-                        float fade = Math.Min(1.0f,
-                            Math.Min(sample / (float)fadeSamples, remaining / (float)fadeSamples));
-                        short pcm = (short)Math.Round(Math.Sin(phase) * amplitude * fade * short.MaxValue);
-                        phase += 2.0 * Math.PI * 880.0 / BtAudioSampleRateHz;
-                        if (phase >= 2.0 * Math.PI)
-                            phase -= 2.0 * Math.PI;
-
-                        int o = i * BtAudioChannels * BtAudioBytesPerSample;
-                        pcmBlock[o] = (byte)pcm; pcmBlock[o + 1] = (byte)(pcm >> 8);         // left
-                        pcmBlock[o + 2] = (byte)pcm; pcmBlock[o + 3] = (byte)(pcm >> 8);     // right
-                    }
-
-                    int encoded = encoder.Encode(pcmBlock, sbcBlock);
-                    if (encoded <= 0)
-                        return; // encoder failure - nothing sensible left to stream
-
-                    byte[] frame = new byte[encoded];
-                    Buffer.BlockCopy(sbcBlock, 0, frame, 0, encoded);
-                    frames.Add(frame);
-                }
-
-                double msPerBlock = 1000.0 * samplesPerBlock / BtAudioSampleRateHz;
-                StreamBluetoothAudioFrames(frames, msPerBlock);
-            }
+            while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
+            bluetoothAudioPending.Clear();
+            bluetoothAudioPacketCounter = 0;
+            bluetoothAudioPrimed = false;
+            bluetoothAudioStopwatch = Stopwatch.StartNew();
+            bluetoothAudioNextSendDeadlineMs = 0;
+            bluetoothAudioStreaming = true;
+            AudioDebugLog.Write("DS4Send", "Start pad=" + PadId + " volume=" + volumePercent +
+                " endpoint=" + (endpointId ?? "(default)"));
         }
 
-        // msPerBlock is how much audio time one SBC block (one entry in frames) covers - each
-        // batch sent advances the real-time pacing clock by batchSize * msPerBlock.
-        private void StreamBluetoothAudioFrames(List<byte[]> frames, double msPerBlock) {
-            ushort packetCounter = 0;
-            int index = 0;
-            double audioMsSent = 0;
+        public void StopBluetoothAudioStream() {
+            if (!bluetoothAudioStreaming)
+                return;
 
-            var stopwatch = Stopwatch.StartNew();
-            while (index < frames.Count) {
-                if (isUSB || state <= state_.DROPPED)
-                    return;
+            bluetoothAudioStreaming = false;
+            form.StopBluetoothAudioCapture(PadId);
+            AudioDebugLog.Write("DS4Send", "Stop pad=" + PadId);
+        }
 
-                int remaining = frames.Count - index;
-                int batchSize = remaining >= BtAudioStreamFramesPerBigBatch
-                    ? BtAudioStreamFramesPerBigBatch
-                    : BtAudioStreamFramesPerSmallBatch;
-                byte protocol = batchSize == BtAudioStreamFramesPerBigBatch
-                    ? BtAudioStreamProtocol4Frames
-                    : BtAudioStreamProtocol2Frames;
-                int reportLen = batchSize == BtAudioStreamFramesPerBigBatch
-                    ? BtAudioStreamReport4FramesLen
-                    : BtAudioStreamReport2FramesLen;
+        // Called from HeadlessJoyconHost's helper-pipe read thread as frames arrive - the only
+        // part of this feature that legitimately runs off the Poll thread, since it only touches
+        // an in-memory queue, never the HID handle itself.
+        public void EnqueueBluetoothAudioFrame(byte[] frame) {
+            bluetoothAudioFrameQueue.Enqueue(frame);
+        }
 
-                byte[] buf = new byte[reportLen];
-                buf[0] = protocol;
-                buf[1] = 0x40;
-                buf[2] = 0xa2;
-                buf[3] = (byte)(packetCounter & 0xFF);
-                buf[4] = (byte)((packetCounter >> 8) & 0xFF);
-                buf[5] = BtAudioOutputPathSpeaker;
+        // Called once per Poll iteration. Sends at most one batch per call, and only once the
+        // real-time deadline for it has arrived - deliberately not a drain-everything-that's-ready
+        // loop. Poll iterates roughly every ~4ms (DS4's own BT poll interval) while one 4-frame
+        // batch represents 16ms of audio: with no pacing, Poll could drain buffered frames up to
+        // ~4x faster than real playback speed whenever they were available, burning through any
+        // priming cushion in a fraction of the time it took to build and landing right back in a
+        // hand-to-mouth state - "primed but not paced" only delays the same underrun symptom
+        // instead of fixing it. This never blocks/sleeps (Poll must stay free to keep reading) -
+        // it just skips sending until enough wall-clock time has actually passed.
+        protected override void SendQueuedBluetoothAudioIfAny() {
+            if (!bluetoothAudioStreaming)
+                return;
 
-                int offset = 6;
-                for (int i = 0; i < batchSize; i++) {
-                    byte[] frame = frames[index + i];
-                    Buffer.BlockCopy(frame, 0, buf, offset, frame.Length);
-                    offset += frame.Length;
-                }
-
-                uint crc = Crc32(0xA2, buf, reportLen - 4);
-                buf[reportLen - 4] = (byte)crc;
-                buf[reportLen - 3] = (byte)(crc >> 8);
-                buf[reportLen - 2] = (byte)(crc >> 16);
-                buf[reportLen - 1] = (byte)(crc >> 24);
-
-                if (HIDapi.hid_write(handle, buf, new UIntPtr((uint)reportLen)) < 0)
-                    LogDualShock4RawDump("Bluetooth audio stream write failed at frame " + index);
-
-                packetCounter += (ushort)batchSize;
-                index += batchSize;
-
-                audioMsSent += batchSize * msPerBlock;
-                int sleepMs = (int)(audioMsSent - stopwatch.Elapsed.TotalMilliseconds);
-                if (sleepMs > 0)
-                    Thread.Sleep(sleepMs);
+            int dequeued = 0;
+            while (bluetoothAudioFrameQueue.TryDequeue(out byte[] frame)) {
+                bluetoothAudioPending.Add(frame);
+                dequeued++;
             }
+
+            if (!bluetoothAudioPrimed) {
+                if (bluetoothAudioPending.Count < BtAudioPrimeFrameCount)
+                    return;
+                bluetoothAudioPrimed = true;
+                AudioDebugLog.Write("DS4Send", "Primed pending=" + bluetoothAudioPending.Count);
+            }
+
+            if (bluetoothAudioPending.Count < BtAudioStreamFramesPerSmallBatch)
+                return;
+
+            double nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
+            if (nowMs < bluetoothAudioNextSendDeadlineMs)
+                return;
+
+            int batchSize = bluetoothAudioPending.Count >= BtAudioStreamFramesPerBigBatch
+                ? BtAudioStreamFramesPerBigBatch
+                : BtAudioStreamFramesPerSmallBatch;
+
+            AudioDebugLog.Write("DS4Send", "pending=" + bluetoothAudioPending.Count +
+                " dequeuedThisCall=" + dequeued + " batch=" + batchSize +
+                " nowMs=" + nowMs.ToString("F1") +
+                " deadlineMs=" + bluetoothAudioNextSendDeadlineMs.ToString("F1"));
+
+            SendBluetoothAudioBatch(bluetoothAudioPending, 0, batchSize, ref bluetoothAudioPacketCounter);
+            bluetoothAudioPending.RemoveRange(0, batchSize);
+
+            // Anchor the next deadline off the target schedule, not "now" - if this call ran a
+            // little late, catch up gradually via subsequent early-arriving Poll iterations rather
+            // than permanently shifting the whole schedule later (classic drift-correcting pacer).
+            bluetoothAudioNextSendDeadlineMs += batchSize * BtAudioMsPerBlock;
+        }
+
+        private void SendBluetoothAudioBatch(List<byte[]> frames, int start, int batchSize, ref ushort packetCounter) {
+            byte protocol = batchSize == BtAudioStreamFramesPerBigBatch
+                ? BtAudioStreamProtocol4Frames
+                : BtAudioStreamProtocol2Frames;
+            int reportLen = batchSize == BtAudioStreamFramesPerBigBatch
+                ? BtAudioStreamReport4FramesLen
+                : BtAudioStreamReport2FramesLen;
+
+            byte[] buf = new byte[reportLen];
+            buf[0] = protocol;
+            buf[1] = 0x40;
+            buf[2] = 0xa2;
+            buf[3] = (byte)(packetCounter & 0xFF);
+            buf[4] = (byte)((packetCounter >> 8) & 0xFF);
+            buf[5] = BtAudioOutputPathSpeaker;
+
+            int offset = 6;
+            for (int i = 0; i < batchSize; i++) {
+                byte[] frame = frames[start + i];
+                Buffer.BlockCopy(frame, 0, buf, offset, frame.Length);
+                offset += frame.Length;
+            }
+
+            uint crc = Crc32(0xA2, buf, reportLen - 4);
+            buf[reportLen - 4] = (byte)crc;
+            buf[reportLen - 3] = (byte)(crc >> 8);
+            buf[reportLen - 2] = (byte)(crc >> 16);
+            buf[reportLen - 1] = (byte)(crc >> 24);
+
+            if (HIDapi.hid_write(handle, buf, new UIntPtr((uint)reportLen)) < 0)
+                LogDualShock4RawDump("Bluetooth audio stream write failed");
+
+            packetCounter += (ushort)batchSize;
         }
     }
 }

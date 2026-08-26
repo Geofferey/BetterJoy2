@@ -15,10 +15,21 @@ namespace BetterJoyForCemu {
         [STAThread]
         static void Main(string[] args) {
             // The input helper (see InputHelper/SessionLauncher) is a session-launched instance
-            // of this same exe whose only job is forwarding keyboard/mouse events over a pipe to
-            // a running service - it never touches hidapi, config, or the DLL search path setup
-            // below, so it branches out before any of that runs.
+            // of this same exe, originally just forwarding keyboard/mouse events over a pipe to a
+            // running service - it still deliberately never touches Program (SetupDlls's DLL
+            // search path setup would trigger Program's static useHidHide field initializer,
+            // reading config before it's redirected below - see this class's top comment), so it
+            // still branches out before that. It DOES now need AppPaths.DataDir and the
+            // redirected config, though: BluetoothAudioCapture's debug logging silently read the
+            // bundled Program Files config (always DualShock4DebugLogging=false) instead of the
+            // user's real one when this ran before the redirect, and AppPaths.DataDir throws if
+            // touched before Initialize. isServiceProcess=true even though the interactive
+            // session it runs in isn't the service - InputHelper is only ever launched by the
+            // service (see SessionLauncher), so it shares the service's shared/ProgramData
+            // location rather than resolving a separate per-user one.
             if (args.Length >= 2 && args[0].Equals("-inputhelper", StringComparison.OrdinalIgnoreCase)) {
+                AppPaths.Initialize(true);
+                RedirectConfigToAppData();
                 InputHelper.Run(args[1]);
                 return;
             }

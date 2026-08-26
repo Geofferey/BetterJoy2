@@ -26,6 +26,16 @@ namespace BetterJoyForCemu {
             var writer = new BinaryWriter(pipe);
             var writeLock = new object();
 
+            // One concurrent Bluetooth audio capture at a time, matching
+            // DualShock4Controller's own single-stream scope. padId is remembered here (not
+            // carried by BluetoothAudioCapture itself) purely to tag outgoing AudioFrame
+            // messages with the right pad.
+            int audioCapturePadId = -1;
+            var audioCapture = new BluetoothAudioCapture(frame => {
+                if (audioCapturePadId >= 0)
+                    SendAudioFrame(pipe, writer, writeLock, audioCapturePadId, frame);
+            });
+
             var keyboard = WindowsInput.Capture.Global.KeyboardAsync();
             keyboard.KeyEvent += (sender, e) => {
                 if (e.Data.KeyDown != null) SendSafe(pipe, writer, writeLock, InputMessageType.KeyDown, (int)e.Data.KeyDown.Key);
@@ -57,7 +67,19 @@ namespace BetterJoyForCemu {
                 try {
                     while (pipe.IsConnected) {
                         InputMessage msg = InputMessage.ReadFrom(reader);
-                        DesktopInputBackend.Execute(msg, desktopInput);
+                        switch (msg.Type) {
+                            case InputMessageType.StartAudioCapture:
+                                audioCapturePadId = msg.A;
+                                audioCapture.Start(reader.ReadString());
+                                break;
+                            case InputMessageType.StopAudioCapture:
+                                audioCapture.Stop();
+                                audioCapturePadId = -1;
+                                break;
+                            default:
+                                DesktopInputBackend.Execute(msg, desktopInput);
+                                break;
+                        }
                     }
                 } catch {
                     // pipe closed/service gone - fall through and stop the message pump below
@@ -70,6 +92,7 @@ namespace BetterJoyForCemu {
 
             keyboard.Dispose();
             mouse.Dispose();
+            audioCapture.Dispose();
             desktopInput.Dispose();
             try { pipe.Dispose(); } catch { }
         }
@@ -84,6 +107,24 @@ namespace BetterJoyForCemu {
                     writer.Flush();
                 } catch {
                     // best-effort - a mid-write disconnect just drops this one event
+                }
+            }
+        }
+
+        // BluetoothAudioCapture invokes its onFrame callback from a WASAPI capture callback
+        // thread, concurrently with the keyboard/mouse hook threads already using SendSafe above -
+        // same writeLock, so writes to the shared pipe/writer never interleave.
+        private static void SendAudioFrame(NamedPipeClientStream pipe, BinaryWriter writer, object writeLock, int padId, byte[] frame) {
+            lock (writeLock) {
+                if (!pipe.IsConnected)
+                    return;
+
+                try {
+                    new InputMessage { Type = InputMessageType.AudioFrame, A = padId, B = frame.Length }.WriteTo(writer);
+                    writer.Write(frame);
+                    writer.Flush();
+                } catch {
+                    // best-effort - a mid-write disconnect just drops this one frame
                 }
             }
         }

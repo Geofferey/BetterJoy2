@@ -127,9 +127,24 @@ namespace BetterJoyForCemu {
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
-                    if (ControllerMappings.BoolOption(profileId, "ControllerAudioEnabled"))
-                        jc.PrepareUsbAudio(ControllerMappings.IntOption(
-                            profileId, "ControllerAudioVolume", 75));
+                    bool audioEnabled = ControllerMappings.BoolOption(profileId, "ControllerAudioEnabled");
+                    int audioVolume = ControllerMappings.IntOption(profileId, "ControllerAudioVolume", 75);
+                    if (audioEnabled)
+                        jc.PrepareUsbAudio(audioVolume);
+                    // Bluetooth has no audio-class endpoint to prepare - DualShock4Controller owns
+                    // a full continuous capture/encode/stream lifecycle instead (see
+                    // StartBluetoothAudioStream). Both calls are idempotent no-ops when already in
+                    // the requested state, so re-evaluating this every scan pass is cheap and is
+                    // what actually starts the stream once a profile is (re)enabled or the
+                    // controller reconnects - mid-stream disconnect is handled separately via
+                    // OnDetachingWhileAttached, since this loop only reaches attached controllers.
+                    if (!jc.isUSB && jc is DualShock4Controller ds4) {
+                        if (audioEnabled)
+                            ds4.StartBluetoothAudioStream(audioVolume,
+                                ControllerMappings.OptionValue(profileId, "ControllerAudioEndpointId"));
+                        else
+                            ds4.StopBluetoothAudioStream();
+                    }
                     if (!handledProfiles.Add(profileId))
                         continue;
 

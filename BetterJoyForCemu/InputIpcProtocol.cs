@@ -29,6 +29,20 @@ namespace BetterJoyForCemu {
         SimulateScroll = 19, // A: 1 = scroll up (Forwards), 0 = scroll down (Backwards)
         SimulateCursorMoveBy = 20, // Exact pixel delta; bypasses Windows relative-pointer scaling.
         SimulateWrappedCursorMoveBy = 21, // Exact delta; wraps inside the cursor's current monitor.
+
+        // Service -> helper: start/stop continuous WASAPI loopback capture -> SBC encoding for a
+        // DS4's live Bluetooth audio stream (see DualShock4Controller's stream lifecycle). A =
+        // padId. StartAudioCapture carries one extra trailer beyond the fixed header: the capture
+        // endpoint ID as a length-prefixed string (BinaryWriter.Write(string)/ReadString()) -
+        // empty means "use the system default render device".
+        StartAudioCapture = 30,
+        StopAudioCapture = 31,
+
+        // Helper -> service: one SBC-encoded audio frame. A = padId, B = payload length in bytes;
+        // the fixed 9-byte header is immediately followed by B raw bytes (the frame itself,
+        // written/read with BinaryWriter.Write(byte[])/ReadBytes - no separate length prefix,
+        // since B already carries it).
+        AudioFrame = 32,
     }
 
     // Fixed-size (9 byte) message: 1 byte type + two 4-byte ints. Simple and robust over a

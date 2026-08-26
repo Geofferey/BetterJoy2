@@ -68,5 +68,13 @@ namespace BetterJoyForCemu {
         // existing SimulateButtonHold/Release above (ButtonCode.Left/Right/Middle); scroll has no
         // hold/release equivalent, just a discrete tick per press.
         void SimulateScroll(bool up);
+
+        // Continuous Bluetooth audio capture for a DS4's live speaker stream - same cross-session
+        // problem as Simulate*: WASAPI loopback capture needs an interactive desktop, which
+        // Session 0 doesn't have. Headless/service mode forwards to the session-launched helper
+        // process over the same pipe Simulate* already uses; endpointId selects which render
+        // device to loop back (falls back to the system default when null/not found).
+        void StartBluetoothAudioCapture(int padId, string endpointId);
+        void StopBluetoothAudioCapture(int padId);
     }
 }
