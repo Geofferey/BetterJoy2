@@ -330,6 +330,15 @@ namespace BetterJoyForCemu {
 
         public override void SetLightColor(byte red, byte green, byte blue) {
             lock (outputReportLock) {
+                // Profile reconciliation reapplies controller options on every scan pass. Once
+                // this exact color has reached an initialized transport, another 0x31 report is
+                // redundant and can collide with the shared rumble/audio state lane. Preserve the
+                // pending path during attach so the first real color write is never suppressed.
+                if (lightbarTransportKnown && !lightbarUpdatePending &&
+                    lightbarRed == red && lightbarGreen == green &&
+                    lightbarBlue == blue)
+                    return;
+
                 lightbarRed = red;
                 lightbarGreen = green;
                 lightbarBlue = blue;
@@ -1065,6 +1074,15 @@ namespace BetterJoyForCemu {
         // CRC32-with-0xA2-seed) from DS4Windows's DualSense output-report code.
         private void SendDualSenseRumble(byte leftMotor, byte rightMotor) {
             lock (outputReportLock) {
+                // Disabling rumble calls StopRumble during every profile reconciliation. Do not
+                // emit a fresh zero-motor 0x31 report when the physical state is already stopped:
+                // on Bluetooth that report shares state with the lightbar and alternated with the
+                // profile color report, visibly strobing whenever headphone-gated audio was idle.
+                // A real nonzero -> zero transition still falls through and sends the stop.
+                if (leftMotor == 0 && rightMotor == 0 &&
+                    currentLeftMotor == 0 && currentRightMotor == 0)
+                    return;
+
                 currentLeftMotor = leftMotor;
                 currentRightMotor = rightMotor;
                 bluetoothOutputStateDirty = true;
