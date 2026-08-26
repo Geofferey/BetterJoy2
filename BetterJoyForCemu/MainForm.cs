@@ -329,7 +329,8 @@ namespace BetterJoyForCemu {
 
         // No-op: BetterJoy always runs as the service now (see IsBetterJoyServiceRunning's
         // comment above) - MainForm never actually owns a live Controller that could call this.
-        public bool StartBluetoothAudioCapture(int padId, string endpointId) { return false; }
+        public bool StartBluetoothAudioCapture(int padId, string endpointId,
+            BluetoothAudioCodec codec = BluetoothAudioCodec.DualShock4Sbc) { return false; }
         public void StopBluetoothAudioCapture(int padId) { }
 
         // Only ever consulted after a direct pipe-connect attempt has already failed, to decide

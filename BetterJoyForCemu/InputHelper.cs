@@ -69,8 +69,12 @@ namespace BetterJoyForCemu {
                         InputMessage msg = InputMessage.ReadFrom(reader);
                         switch (msg.Type) {
                             case InputMessageType.StartAudioCapture:
+                                // Do not retag a final callback from the previous controller/
+                                // codec as belonging to the new stream while Start synchronously
+                                // stops and replaces the capture pipeline.
+                                audioCapturePadId = -1;
+                                audioCapture.Start(reader.ReadString(), (BluetoothAudioCodec)msg.B);
                                 audioCapturePadId = msg.A;
-                                audioCapture.Start(reader.ReadString());
                                 break;
                             case InputMessageType.StopAudioCapture:
                                 audioCapture.Stop();

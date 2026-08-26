@@ -151,6 +151,17 @@ namespace BetterJoyForCemu {
                         else
                             ds4.StopBluetoothAudioStream();
                     }
+                    if (jc is DualSenseController dualSense) {
+                        bool routeToHeadphones = ControllerMappings.BoolOption(
+                            profileId, "ControllerAudioRouteHeadphones");
+                        if (!jc.isUSB && audioEnabled &&
+                            (!routeToHeadphones || dualSense.HeadphonesConnected))
+                            dualSense.StartBluetoothAudioStream(audioVolume,
+                                ControllerMappings.OptionValue(profileId,
+                                    "ControllerAudioEndpointId"), routeToHeadphones);
+                        else
+                            dualSense.StopBluetoothAudioStream();
+                    }
                     if (!handledProfiles.Add(profileId))
                         continue;
 

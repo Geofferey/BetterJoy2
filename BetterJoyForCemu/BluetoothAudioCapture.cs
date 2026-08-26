@@ -1,5 +1,7 @@
 using System;
 using System.Diagnostics;
+using Concentus;
+using Concentus.Enums;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -11,9 +13,10 @@ namespace BetterJoyForCemu {
     // Pipeline: EventSyncedLoopbackCapture (below, built on NAudio's WasapiCapture - already a
     // project dependency) on the selected/default render endpoint -> downmix to stereo float
     // (matches nefarius/DS4AudioStreamer's Downmixer.cs, MIT) -> SampleRateResampler
-    // (SampleRateResampler.cs, libsamplerate) to 32kHz float -> manual float-to-16-bit-PCM
-    // conversion -> SbcEncoder (already added for the phase-1 test tone) encodes CodeSize-byte PCM
-    // blocks one at a time. An earlier attempt used NAudio's own MediaFoundationResampler here to
+    // (SampleRateResampler.cs, libsamplerate) -> the controller-selected encoder: DS4 uses 32 kHz
+    // PCM into SBC while DualSense uses 48 kHz float into fixed 200-byte Opus frames. Controller
+    // report construction stays in DualShock4.cs/DualSense.cs. An earlier attempt used NAudio's
+    // own MediaFoundationResampler here to
     // avoid a second native dependency; on real hardware that measurably dropped a fixed ~19% of
     // every callback's audio (confirmed via this file's own debug logging), so this now matches
     // the reference project's actual resampler choice instead.
@@ -32,15 +35,25 @@ namespace BetterJoyForCemu {
     }
 
     internal sealed class BluetoothAudioCapture : IDisposable {
-        private const int TargetSampleRate = 32000;
         private const int TargetChannels = 2;
+        private const int DualShock4SampleRate = 32000;
+        private const int DualSenseOpusSampleRate = 48000;
+        // Sony's Bluetooth media clock presents one 480-sample Opus packet every 10.667 ms,
+        // consuming 512 frames from a normal 48 kHz render stream. A continuous 45 kHz resample
+        // performs that same 512-to-480 conversion without allowing capture to outrun transport.
+        private const int DualSenseCaptureOutputRate = 45000;
+        private const int DualSenseOpusFrameSamples = 480;
+        private const int DualSenseOpusFrameBytes = 200;
 
         private readonly Action<byte[]> onFrame;
         private EventSyncedLoopbackCapture capture;
         private SampleRateResampler resampler;
-        private SbcEncoder encoder;
+        private SbcEncoder sbcEncoder;
+        private IOpusEncoder opusEncoder;
+        private BluetoothAudioCodec codec;
         private float[] sourceCarry = new float[0]; // unconsumed stereo float frames, interleaved
         private byte[] pcmCarry = new byte[0]; // resampled 16-bit PCM bytes not yet a full SBC block
+        private float[] opusCarry = new float[0]; // resampled floats not yet a 480-sample Opus frame
         private readonly object lifecycleLock = new object();
         private Stopwatch debugStopwatch;
         private double debugLastCallbackMs;
@@ -60,16 +73,16 @@ namespace BetterJoyForCemu {
         // waiting for its own callback thread to finish, and that callback thread
         // (OnDataAvailable) also takes lifecycleLock, so calling StopRecording from inside the
         // lock would risk a real deadlock between the two threads.
-        public void Start(string endpointId) {
+        public void Start(string endpointId, BluetoothAudioCodec requestedCodec) {
             Stop();
             try {
-                StartInner(endpointId);
+                StartInner(endpointId, requestedCodec);
             } catch {
                 Stop(); // tear down whatever partially came up before the throw
             }
         }
 
-        private void StartInner(string endpointId) {
+        private void StartInner(string endpointId, BluetoothAudioCodec requestedCodec) {
             MMDevice device = null;
             using (var enumerator = new MMDeviceEnumerator()) {
                 if (!String.IsNullOrEmpty(endpointId)) {
@@ -80,17 +93,33 @@ namespace BetterJoyForCemu {
             }
 
             var newCapture = new EventSyncedLoopbackCapture(device);
-            double ratio = (double)TargetSampleRate / newCapture.WaveFormat.SampleRate;
+            int targetSampleRate = requestedCodec == BluetoothAudioCodec.DualSenseOpus
+                ? DualSenseCaptureOutputRate
+                : DualShock4SampleRate;
+            double ratio = (double)targetSampleRate / newCapture.WaveFormat.SampleRate;
             var newResampler = new SampleRateResampler(ResampleQuality.SincBest, TargetChannels, ratio);
-            var newEncoder = new SbcEncoder(TargetSampleRate, SbcSubBandCount.Sb8, 48,
-                SbcChannelMode.JointStereo, SbcAllocationMode.Snr, SbcBlockCount.Blk16);
+            SbcEncoder newSbcEncoder = null;
+            IOpusEncoder newOpusEncoder = null;
+            if (requestedCodec == BluetoothAudioCodec.DualSenseOpus) {
+                newOpusEncoder = OpusCodecFactory.CreateEncoder(DualSenseOpusSampleRate,
+                    TargetChannels, OpusApplication.OPUS_APPLICATION_AUDIO);
+                newOpusEncoder.Bitrate = 160000;
+                newOpusEncoder.UseVBR = false;
+                newOpusEncoder.Complexity = 0;
+            } else {
+                newSbcEncoder = new SbcEncoder(DualShock4SampleRate, SbcSubBandCount.Sb8, 48,
+                    SbcChannelMode.JointStereo, SbcAllocationMode.Snr, SbcBlockCount.Blk16);
+            }
 
             lock (lifecycleLock) {
                 capture = newCapture;
                 resampler = newResampler;
-                encoder = newEncoder;
+                sbcEncoder = newSbcEncoder;
+                opusEncoder = newOpusEncoder;
+                codec = requestedCodec;
                 sourceCarry = new float[0];
                 pcmCarry = new byte[0];
+                opusCarry = new float[0];
                 debugStopwatch = Stopwatch.StartNew();
                 debugLastCallbackMs = 0;
             }
@@ -98,9 +127,12 @@ namespace BetterJoyForCemu {
             newCapture.DataAvailable += OnDataAvailable;
             newCapture.StartRecording();
             AudioDebugLog.Write("Capture", "Start device=" + device.FriendlyName +
+                " codec=" + requestedCodec +
                 " sourceRate=" + newCapture.WaveFormat.SampleRate +
                 " sourceChannels=" + newCapture.WaveFormat.Channels +
-                " codeSize=" + newEncoder.CodeSize + " frameSize=" + newEncoder.FrameSize);
+                " targetRate=" + targetSampleRate +
+                (newSbcEncoder == null ? " opusFrameBytes=" + DualSenseOpusFrameBytes :
+                    " codeSize=" + newSbcEncoder.CodeSize + " frameSize=" + newSbcEncoder.FrameSize));
         }
 
         public void Stop() {
@@ -110,10 +142,14 @@ namespace BetterJoyForCemu {
             lock (lifecycleLock) {
                 captureToStop = capture;
                 resamplerToDispose = resampler;
-                encoderToDispose = encoder;
+                encoderToDispose = sbcEncoder;
                 capture = null;
                 resampler = null;
-                encoder = null;
+                sbcEncoder = null;
+                opusEncoder = null;
+                sourceCarry = new float[0];
+                pcmCarry = new byte[0];
+                opusCarry = new float[0];
             }
 
             if (captureToStop != null) {
@@ -195,15 +231,19 @@ namespace BetterJoyForCemu {
                     sourceCarry = new float[0];
                 }
 
-                var pcm = new byte[generated * TargetChannels * 2];
-                for (int i = 0; i < generated * TargetChannels; i++) {
-                    float sample = Math.Max(-1f, Math.Min(1f, resampled[i]));
-                    short pcmSample = (short)Math.Round(sample * short.MaxValue);
-                    pcm[i * 2] = (byte)pcmSample;
-                    pcm[i * 2 + 1] = (byte)(pcmSample >> 8);
+                int framesEncoded;
+                if (codec == BluetoothAudioCodec.DualSenseOpus) {
+                    framesEncoded = generated > 0 ? ConsumeResampledOpus(resampled, generated) : 0;
+                } else {
+                    var pcm = new byte[generated * TargetChannels * 2];
+                    for (int i = 0; i < generated * TargetChannels; i++) {
+                        float sample = Math.Max(-1f, Math.Min(1f, resampled[i]));
+                        short pcmSample = (short)Math.Round(sample * short.MaxValue);
+                        pcm[i * 2] = (byte)pcmSample;
+                        pcm[i * 2 + 1] = (byte)(pcmSample >> 8);
+                    }
+                    framesEncoded = pcm.Length > 0 ? ConsumeResampledPcm(pcm, pcm.Length) : 0;
                 }
-
-                int framesEncoded = pcm.Length > 0 ? ConsumeResampledPcm(pcm, pcm.Length) : 0;
 
                 double nowMs = debugStopwatch.Elapsed.TotalMilliseconds;
                 double intervalMs = nowMs - debugLastCallbackMs;
@@ -227,16 +267,16 @@ namespace BetterJoyForCemu {
                 length = pcm.Length;
             }
 
-            int codeSize = encoder.CodeSize;
+            int codeSize = sbcEncoder.CodeSize;
             int offset = 0;
             int framesEncoded = 0;
             byte[] pcmBlock = new byte[codeSize];
-            byte[] sbcBlock = new byte[encoder.FrameSize];
+            byte[] sbcBlock = new byte[sbcEncoder.FrameSize];
             while (length - offset >= codeSize) {
                 Buffer.BlockCopy(pcm, offset, pcmBlock, 0, codeSize);
                 offset += codeSize;
 
-                int encoded = encoder.Encode(pcmBlock, sbcBlock);
+                int encoded = sbcEncoder.Encode(pcmBlock, sbcBlock);
                 if (encoded <= 0)
                     continue;
 
@@ -250,6 +290,49 @@ namespace BetterJoyForCemu {
             pcmCarry = new byte[remaining];
             if (remaining > 0)
                 Buffer.BlockCopy(pcm, offset, pcmCarry, 0, remaining);
+
+            return framesEncoded;
+        }
+
+        private int ConsumeResampledOpus(float[] data, int frameCount) {
+            int length = frameCount * TargetChannels;
+            float[] samples;
+            if (opusCarry.Length == 0) {
+                samples = data;
+            } else {
+                samples = new float[opusCarry.Length + length];
+                Buffer.BlockCopy(opusCarry, 0, samples, 0, opusCarry.Length * 4);
+                Buffer.BlockCopy(data, 0, samples, opusCarry.Length * 4, length * 4);
+                length = samples.Length;
+            }
+
+            int samplesPerFrame = DualSenseOpusFrameSamples * TargetChannels;
+            int offset = 0;
+            int framesEncoded = 0;
+            byte[] encodedFrame = new byte[DualSenseOpusFrameBytes];
+            while (length - offset >= samplesPerFrame) {
+                int encoded = opusEncoder.Encode(
+                    new ReadOnlySpan<float>(samples, offset, samplesPerFrame),
+                    DualSenseOpusFrameSamples, new Span<byte>(encodedFrame),
+                    encodedFrame.Length);
+                offset += samplesPerFrame;
+
+                // The controller's speaker TLV is fixed at exactly 200 bytes. With 160 kbps CBR,
+                // one 10 ms stereo frame is exactly that size. A shorter/error frame cannot be
+                // padded without changing the Opus packet and is therefore dropped.
+                if (encoded != DualSenseOpusFrameBytes)
+                    continue;
+
+                byte[] frame = new byte[DualSenseOpusFrameBytes];
+                Buffer.BlockCopy(encodedFrame, 0, frame, 0, frame.Length);
+                onFrame(frame);
+                framesEncoded++;
+            }
+
+            int remaining = length - offset;
+            opusCarry = new float[remaining];
+            if (remaining > 0)
+                Buffer.BlockCopy(samples, offset * 4, opusCarry, 0, remaining * 4);
 
             return framesEncoded;
         }

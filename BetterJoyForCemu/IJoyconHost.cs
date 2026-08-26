@@ -69,14 +69,16 @@ namespace BetterJoyForCemu {
         // hold/release equivalent, just a discrete tick per press.
         void SimulateScroll(bool up);
 
-        // Continuous Bluetooth audio capture for a DS4's live speaker stream - same cross-session
+        // Continuous Bluetooth audio capture for a controller's live speaker stream - same cross-session
         // problem as Simulate*: WASAPI loopback capture needs an interactive desktop, which
         // Session 0 doesn't have. Headless/service mode forwards to the session-launched helper
         // process over the same pipe Simulate* already uses; endpointId selects which render
-        // device to loop back (falls back to the system default when null/not found).
+        // device to loop back (falls back to the system default when null/not found); codec keeps
+        // encoding generic while the owning controller class defines the actual HID transport.
         // True only when the command reached a connected desktop helper. Callers must not mark
         // the controller stream active when Session 0 had nowhere to start WASAPI capture.
-        bool StartBluetoothAudioCapture(int padId, string endpointId);
+        bool StartBluetoothAudioCapture(int padId, string endpointId,
+            BluetoothAudioCodec codec = BluetoothAudioCodec.DualShock4Sbc);
         void StopBluetoothAudioCapture(int padId);
     }
 }

@@ -1053,7 +1053,7 @@ namespace BetterJoyForCemu {
             page.Controls.Add(controllerAudioTestButton);
             tip_reassign.SetToolTip(controllerAudioEndpointSelector,
                 "Select the Windows audio endpoint for this controller. USB: the playback device " +
-                "the test tone plays through. Bluetooth (DualShock 4 only, experimental): the " +
+                "the test tone plays through. Bluetooth (DualShock 4 and DualSense, experimental): the " +
                 "device live audio is captured from and streamed to the controller's speaker " +
                 "while Controller audio is Enabled and it's connected over Bluetooth.");
             tip_reassign.SetToolTip(controllerAudioTestButton,
@@ -1063,7 +1063,7 @@ namespace BetterJoyForCemu {
                 "Route Bluetooth audio to headphones", 24, 644, "ControllerAudioRouteHeadphones");
             page.Controls.Add(controllerAudioRouteHeadphonesCheckBox);
             tip_reassign.SetToolTip(controllerAudioRouteHeadphonesCheckBox,
-                "DualShock 4 only. When enabled, Bluetooth audio waits until headphones are " +
+                "DualShock 4 and DualSense. When enabled, Bluetooth audio waits until headphones are " +
                 "detected in the controller's 3.5 mm jack and stops if they are unplugged.");
 
             page.Controls.Add(CreateDivider(24, 690));
@@ -1498,9 +1498,13 @@ namespace BetterJoyForCemu {
                 controllerAudioTestButton.Enabled = available && selected.IsUsb &&
                     controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
             if (controllerAudioRouteHeadphonesCheckBox != null) {
-                bool isDs4 = selected != null && selected.Kind == ControllerKind.DualShock4;
-                controllerAudioRouteHeadphonesCheckBox.Visible = isDs4;
-                controllerAudioRouteHeadphonesCheckBox.Enabled = available && isDs4;
+                bool supportsBluetoothHeadphones = selected != null &&
+                    (selected.Kind == ControllerKind.DualShock4 ||
+                     selected.Kind == ControllerKind.DualSense);
+                controllerAudioRouteHeadphonesCheckBox.Visible =
+                    supportsBluetoothHeadphones;
+                controllerAudioRouteHeadphonesCheckBox.Enabled = available &&
+                    supportsBluetoothHeadphones;
             }
         }
 

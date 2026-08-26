@@ -4,6 +4,13 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 
 namespace BetterJoyForCemu {
+    // Encoding format selected by the controller that owns the Bluetooth audio protocol. The
+    // desktop helper only captures/resamples/encodes; it never constructs controller reports.
+    public enum BluetoothAudioCodec : int {
+        DualShock4Sbc = 0,
+        DualSenseOpus = 1,
+    }
+
     // Message types carried over the named pipe between BetterJoyService (Session 0, no
     // desktop) and the session-launched input helper (has one) - see HeadlessJoyconHost for the
     // service side and InputHelper for the helper side.
@@ -30,15 +37,15 @@ namespace BetterJoyForCemu {
         SimulateCursorMoveBy = 20, // Exact pixel delta; bypasses Windows relative-pointer scaling.
         SimulateWrappedCursorMoveBy = 21, // Exact delta; wraps inside the cursor's current monitor.
 
-        // Service -> helper: start/stop continuous WASAPI loopback capture -> SBC encoding for a
-        // DS4's live Bluetooth audio stream (see DualShock4Controller's stream lifecycle). A =
-        // padId. StartAudioCapture carries one extra trailer beyond the fixed header: the capture
+        // Service -> helper: start/stop continuous WASAPI loopback capture and controller-selected
+        // encoding. A = padId, B = BluetoothAudioCodec. StartAudioCapture carries one extra
+        // trailer beyond the fixed header: the capture
         // endpoint ID as a length-prefixed string (BinaryWriter.Write(string)/ReadString()) -
         // empty means "use the system default render device".
         StartAudioCapture = 30,
         StopAudioCapture = 31,
 
-        // Helper -> service: one SBC-encoded audio frame. A = padId, B = payload length in bytes;
+        // Helper -> service: one encoded audio frame. A = padId, B = payload length in bytes;
         // the fixed 9-byte header is immediately followed by B raw bytes (the frame itself,
         // written/read with BinaryWriter.Write(byte[])/ReadBytes - no separate length prefix,
         // since B already carries it).

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
@@ -41,11 +42,21 @@ namespace BetterJoyForCemu {
         private byte lightbarRed;
         private byte lightbarGreen;
         private byte lightbarBlue = 255;
-        private readonly object lightbarOutputLock = new object();
-        private byte lightbarOutputSequence;
+        // Every DualSense HID write is serialized here. Bluetooth speaker audio uses the same
+        // physical output endpoint as lightbar and rumble state, so those states are folded into
+        // the audio carrier while streaming instead of allowing independent reports to collide.
+        private readonly object outputReportLock = new object();
+        private byte bluetoothOutputSequence;
+        private byte currentLeftMotor;
+        private byte currentRightMotor;
+        private bool bluetoothOutputStateDirty = true;
         private bool lightbarControlReleased;
         private bool connectionLightFlashStarted;
         private long connectionLightColorTimestamp;
+        // DualSense common input status[1] bits 0/1 report headphone/microphone presence. -1
+        // means no valid input report has established the physical jack state yet.
+        private int headphoneConnectionState = -1;
+        public bool HeadphonesConnected => Volatile.Read(ref headphoneConnectionState) == 1;
         private long lastDualSenseRawDumpTimestamp = 0;
         private long lastDualSenseImuLogTimestamp = 0;
         // GyroSubSamplePeriod override support - see GyroMath.cs's field comment. DualSense's real
@@ -69,6 +80,48 @@ namespace BetterJoyForCemu {
         // (BT hiccup, USB re-enumeration) injecting one wildly oversized rotation step.
         private const float MinGyroSubSamplePeriod = 0.0005f;
         private const float MaxGyroSubSamplePeriod = 0.02f;
+
+        // DualSense Bluetooth speaker transport. These values describe the controller protocol;
+        // desktop capture and Opus encoding remain generic in BluetoothAudioCapture.cs.
+        private const int BtAudioReportLength = 398;
+        private const int BtAudioStateOffset = 13;
+        private const int BtAudioStateLength = 63;
+        private const int BtAudioHapticsOffset = 76;
+        private const int BtAudioHapticsLength = 64;
+        private const int BtAudioSpeakerOffset = 142;
+        private const int BtAudioSpeakerDataOffset = 144;
+        private const int BtAudioOpusFrameLength = 200;
+        private const byte BtAudioSpeakerPacketType = 0x93;
+        private const byte BtAudioHeadsetPacketType = 0x96;
+        private const int BtAudioPrimeFrameCount = 8;
+        // Bound latency as well as memory. With the capture/media clocks matched this remains near
+        // the eight-frame prime; twelve frames leaves jitter margin but can never hide ~1 second
+        // of stale audio the way the former 64-frame ceiling could.
+        private const int BtAudioMaximumQueuedFrames = 12;
+        private const double BtAudioFrameCadenceMs = 10.0 + (2.0 / 3.0);
+        private static readonly byte[] DefaultBluetoothAudioState = {
+            0xFD, 0xF7, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
+            0x00, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x07, 0x00,
+            0x00, 0x02, 0x01, 0x00, 0xFF, 0xD7, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        };
+
+        private readonly ConcurrentQueue<byte[]> bluetoothAudioFrameQueue =
+            new ConcurrentQueue<byte[]>();
+        private readonly List<byte[]> bluetoothAudioPending = new List<byte[]>();
+        private readonly object bluetoothAudioStateLock = new object();
+        private volatile bool bluetoothAudioStreaming;
+        private bool bluetoothAudioPrimed;
+        private byte bluetoothAudioPacketSequence;
+        private int bluetoothAudioVolumePercent = -1;
+        private string bluetoothAudioEndpointId = String.Empty;
+        private bool bluetoothAudioRouteHeadphones;
+        private Stopwatch bluetoothAudioStopwatch;
+        private double bluetoothAudioNextSendDeadlineMs;
 
         protected override float GyroSubSamplePeriod => measuredGyroSubSamplePeriod;
         // See GyroMath.cs's GyroStickBiasCorrection declaration - opts DualSense's gyro-stick into
@@ -275,13 +328,16 @@ namespace BetterJoyForCemu {
         }
 
         public override void SetLightColor(byte red, byte green, byte blue) {
-            lightbarRed = red;
-            lightbarGreen = green;
-            lightbarBlue = blue;
-            lightbarUpdatePending = true;
-            if (lightbarTransportKnown) {
-                SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
-                lightbarUpdatePending = false;
+            lock (outputReportLock) {
+                lightbarRed = red;
+                lightbarGreen = green;
+                lightbarBlue = blue;
+                lightbarUpdatePending = true;
+                bluetoothOutputStateDirty = true;
+                if (lightbarTransportKnown) {
+                    SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
+                    lightbarUpdatePending = false;
+                }
             }
         }
 
@@ -590,6 +646,15 @@ namespace BetterJoyForCemu {
             // 8 (clamped at 100) instead of presenting the midpoint of a nominal 10% bucket.
             byte batteryByte = r[52 + o];
             byte powerStateByte = r[53 + o];
+            int nextHeadphoneState = (powerStateByte & 0x03) != 0 ? 1 : 0;
+            int previousHeadphoneState = Interlocked.Exchange(
+                ref headphoneConnectionState, nextHeadphoneState);
+            if (previousHeadphoneState != nextHeadphoneState) {
+                // Profile reconciliation owns the existing "Route Bluetooth audio to headphones"
+                // policy. Keep capture/pipe work off this HID poll thread; when enabled, insertion
+                // starts the 0x96 headset lane and removal stops it immediately.
+                ThreadPool.QueueUserWorkItem(_ => Program.mgr?.ApplyControllerProfileOptions());
+            }
             int batteryPercent;
             ControllerBatteryStatus batteryState;
             DecodeBatteryStatus(batteryByte, powerStateByte, out batteryPercent, out batteryState);
@@ -779,38 +844,249 @@ namespace BetterJoyForCemu {
             return corrected / AccelLsbPerG;
         }
 
+        public bool IsStreamingBluetoothAudio => bluetoothAudioStreaming;
+
+        public void StartBluetoothAudioStream(int volumePercent, string endpointId,
+            bool routeToHeadphones) {
+            lock (bluetoothAudioStateLock) {
+                if (isUSB || state <= state_.DROPPED)
+                    return;
+
+                volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+                endpointId = endpointId ?? String.Empty;
+                if (bluetoothAudioStreaming) {
+                    bool endpointMatches = String.Equals(bluetoothAudioEndpointId, endpointId,
+                        StringComparison.Ordinal);
+                    if (endpointMatches) {
+                        // Volume and route are state bytes inside the same 0x36 carrier. Apply
+                        // them on its next packet instead of tearing down the active capture.
+                        bluetoothAudioVolumePercent = volumePercent;
+                        bluetoothAudioRouteHeadphones = routeToHeadphones;
+                        lock (outputReportLock)
+                            bluetoothOutputStateDirty = true;
+                        return;
+                    }
+
+                    StopBluetoothAudioStream();
+                }
+
+                if (!form.StartBluetoothAudioCapture(PadId, endpointId,
+                    BluetoothAudioCodec.DualSenseOpus))
+                    return;
+
+                while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
+                bluetoothAudioPending.Clear();
+                bluetoothAudioPacketSequence = 0;
+                bluetoothAudioPrimed = false;
+                bluetoothAudioStopwatch = Stopwatch.StartNew();
+                bluetoothAudioNextSendDeadlineMs = 0;
+                bluetoothAudioVolumePercent = volumePercent;
+                bluetoothAudioEndpointId = endpointId;
+                bluetoothAudioRouteHeadphones = routeToHeadphones;
+                lock (outputReportLock)
+                    bluetoothOutputStateDirty = true;
+                bluetoothAudioStreaming = true;
+                AudioDebugLog.Write("DualSenseSend", "Start pad=" + PadId +
+                    " volume=" + volumePercent + " endpoint=" +
+                    (String.IsNullOrEmpty(endpointId) ? "(default)" : endpointId) +
+                    " headphones=" + routeToHeadphones);
+            }
+        }
+
+        public void StopBluetoothAudioStream() {
+            bool restoreControllerOutput = false;
+            lock (bluetoothAudioStateLock) {
+                if (!bluetoothAudioStreaming)
+                    return;
+
+                bluetoothAudioStreaming = false;
+                form.StopBluetoothAudioCapture(PadId);
+                bluetoothAudioVolumePercent = -1;
+                bluetoothAudioEndpointId = String.Empty;
+                bluetoothAudioRouteHeadphones = false;
+                bluetoothAudioPending.Clear();
+                while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
+                restoreControllerOutput = state > state_.DROPPED;
+                AudioDebugLog.Write("DualSenseSend", "Stop pad=" + PadId);
+            }
+
+            // Return ownership to ordinary 0x31 output reports after the media carrier stops.
+            // These calls are outside bluetoothAudioStateLock so no pipe/lifecycle work is held
+            // across physical HID writes.
+            if (restoreControllerOutput) {
+                SendDualSenseRumble(currentLeftMotor, currentRightMotor);
+                SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
+            }
+        }
+
+        public void EnqueueBluetoothAudioFrame(byte[] frame) {
+            if (frame == null || frame.Length != BtAudioOpusFrameLength)
+                return;
+
+            bluetoothAudioFrameQueue.Enqueue(frame);
+            while (bluetoothAudioFrameQueue.Count > BtAudioMaximumQueuedFrames)
+                bluetoothAudioFrameQueue.TryDequeue(out _);
+        }
+
+        protected override void SendQueuedBluetoothAudioIfAny() {
+            lock (bluetoothAudioStateLock) {
+                if (!bluetoothAudioStreaming)
+                    return;
+
+                while (bluetoothAudioFrameQueue.TryDequeue(out byte[] queuedFrame))
+                    bluetoothAudioPending.Add(queuedFrame);
+                if (bluetoothAudioPending.Count > BtAudioMaximumQueuedFrames)
+                    bluetoothAudioPending.RemoveRange(0,
+                        bluetoothAudioPending.Count - BtAudioMaximumQueuedFrames);
+
+                if (!bluetoothAudioPrimed) {
+                    if (bluetoothAudioPending.Count < BtAudioPrimeFrameCount)
+                        return;
+                    bluetoothAudioPrimed = true;
+                    AudioDebugLog.Write("DualSenseSend", "Primed pending=" +
+                        bluetoothAudioPending.Count);
+                }
+
+                if (bluetoothAudioPending.Count == 0)
+                    return;
+
+                double nowMs = bluetoothAudioStopwatch.Elapsed.TotalMilliseconds;
+                if (nowMs < bluetoothAudioNextSendDeadlineMs)
+                    return;
+
+                byte[] frame = bluetoothAudioPending[0];
+                bluetoothAudioPending.RemoveAt(0);
+                lock (outputReportLock) {
+                    byte[] report = BuildBluetoothSpeakerReport(frame);
+                    int written = HIDapi.hid_write(handle, report,
+                        new UIntPtr((uint)report.Length));
+                    if (written >= 0)
+                        bluetoothOutputStateDirty = false;
+                    else
+                        LogDualSenseRawDump("Bluetooth speaker report write failed");
+                }
+
+                bluetoothAudioNextSendDeadlineMs += BtAudioFrameCadenceMs;
+                if (nowMs - bluetoothAudioNextSendDeadlineMs > BtAudioFrameCadenceMs * 4)
+                    bluetoothAudioNextSendDeadlineMs = nowMs + BtAudioFrameCadenceMs;
+            }
+        }
+
+        private byte[] BuildBluetoothSpeakerReport(byte[] opusFrame) {
+            byte[] report = new byte[BtAudioReportLength];
+            report[0] = 0x36;
+            report[1] = (byte)((bluetoothOutputSequence & 0x0F) << 4);
+            bluetoothOutputSequence = (byte)((bluetoothOutputSequence + 1) & 0x0F);
+            report[2] = 0x91;
+            report[3] = 0x07;
+            report[4] = 0xFE; // speaker output active; Bluetooth microphone transport disabled
+            for (int i = 5; i <= 9; i++)
+                report[i] = 0x80;
+            report[10] = bluetoothAudioPacketSequence++;
+            report[11] = 0x90;
+            report[12] = BtAudioStateLength;
+            Buffer.BlockCopy(DefaultBluetoothAudioState, 0, report, BtAudioStateOffset,
+                DefaultBluetoothAudioState.Length);
+
+            // The low validity bits are one-shot state strobes. Publish them on the first report
+            // and whenever rumble/lightbar changes, then retain only the steady audio flags.
+            if (!bluetoothOutputStateDirty) {
+                report[BtAudioStateOffset] &= 0xF0;
+                report[BtAudioStateOffset + 1] &= 0x83;
+                report[BtAudioStateOffset + 38] = 0;
+            }
+
+            report[BtAudioStateOffset + 2] = currentRightMotor;
+            report[BtAudioStateOffset + 3] = currentLeftMotor;
+            byte speakerVolume = MapBluetoothSpeakerVolume(bluetoothAudioVolumePercent);
+            report[BtAudioStateOffset + 4] = bluetoothAudioRouteHeadphones
+                ? MapBluetoothHeadphoneVolume(bluetoothAudioVolumePercent)
+                : speakerVolume;
+            report[BtAudioStateOffset + 5] = bluetoothAudioRouteHeadphones
+                ? (byte)0
+                : speakerVolume;
+            report[BtAudioStateOffset + 6] = 0xFF;
+            report[BtAudioStateOffset + 7] = bluetoothAudioRouteHeadphones
+                ? (byte)0x00
+                : (byte)0x09;
+            report[BtAudioStateOffset + 37] = 0x0A;
+            report[BtAudioStateOffset + 44] = lightbarRed;
+            report[BtAudioStateOffset + 45] = lightbarGreen;
+            report[BtAudioStateOffset + 46] = lightbarBlue;
+
+            report[BtAudioHapticsOffset] = 0x92;
+            report[BtAudioHapticsOffset + 1] = BtAudioHapticsLength;
+            report[BtAudioSpeakerOffset] = bluetoothAudioRouteHeadphones
+                ? BtAudioHeadsetPacketType
+                : BtAudioSpeakerPacketType;
+            report[BtAudioSpeakerOffset + 1] = BtAudioOpusFrameLength;
+            Buffer.BlockCopy(opusFrame, 0, report, BtAudioSpeakerDataOffset,
+                BtAudioOpusFrameLength);
+
+            uint crc = Crc32(0xA2, report, report.Length - 4);
+            report[report.Length - 4] = (byte)crc;
+            report[report.Length - 3] = (byte)(crc >> 8);
+            report[report.Length - 2] = (byte)(crc >> 16);
+            report[report.Length - 1] = (byte)(crc >> 24);
+            return report;
+        }
+
+        private static byte MapBluetoothSpeakerVolume(int volumePercent) {
+            if (volumePercent <= 0)
+                return 0;
+            volumePercent = Math.Min(100, volumePercent);
+            return (byte)(0x3D + (volumePercent * (0x64 - 0x3D) + 50) / 100);
+        }
+
+        private static byte MapBluetoothHeadphoneVolume(int volumePercent) {
+            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+            return (byte)(volumePercent * 0x64 / 100);
+        }
+
+        protected override void OnDetachingWhileAttached() {
+            StopBluetoothAudioStream();
+        }
+
         // DualSense baseline rumble - both motors driven by the same single amplitude value
         // dequeued from rumble_obj (see the Poll() call site), since DualSense's simple dual-motor
         // rumble has no equivalent to Joy-Con's HD-rumble low/high-frequency split Rumble.GetData()
         // encodes. Report layout (motor byte offsets, enable-rumble flags, Bluetooth
         // CRC32-with-0xA2-seed) from DS4Windows's DualSense output-report code.
         private void SendDualSenseRumble(byte leftMotor, byte rightMotor) {
-            bool bt = !isUSB;
-            int len = bt ? DualSenseMaxReportLen : 64;
-            byte[] buf = new byte[len];
-            if (bt) {
-                buf[0] = 0x31;
-                buf[1] = 0x02;
-                buf[2] = 0x0F; // enable rumble
-                // Required feature-flags byte (mic LED, audio mute, touchpad strips, player lights,
-                // motor power) - NOT safe to leave at 0x00 (confirmed on real hardware: omitting
-                // this the first time caused continuous, non-stopping rumble).
-                buf[3] = 0x55;
-                buf[4] = rightMotor;
-                buf[5] = leftMotor;
-                uint crc = Crc32(0xA2, buf, len - 4);
-                buf[len - 4] = (byte)crc;
-                buf[len - 3] = (byte)(crc >> 8);
-                buf[len - 2] = (byte)(crc >> 16);
-                buf[len - 1] = (byte)(crc >> 24);
-            } else {
-                buf[0] = 0x02;
-                buf[1] = 0x0F; // enable rumble
-                buf[2] = 0x55; // required feature-flags byte - see the BT branch's comment
-                buf[3] = rightMotor;
-                buf[4] = leftMotor;
+            lock (outputReportLock) {
+                currentLeftMotor = leftMotor;
+                currentRightMotor = rightMotor;
+                bluetoothOutputStateDirty = true;
+                if (!isUSB && bluetoothAudioStreaming)
+                    return;
+
+                bool bt = !isUSB;
+                int len = bt ? DualSenseMaxReportLen : 64;
+                byte[] buf = new byte[len];
+                if (bt) {
+                    buf[0] = 0x31;
+                    buf[1] = 0x02;
+                    buf[2] = 0x0F; // enable rumble
+                    // Required feature-flags byte (mic LED, audio mute, touchpad strips, player lights,
+                    // motor power) - NOT safe to leave at 0x00 (confirmed on real hardware: omitting
+                    // this the first time caused continuous, non-stopping rumble).
+                    buf[3] = 0x55;
+                    buf[4] = rightMotor;
+                    buf[5] = leftMotor;
+                    uint crc = Crc32(0xA2, buf, len - 4);
+                    buf[len - 4] = (byte)crc;
+                    buf[len - 3] = (byte)(crc >> 8);
+                    buf[len - 2] = (byte)(crc >> 16);
+                    buf[len - 1] = (byte)(crc >> 24);
+                } else {
+                    buf[0] = 0x02;
+                    buf[1] = 0x0F; // enable rumble
+                    buf[2] = 0x55; // required feature-flags byte - see the BT branch's comment
+                    buf[3] = rightMotor;
+                    buf[4] = leftMotor;
+                }
+                HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
             }
-            HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
         }
 
         // The USB audio endpoint's first pair is ordinary audio; its second pair drives the
@@ -820,14 +1096,16 @@ namespace BetterJoyForCemu {
             if (!isUSB || state <= state_.DROPPED)
                 return;
 
-            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
-            byte[] buf = new byte[64];
-            buf[0] = 0x02;
-            buf[1] = 0xB0; // headphone volume + speaker volume + audio routing are valid
-            buf[5] = (byte)(volumePercent * 0x7F / 100);
-            buf[6] = (byte)(volumePercent * 0x64 / 100);
-            buf[8] = 0x30; // internal speaker only; the speaker consumes the right channel
-            HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
+            lock (outputReportLock) {
+                volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+                byte[] buf = new byte[64];
+                buf[0] = 0x02;
+                buf[1] = 0xB0; // headphone volume + speaker volume + audio routing are valid
+                buf[5] = (byte)(volumePercent * 0x7F / 100);
+                buf[6] = (byte)(volumePercent * 0x64 / 100);
+                buf[8] = 0x30; // internal speaker only; the speaker consumes the right channel
+                HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
+            }
         }
 
         // Sets the DualSense's lightbar to the profile's solid RGB color via an output report.
@@ -837,21 +1115,25 @@ namespace BetterJoyForCemu {
         // "enable lightbar" bit is needed beyond the same 0x55 feature-flags byte the rumble report
         // already sets - both confirmed via DS4Windows's DualSenseDevice.cs.
         private void SendDualSenseLightbar(byte red, byte green, byte blue) {
-            bool bt = !isUSB;
-            if (!bt) {
-                const int len = 64;
-                byte[] buf = new byte[len];
-                buf[0] = 0x02;
-                buf[1] = 0x0C; // rumble motors not in use for this report
-                buf[2] = 0x55;
-                buf[45] = red;
-                buf[46] = green;
-                buf[47] = blue;
-                HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
-                return;
-            }
+            lock (outputReportLock) {
+                bluetoothOutputStateDirty = true;
+                bool bt = !isUSB;
+                if (!bt) {
+                    const int len = 64;
+                    byte[] buf = new byte[len];
+                    buf[0] = 0x02;
+                    buf[1] = 0x0C; // rumble motors not in use for this report
+                    buf[2] = 0x55;
+                    buf[45] = red;
+                    buf[46] = green;
+                    buf[47] = blue;
+                    HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
+                    return;
+                }
 
-            lock (lightbarOutputLock) {
+                if (bluetoothAudioStreaming)
+                    return;
+
                 if (!lightbarControlReleased) {
                     byte[] setup = CreateDualSenseBluetoothLightbarReport();
                     const int commonOffset = 3;
@@ -874,8 +1156,8 @@ namespace BetterJoyForCemu {
         private byte[] CreateDualSenseBluetoothLightbarReport() {
             byte[] buf = new byte[DualSenseMaxReportLen];
             buf[0] = 0x31;
-            buf[1] = (byte)(lightbarOutputSequence << 4);
-            lightbarOutputSequence = (byte)((lightbarOutputSequence + 1) & 0x0F);
+            buf[1] = (byte)(bluetoothOutputSequence << 4);
+            bluetoothOutputSequence = (byte)((bluetoothOutputSequence + 1) & 0x0F);
             buf[2] = 0x10;
             return buf;
         }
