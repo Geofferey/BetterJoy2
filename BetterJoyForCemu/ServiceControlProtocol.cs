@@ -37,6 +37,7 @@ namespace BetterJoyForCemu {
         BeginBindingCapture = 18,
         EndBindingCapture = 19,
         PrepareUsbAudio = 20,
+        PlayBluetoothAudioTest = 21,
     }
 
     public enum ControllerKind : byte {
@@ -180,8 +181,15 @@ namespace BetterJoyForCemu {
             writer.Flush();
         }
 
-        public static void WriteUsbAudioMessage(BinaryWriter writer, int padId, int volumePercent) {
-            writer.Write((byte)ControlMessageType.PrepareUsbAudio);
+        public static void WriteUsbAudioMessage(BinaryWriter writer, int padId, int volumePercent) =>
+            WritePadIdVolumeMessage(writer, ControlMessageType.PrepareUsbAudio, padId, volumePercent);
+
+        public static void WriteBluetoothAudioTestMessage(BinaryWriter writer, int padId, int volumePercent) =>
+            WritePadIdVolumeMessage(writer, ControlMessageType.PlayBluetoothAudioTest, padId, volumePercent);
+
+        private static void WritePadIdVolumeMessage(
+            BinaryWriter writer, ControlMessageType type, int padId, int volumePercent) {
+            writer.Write((byte)type);
             writer.Write((byte)padId);
             writer.Write((byte)Math.Max(0, Math.Min(100, volumePercent)));
             writer.Flush();

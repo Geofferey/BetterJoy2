@@ -296,6 +296,14 @@ namespace BetterJoyForCemu {
         public virtual string UsbAudioEndpointNameHint => null;
         public virtual void PrepareUsbAudio(int volumePercent) { }
 
+        // Bluetooth exposes no audio-class endpoint at all, so there is nothing for Windows/WASAPI
+        // to open - a controller that supports this instead streams an encoded audio codec directly
+        // inside HID output reports (see DualShock4's override). Experimental and DS4-only; blocks
+        // the calling thread for the tone's duration, so callers must run it off any latency-
+        // sensitive thread.
+        public virtual bool SupportsBluetoothAudioTest => false;
+        public virtual void PlayBluetoothAudioTest(int volumePercent) { }
+
         // Calibrated stick position, gyro/accel readings, and filtered orientation - written by
         // each subclass's own report-parsing code (Joycon.ExtractIMUValues stays Nintendo-report-
         // format-specific and isn't promoted here, it just writes into these inherited fields the

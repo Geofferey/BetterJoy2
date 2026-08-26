@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
@@ -665,6 +666,178 @@ namespace BetterJoyForCemu {
             buf[20] = volume;
             buf[22] = volume;
             HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
+        }
+
+        // EXPERIMENTAL, UNVERIFIED ON REAL HARDWARE. Bluetooth exposes no USB Audio Class endpoint
+        // - there is nothing for ControllerAudio/WASAPI to open - so the only route to the built-in
+        // speaker/headphone jack over BT is smuggling a real Bluetooth audio codec (SBC) inside HID
+        // output reports. Report layout, field offsets, and SBC encoder parameters below are
+        // transcribed from nefarius/DS4AudioStreamer (https://github.com/nefarius/DS4AudioStreamer,
+        // MIT) - a real, currently maintained, complete implementation by the same author whose
+        // ViGEmBus/HidHide binaries this project already bundles. Cross-validated against this
+        // file's own already-shipped BT lightbar report: DS4AudioStreamer's lightbar RGB bytes land
+        // at the exact same offsets (8/9/10) SendDualShock4Lightbar already uses, and both agree on
+        // the Crc32(0xA2, ...) checksum this codebase already uses elsewhere. The SBC codec itself
+        // comes from the native libsbc.dll (GPL-2.0, nefarius/libsbc) via SbcEncoder.cs.
+        private const byte BtAudioEnableReportId = 0x11;
+        private const int BtAudioEnableReportLen = 78;
+        // Narrowed from the reference's proven 0xF3 (rumble|lightbar|flash|HP-L|HP-R|mic|speaker
+        // all "valid" at once) down to just HP-L(0x10)|HP-R(0x20)|Speaker(0x80) - the same 0xB0
+        // convention PrepareUsbAudio already uses - so pressing the test-tone button doesn't also
+        // blank the lightbar or cancel rumble as a side effect. Deliberate, not a guess: the bit
+        // meanings are the reference's own documented flags, just a subset of them.
+        private const byte BtAudioValidFlags = 0xB0;
+
+        private const byte BtAudioStreamProtocol4Frames = 0x17;
+        private const int BtAudioStreamReport4FramesLen = 462;
+        private const byte BtAudioStreamProtocol2Frames = 0x14;
+        private const int BtAudioStreamReport2FramesLen = 270;
+        private const int BtAudioStreamFramesPerBigBatch = 4;
+        private const int BtAudioStreamFramesPerSmallBatch = 2;
+        private const byte BtAudioOutputPathSpeaker = 0x02;
+        private const int BtAudioSampleRateHz = 32000;
+        private const int BtAudioChannels = 2;
+        private const int BtAudioBytesPerSample = 2; // 16-bit PCM
+
+        // Enables the DS4's Bluetooth audio DAC and sets its volume - report 0x11, same ID
+        // SendDualShock4Lightbar's BT branch already uses. Must be sent once before any audio
+        // stream reports; the controller ignores those otherwise.
+        public void PrepareBluetoothAudio(int volumePercent) {
+            if (isUSB || state <= state_.DROPPED)
+                return;
+
+            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+            byte volume = (byte)(volumePercent * 0x50 / 100); // range is 0-0x50 (80 decimal), not 0-0xFF
+
+            byte[] buf = new byte[BtAudioEnableReportLen];
+            buf[0] = BtAudioEnableReportId;
+            buf[1] = 0xC0;
+            buf[2] = 0xA2;
+            buf[3] = BtAudioValidFlags;
+            buf[21] = volume; // left channel volume
+            buf[22] = volume; // right channel volume
+            buf[24] = volume; // speaker volume
+
+            uint crc = Crc32(0xA2, buf, BtAudioEnableReportLen - 4);
+            buf[BtAudioEnableReportLen - 4] = (byte)crc;
+            buf[BtAudioEnableReportLen - 3] = (byte)(crc >> 8);
+            buf[BtAudioEnableReportLen - 2] = (byte)(crc >> 16);
+            buf[BtAudioEnableReportLen - 1] = (byte)(crc >> 24);
+
+            HIDapi.hid_write(handle, buf, new UIntPtr((uint)BtAudioEnableReportLen));
+        }
+
+        public override bool SupportsBluetoothAudioTest => true;
+
+        public override void PlayBluetoothAudioTest(int volumePercent) {
+            if (isUSB || state <= state_.DROPPED)
+                return;
+
+            PrepareBluetoothAudio(volumePercent);
+
+            volumePercent = Math.Max(0, Math.Min(100, volumePercent));
+            float amplitude = 0.18f * volumePercent / 100.0f;
+
+            using (var encoder = new SbcEncoder(BtAudioSampleRateHz, SbcSubBandCount.Sb8, 48,
+                       SbcChannelMode.JointStereo, SbcAllocationMode.Snr, SbcBlockCount.Blk16)) {
+                int samplesPerBlock = encoder.CodeSize / (BtAudioChannels * BtAudioBytesPerSample);
+                var duration = TimeSpan.FromMilliseconds(650);
+                int totalSamples = (int)(BtAudioSampleRateHz * duration.TotalSeconds);
+                int blockCount = Math.Max(1, (totalSamples + samplesPerBlock - 1) / samplesPerBlock);
+                if (blockCount % 2 != 0)
+                    blockCount++; // keep the stream loop's 4/2-frame batching exhaustive
+                totalSamples = blockCount * samplesPerBlock;
+                int fadeSamples = Math.Max(1, BtAudioSampleRateHz / 50);
+
+                var frames = new List<byte[]>(blockCount);
+                byte[] pcmBlock = new byte[encoder.CodeSize];
+                byte[] sbcBlock = new byte[encoder.FrameSize];
+                double phase = 0;
+                for (int block = 0; block < blockCount; block++) {
+                    for (int i = 0; i < samplesPerBlock; i++) {
+                        int sample = block * samplesPerBlock + i;
+                        int remaining = totalSamples - sample;
+                        float fade = Math.Min(1.0f,
+                            Math.Min(sample / (float)fadeSamples, remaining / (float)fadeSamples));
+                        short pcm = (short)Math.Round(Math.Sin(phase) * amplitude * fade * short.MaxValue);
+                        phase += 2.0 * Math.PI * 880.0 / BtAudioSampleRateHz;
+                        if (phase >= 2.0 * Math.PI)
+                            phase -= 2.0 * Math.PI;
+
+                        int o = i * BtAudioChannels * BtAudioBytesPerSample;
+                        pcmBlock[o] = (byte)pcm; pcmBlock[o + 1] = (byte)(pcm >> 8);         // left
+                        pcmBlock[o + 2] = (byte)pcm; pcmBlock[o + 3] = (byte)(pcm >> 8);     // right
+                    }
+
+                    int encoded = encoder.Encode(pcmBlock, sbcBlock);
+                    if (encoded <= 0)
+                        return; // encoder failure - nothing sensible left to stream
+
+                    byte[] frame = new byte[encoded];
+                    Buffer.BlockCopy(sbcBlock, 0, frame, 0, encoded);
+                    frames.Add(frame);
+                }
+
+                double msPerBlock = 1000.0 * samplesPerBlock / BtAudioSampleRateHz;
+                StreamBluetoothAudioFrames(frames, msPerBlock);
+            }
+        }
+
+        // msPerBlock is how much audio time one SBC block (one entry in frames) covers - each
+        // batch sent advances the real-time pacing clock by batchSize * msPerBlock.
+        private void StreamBluetoothAudioFrames(List<byte[]> frames, double msPerBlock) {
+            ushort packetCounter = 0;
+            int index = 0;
+            double audioMsSent = 0;
+
+            var stopwatch = Stopwatch.StartNew();
+            while (index < frames.Count) {
+                if (isUSB || state <= state_.DROPPED)
+                    return;
+
+                int remaining = frames.Count - index;
+                int batchSize = remaining >= BtAudioStreamFramesPerBigBatch
+                    ? BtAudioStreamFramesPerBigBatch
+                    : BtAudioStreamFramesPerSmallBatch;
+                byte protocol = batchSize == BtAudioStreamFramesPerBigBatch
+                    ? BtAudioStreamProtocol4Frames
+                    : BtAudioStreamProtocol2Frames;
+                int reportLen = batchSize == BtAudioStreamFramesPerBigBatch
+                    ? BtAudioStreamReport4FramesLen
+                    : BtAudioStreamReport2FramesLen;
+
+                byte[] buf = new byte[reportLen];
+                buf[0] = protocol;
+                buf[1] = 0x40;
+                buf[2] = 0xa2;
+                buf[3] = (byte)(packetCounter & 0xFF);
+                buf[4] = (byte)((packetCounter >> 8) & 0xFF);
+                buf[5] = BtAudioOutputPathSpeaker;
+
+                int offset = 6;
+                for (int i = 0; i < batchSize; i++) {
+                    byte[] frame = frames[index + i];
+                    Buffer.BlockCopy(frame, 0, buf, offset, frame.Length);
+                    offset += frame.Length;
+                }
+
+                uint crc = Crc32(0xA2, buf, reportLen - 4);
+                buf[reportLen - 4] = (byte)crc;
+                buf[reportLen - 3] = (byte)(crc >> 8);
+                buf[reportLen - 2] = (byte)(crc >> 16);
+                buf[reportLen - 1] = (byte)(crc >> 24);
+
+                if (HIDapi.hid_write(handle, buf, new UIntPtr((uint)reportLen)) < 0)
+                    LogDualShock4RawDump("Bluetooth audio stream write failed at frame " + index);
+
+                packetCounter += (ushort)batchSize;
+                index += batchSize;
+
+                audioMsSent += batchSize * msPerBlock;
+                int sleepMs = (int)(audioMsSent - stopwatch.Elapsed.TotalMilliseconds);
+                if (sleepMs > 0)
+                    Thread.Sleep(sleepMs);
+            }
         }
     }
 }

@@ -163,6 +163,7 @@
     <Compile Include="EntryPoint.cs" />
     <Compile Include="HeadlessJoyconHost.cs" />
     <Compile Include="HIDapi.cs" />
+    <Compile Include="SbcEncoder.cs" />
     <Compile Include="IJoyconHost.cs" />
     <Compile Include="InputHelper.cs" />
     <Compile Include="InputIpcProtocol.cs" />
@@ -237,6 +238,12 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="x64\hidapi.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="x86\libsbc.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="x64\libsbc.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Icons\cross.png" />

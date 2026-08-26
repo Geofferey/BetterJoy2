@@ -194,6 +194,13 @@ this repository:
 * The UDP server is largely derived from rajkosto's
   [ScpToolkit](https://github.com/rajkosto/ScpToolkit). ViGEmBus, ViGEmClient, HidHide, and their
   management libraries come from [Nefarius](https://github.com/nefarius).
+* DualShock 4 Bluetooth audio (the SBC-encoded speaker test tone) is adapted from
+  [nefarius/DS4AudioStreamer](https://github.com/nefarius/DS4AudioStreamer) (MIT) - report layout,
+  volume field offsets, and SBC encoder parameters, ported into `DualShock4.cs`. The SBC codec
+  itself is [nefarius/libsbc](https://github.com/nefarius/libsbc), bundled as `libsbc.dll`; unlike
+  the rest of this MIT-licensed project, that native library is **GPL-2.0**. Its P/Invoke binding
+  (`SbcEncoder.cs`) is ported from [nefarius/SharpSBC](https://github.com/nefarius/DS4AudioStreamer/tree/main/SharpSBC)
+  (MIT), part of the same repository.
 
 ## Implementations studied during the motion-control rework
 

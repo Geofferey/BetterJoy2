@@ -72,6 +72,7 @@ namespace BetterJoyForCemu {
         private ComboBox controllerAudioVolumeSelector;
         private ComboBox controllerAudioEndpointSelector;
         private Button controllerAudioTestButton;
+        private Button controllerAudioBtTestButton;
         private Label controllerAudioEnabledLabel;
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
@@ -1055,14 +1056,27 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(controllerAudioTestButton,
                 "Play a short tone through the selected controller speaker.");
 
-            page.Controls.Add(CreateDivider(24, 650));
-            AddSectionHeading(page, "Orientation", 667,
+            controllerAudioBtTestButton = new Button {
+                Location = new Point(145, 644),
+                Size = new Size(320, 27),
+                Text = "Test tone over Bluetooth (experimental)",
+            };
+            StyleStandardButton(controllerAudioBtTestButton, false);
+            controllerAudioBtTestButton.Click += ControllerAudioBtTestButton_Click;
+            page.Controls.Add(controllerAudioBtTestButton);
+            tip_reassign.SetToolTip(controllerAudioBtTestButton,
+                "DualShock 4 only. SBC-encodes a short tone and streams it to the controller's " +
+                "speaker over Bluetooth using an unofficial, unverified report format - listen " +
+                "for the tone to confirm it actually works on your hardware before relying on it.");
+
+            page.Controls.Add(CreateDivider(24, 690));
+            AddSectionHeading(page, "Orientation", 707,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
                 "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
             AddMappingRow(page, null, btn_default_orientation, "Default orientation",
-                742, 24, 232, 362);
+                782, 24, 232, 362);
 
-            page.AutoScrollMinSize = new Size(0, 800);
+            page.AutoScrollMinSize = new Size(0, 840);
             return page;
         }
 
@@ -1469,6 +1483,28 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // No local playback to await (the tone only ever exists inside HID reports the service
+        // process writes) - just disable the button for the streamed tone's known ~650ms duration.
+        private async void ControllerAudioBtTestButton_Click(object sender, EventArgs e) {
+            ControllerProfileInfo profile = SelectedProfile;
+            if (profile == null || !profile.IsConnected || profile.IsUsb ||
+                profile.Kind != ControllerKind.DualShock4)
+                return;
+
+            int volume = ControllerMappings.IntOption(
+                profile.ProfileId, "ControllerAudioVolume", 75);
+            string oldText = controllerAudioBtTestButton.Text;
+            controllerAudioBtTestButton.Enabled = false;
+            controllerAudioBtTestButton.Text = "Playing...";
+            try {
+                serviceClient.PlayBluetoothAudioTest(profile.PadId, volume);
+                await Task.Delay(750);
+            } finally {
+                controllerAudioBtTestButton.Text = oldText;
+                UpdateControllerAudioControlState();
+            }
+        }
+
         private void UpdateControllerAudioControlState() {
             ControllerProfileInfo selected = SelectedProfile;
             bool available = selected != null && selected.IsConnected && selected.IsUsb &&
@@ -1483,6 +1519,9 @@ namespace BetterJoyForCemu {
             if (controllerAudioTestButton != null)
                 controllerAudioTestButton.Enabled = available &&
                     controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
+            if (controllerAudioBtTestButton != null)
+                controllerAudioBtTestButton.Enabled = selected != null && selected.IsConnected &&
+                    !selected.IsUsb && selected.Kind == ControllerKind.DualShock4;
         }
 
         private void LoadProfileOptions(bool hasProfile) {
@@ -1822,6 +1861,9 @@ namespace BetterJoyForCemu {
                  selected.Kind == ControllerKind.DualShock4);
             bool hasControllerAudio = hasConfigurableLight;
             bool canUseControllerAudio = hasControllerAudio && selected.IsConnected && selected.IsUsb;
+            bool hasBluetoothAudioTest = selected != null && selected.Kind == ControllerKind.DualShock4;
+            if (controllerAudioBtTestButton != null)
+                controllerAudioBtTestButton.Visible = hasBluetoothAudioTest;
             if (lightColorLabel != null)
                 lightColorLabel.Visible = hasConfigurableLight;
             if (lightColorButton != null)

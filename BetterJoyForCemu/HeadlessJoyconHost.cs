@@ -560,6 +560,9 @@ namespace BetterJoyForCemu {
                         case ControlMessageType.PrepareUsbAudio:
                             PrepareUsbAudio(reader.ReadByte(), reader.ReadByte());
                             break;
+                        case ControlMessageType.PlayBluetoothAudioTest:
+                            PlayBluetoothAudioTest(reader.ReadByte(), reader.ReadByte());
+                            break;
                     }
                 }
             } catch {
@@ -599,6 +602,16 @@ namespace BetterJoyForCemu {
         private void PrepareUsbAudio(int padId, int volumePercent) {
             Controller controller = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
             controller?.PrepareUsbAudio(volumePercent);
+        }
+
+        // Runs off-thread since it blocks for the tone's duration (~650ms) streaming HID output
+        // reports - the control pipe's read loop must stay free to keep handling other messages.
+        private void PlayBluetoothAudioTest(int padId, int volumePercent) {
+            Controller controller = Program.mgr?.j.FirstOrDefault(j => j.PadId == padId);
+            if (controller == null || !controller.SupportsBluetoothAudioTest)
+                return;
+
+            Task.Run(() => controller.PlayBluetoothAudioTest(volumePercent));
         }
 
         private void JoinOrSplitByPadId(int padId, bool forceSelfPair) {
