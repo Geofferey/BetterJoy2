@@ -139,26 +139,26 @@ namespace BetterJoyForCemu {
                     // controller reconnects - mid-stream disconnect is handled separately via
                     // OnDetachingWhileAttached, since this loop only reaches attached controllers.
                     if (!jc.isUSB && jc is DualShock4Controller ds4) {
-                        bool routeToHeadphones = ControllerMappings.BoolOption(
+                        bool requireHeadphones = ControllerMappings.BoolOption(
                             profileId, "ControllerAudioRouteHeadphones");
-                        // DS4 common status bit 5 reports physical headphone detection. Speaker
-                        // routing can begin immediately; headset-only routing waits for the jack
-                        // instead of producing an active stream with nowhere valid to play.
-                        if (audioEnabled && (!routeToHeadphones || ds4.HeadphonesConnected))
+                        // The physical jack always selects speaker vs. headset output. This option
+                        // only controls whether speaker fallback is allowed while the jack is empty.
+                        if (audioEnabled && (!requireHeadphones || ds4.HeadphonesConnected))
                             ds4.StartBluetoothAudioStream(audioVolume,
                                 ControllerMappings.OptionValue(profileId, "ControllerAudioEndpointId"),
-                                routeToHeadphones);
+                                ds4.HeadphonesConnected);
                         else
                             ds4.StopBluetoothAudioStream();
                     }
                     if (jc is DualSenseController dualSense) {
-                        bool routeToHeadphones = ControllerMappings.BoolOption(
+                        bool requireHeadphones = ControllerMappings.BoolOption(
                             profileId, "ControllerAudioRouteHeadphones");
                         if (!jc.isUSB && audioEnabled &&
-                            (!routeToHeadphones || dualSense.HeadphonesConnected))
+                            (!requireHeadphones || dualSense.HeadphonesConnected))
                             dualSense.StartBluetoothAudioStream(audioVolume,
                                 ControllerMappings.OptionValue(profileId,
-                                    "ControllerAudioEndpointId"), routeToHeadphones);
+                                    "ControllerAudioEndpointId"),
+                                dualSense.HeadphonesConnected);
                         else
                             dualSense.StopBluetoothAudioStream();
                     }
