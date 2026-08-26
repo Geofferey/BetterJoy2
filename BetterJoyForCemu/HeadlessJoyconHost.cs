@@ -166,6 +166,17 @@ namespace BetterJoyForCemu {
 
             var reader = new BinaryReader(connectedPipe);
             Task.Run(() => ReadLoop(connectedPipe, reader));
+
+            // A controller can attach before the interactive-session helper finishes connecting.
+            // StartBluetoothAudioCapture reports that early attempt as unavailable, so reconcile
+            // the saved profiles again now that WASAPI capture can actually be created. Stop any
+            // stream left active by a superseded helper first; the stop/start commands are ordered
+            // on this new pipe and prevent a session handoff from retaining stale capture state.
+            if (Program.mgr != null) {
+                foreach (DualShock4Controller ds4 in Program.mgr.j.OfType<DualShock4Controller>())
+                    ds4.StopBluetoothAudioStream();
+                Program.mgr.ApplyControllerProfileOptions();
+            }
         }
 
         private void ReadLoop(NamedPipeServerStream connectedPipe, BinaryReader reader) {
@@ -460,17 +471,19 @@ namespace BetterJoyForCemu {
         // no notion of a fallback when no helper is connected - there is none here, Session 0
         // genuinely cannot do WASAPI loopback capture. Start/stop only fire on connect/disconnect/
         // a settings toggle, not at report rate, so a brief synchronous write is fine.
-        public void StartBluetoothAudioCapture(int padId, string endpointId) {
+        public bool StartBluetoothAudioCapture(int padId, string endpointId) {
             lock (pipeLock) {
                 if (!helperReady || pipe == null || !pipe.IsConnected)
-                    return;
+                    return false;
                 try {
                     var writer = new BinaryWriter(pipe);
                     new InputMessage { Type = InputMessageType.StartAudioCapture, A = padId }.WriteTo(writer);
                     writer.Write(endpointId ?? String.Empty);
                     writer.Flush();
+                    return true;
                 } catch {
                     // best-effort - if the helper is gone, there's simply nothing to capture from
+                    return false;
                 }
             }
         }

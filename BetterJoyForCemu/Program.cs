@@ -139,10 +139,15 @@ namespace BetterJoyForCemu {
                     // controller reconnects - mid-stream disconnect is handled separately via
                     // OnDetachingWhileAttached, since this loop only reaches attached controllers.
                     if (!jc.isUSB && jc is DualShock4Controller ds4) {
-                        if (audioEnabled)
+                        bool routeToHeadphones = ControllerMappings.BoolOption(
+                            profileId, "ControllerAudioRouteHeadphones");
+                        // DS4 common status bit 5 reports physical headphone detection. Speaker
+                        // routing can begin immediately; headset-only routing waits for the jack
+                        // instead of producing an active stream with nowhere valid to play.
+                        if (audioEnabled && (!routeToHeadphones || ds4.HeadphonesConnected))
                             ds4.StartBluetoothAudioStream(audioVolume,
                                 ControllerMappings.OptionValue(profileId, "ControllerAudioEndpointId"),
-                                ControllerMappings.BoolOption(profileId, "ControllerAudioRouteHeadphones"));
+                                routeToHeadphones);
                         else
                             ds4.StopBluetoothAudioStream();
                     }
@@ -662,9 +667,14 @@ namespace BetterJoyForCemu {
                     }
                 }
 
-                ApplyControllerProfileOptions();
                 DumpState("AutoJoin: end of pass");
             }
+
+            // Not Joy-Con-specific and not conditional on DoNotRejoinJoycons. This is the attach
+            // path that starts saved controller behavior—including DS4 Bluetooth audio—without
+            // requiring the user to toggle an option after every connection. Reconciliation is
+            // idempotent and also picks up jack-state changes on periodic scan passes.
+            ApplyControllerProfileOptions();
         }
 
         public void OnApplicationQuit() {

@@ -54,6 +54,11 @@ namespace BetterJoyForCemu {
         private byte lightbarBlue = 255;
         private long lightbarApplyEarliestTimestamp;
         private bool connectionLightFlashStarted;
+        // Common DS4 status byte 0, bit 5 is the physical headphone detect signal. -1 means no
+        // full report has been parsed yet, so headset-routed audio remains safely idle during
+        // attach rather than assuming a jack is present.
+        private int headphoneConnectionState = -1;
+        public bool HeadphonesConnected => Volatile.Read(ref headphoneConnectionState) == 1;
 
         // DS4 carries a 16-bit sensor clock at common offsets 9-10. One tick is 16/3 microseconds,
         // as used by DS4Windows; unsigned subtraction handles the frequent 16-bit rollover.
@@ -425,6 +430,15 @@ namespace BetterJoyForCemu {
             // Preserve that percentage and charge state while the shared Controller helper keeps
             // the legacy 0-4 DSU/color level in sync.
             byte batteryByte = r[29 + o];
+            int nextHeadphoneState = (batteryByte & 0x20) != 0 ? 1 : 0;
+            int previousHeadphoneState = Interlocked.Exchange(
+                ref headphoneConnectionState, nextHeadphoneState);
+            if (previousHeadphoneState != nextHeadphoneState) {
+                // Profile reconciliation owns stream start/stop decisions. Queue it away from the
+                // HID poll thread so plugging or unplugging headphones can transition immediately
+                // without making input-report parsing perform capture-pipe or scan-lock work.
+                ThreadPool.QueueUserWorkItem(_ => Program.mgr?.ApplyControllerProfileOptions());
+            }
             int batteryPercent;
             ControllerBatteryStatus batteryState;
             DecodeBatteryStatus(batteryByte, out batteryPercent, out batteryState);
@@ -730,7 +744,10 @@ namespace BetterJoyForCemu {
             byte[] buf = new byte[BtAudioEnableReportLen];
             buf[0] = BtAudioEnableReportId;
             buf[1] = 0xC0;
-            buf[2] = 0xA2;
+            // A0 keeps ordinary controller input reports alive while the speaker lane is armed.
+            // A2 is accepted by the audio hardware but eventually starves normal HID input on a
+            // genuine CUH-ZCT2, which would also make headphone unplug detection impossible.
+            buf[2] = 0xA0;
             if (routeToHeadphones) {
                 buf[3] = BtAudioValidFlagsHeadphones;
                 buf[21] = volume; // headphone left volume
@@ -822,7 +839,12 @@ namespace BetterJoyForCemu {
                 }
 
                 PrepareBluetoothAudio(volumePercent, routeToHeadphones);
-                form.StartBluetoothAudioCapture(PadId, endpointId);
+                if (!form.StartBluetoothAudioCapture(PadId, endpointId)) {
+                    // The service commonly discovers the controller before its session helper is
+                    // connected. Do not publish a false active state: OnHelperConnected performs
+                    // another profile reconciliation once capture is genuinely available.
+                    return;
+                }
 
                 while (bluetoothAudioFrameQueue.TryDequeue(out _)) { }
                 bluetoothAudioPending.Clear();
@@ -928,7 +950,7 @@ namespace BetterJoyForCemu {
             byte[] buf = new byte[reportLen];
             buf[0] = protocol;
             buf[1] = 0x40;
-            buf[2] = 0xa2;
+            buf[2] = 0xa0; // preserve ordinary HID input while carrying outbound SBC audio
             buf[3] = (byte)(packetCounter & 0xFF);
             buf[4] = (byte)((packetCounter >> 8) & 0xFF);
             buf[5] = bluetoothAudioOutputPath;

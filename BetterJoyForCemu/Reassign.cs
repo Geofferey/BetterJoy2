@@ -1063,9 +1063,8 @@ namespace BetterJoyForCemu {
                 "Route Bluetooth audio to headphones", 24, 644, "ControllerAudioRouteHeadphones");
             page.Controls.Add(controllerAudioRouteHeadphonesCheckBox);
             tip_reassign.SetToolTip(controllerAudioRouteHeadphonesCheckBox,
-                "DualShock 4 only. No automatic headphone-jack detection exists for this - check " +
-                "this once headphones are plugged in, or the controller's own speaker keeps " +
-                "playing (and headphone output won't be proper stereo) regardless of the jack.");
+                "DualShock 4 only. When enabled, Bluetooth audio waits until headphones are " +
+                "detected in the controller's 3.5 mm jack and stops if they are unplugged.");
 
             page.Controls.Add(CreateDivider(24, 690));
             AddSectionHeading(page, "Orientation", 707,

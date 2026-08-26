@@ -74,7 +74,9 @@ namespace BetterJoyForCemu {
         // Session 0 doesn't have. Headless/service mode forwards to the session-launched helper
         // process over the same pipe Simulate* already uses; endpointId selects which render
         // device to loop back (falls back to the system default when null/not found).
-        void StartBluetoothAudioCapture(int padId, string endpointId);
+        // True only when the command reached a connected desktop helper. Callers must not mark
+        // the controller stream active when Session 0 had nowhere to start WASAPI capture.
+        bool StartBluetoothAudioCapture(int padId, string endpointId);
         void StopBluetoothAudioCapture(int padId);
     }
 }
