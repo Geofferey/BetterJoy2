@@ -209,6 +209,29 @@ this repository:
   encoded frames before streaming begins, rather than starting the instant any are available) was
   informed by buffering constants found in [hbashton/DS4Windows](https://github.com/hbashton/DS4Windows)'s
   DualShock4 Bluetooth audio implementation.
+* DualSense Bluetooth speaker and headset audio was implemented from protocol behavior documented
+  and exercised by [hbashton/DS4Windows](https://github.com/hbashton/DS4Windows) (GPL-3.0 reference
+  project). That work provided the principal reference for the `0x36` combined Bluetooth carrier,
+  `0x93` speaker and `0x96` headset packet types, fixed 200-byte/160-kbit Opus frames, report and
+  media sequencing, volume/routing state, and the 10.667 ms presentation cadence. The working
+  [Kodzinho/DualSense-Bluetooth-Audio](https://github.com/Kodzinho/DualSense-Bluetooth-Audio)
+  implementation (MIT) additionally informed the continuous 512-source-frame to 480-Opus-frame
+  `ClockFix`, fixed-size Opus framing, queued HID delivery, and speaker/headset target handling.
+  That project's own protocol lineage credits
+  [awalol/dualsense-bt-haptics](https://github.com/awalol/dualsense-bt-haptics) (MIT). BetterJoy's
+  implementation was integrated into its existing controller-owned `DualSense.cs` output path and
+  shared session-helper architecture; source code from the GPL reference project is not
+  incorporated into this repository. The physical headphone/microphone detection bits and common
+  input/output report layout were independently cross-checked against Sony's upstream Linux
+  [`hid-playstation` driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c)
+  (GPL-2.0-or-later).
+* DualSense Opus encoding uses [Concentus](https://github.com/lostromb/concentus) 2.2.2 by Logan
+  Stromberg, a managed C# implementation of the Xiph.Org Opus codec distributed under its
+  BSD-style license. [NAudio](https://github.com/naudio/NAudio) (MIT) supplies Windows WASAPI
+  endpoint discovery, loopback capture, and USB test-tone playback. The event-synchronized
+  loopback and stereo-downmix design used by the shared capture pipeline was adapted from the
+  MIT-licensed DS4AudioStreamer work credited above, while libsamplerate performs the continuous
+  controller-specific clock conversion before SBC or Opus encoding.
 
 ## Implementations studied during the motion-control rework
 
