@@ -3,19 +3,64 @@
 </p>
 
 # BetterJoy2 v7.2.1
-Allows the Nintendo Switch Pro Controller, Joycons, and Switch SNES controller to be used with [Cemu](http://cemu.info/) using [Cemuhook](https://sshnuke.net/cemuhook/), [Citra](https://citra-emu.org/), [Dolphin](https://dolphin-emu.org/), [Yuzu](https://yuzu-emu.org/), and system-wide with generic XInput support.
 
-It also allows using the gyro to control your mouse and remap the special buttons (SL, SR, Capture) to key bindings of your choice.
+**BetterJoy2 is a free, [MIT-licensed](LICENSE), system-wide controller compatibility layer for
+Windows.** It
+makes Joy-Cons, Switch Pro, Switch SNES/N64, DualShock 4, and DualSense controllers usable through
+standard virtual XInput or DualShock 4 output while preserving the motion, touch, lighting, audio,
+and device features that make the physical controllers worth owning.
+
+BetterJoy2 does not require Steam, an account, online ownership checks, per-machine purchases, or
+paid feature tiers. Install it on the computers you own and use your controllers where you want.
+It can run independently as a Windows service, including across sign-in sessions and elevated
+applications.
+
+The default goal is a clean, conventional virtual controller—not mandatory input remapping. For
+people who do want another mapping layer, BetterJoy2's standard virtual output remains compatible
+with Steam Input and other remappers. Optional BetterJoy2 profiles provide controller-native
+configuration, motion and touch behavior, button chords, and keyboard/mouse actions without making
+any of that a prerequisite for ordinary play.
+
+BetterJoy2 also provides [Cemuhook](https://sshnuke.net/cemuhook/)/DSU motion for
+[Cemu](http://cemu.info/), [Dolphin](https://dolphin-emu.org/), Citra-compatible emulators, and
+other compatible applications.
+
+## Why BetterJoy2 exists
+
+Controller support should behave like a system utility, not like a licensed game. BetterJoy2 grew
+out of frustration with controller software that ties access to a storefront session, limits
+simultaneous use across a person's own computers, divides hardware support into additional paid
+tiers, or requires users to assemble fragile remapping and device-hiding workarounds merely to
+avoid double input.
+
+BetterJoy2 takes the opposite approach:
+
+* **Your hardware remains yours** - no DRM, account activation, storefront launcher, machine
+  entitlement, concurrent-use restriction, or feature DLC.
+* **Remapping is optional** - choose XInput or DualShock 4 output and play, or layer Steam Input or
+  another remapper on top when its additional behavior is actually wanted.
+* **Double input is handled at the source** - when HidHide is installed, BetterJoy2 can manage the
+  physical controller's visibility before creating its virtual output, recognizes and rejects its
+  own virtual devices during discovery, and provides an explicit unhide-on-exit policy.
+* **It works system-wide** - the controller service does not depend on a game launcher or the GUI
+  remaining open, and the optional virtual HID mouse reaches elevated applications and Windows
+  session boundaries.
+* **The implementation is inspectable** - controller protocols, transforms, profiles, service
+  behavior, and hardware integrations live in the open repository and can be audited, modified,
+  or forked.
 
 # Features
 
 This fork (BetterJoy2) builds heavily on the original BetterJoy - see
-[Acknowledgements](#acknowledgements) for the foundation it's built on. The following are unique
-to this fork:
+[Acknowledgements](#acknowledgements) for the foundation it's built on. Major additions include:
 
-* **DualSense (PS5 controller) support** - buttons, sticks, triggers, rumble, lightbar, and full
-  gyro/accelerometer motion, reading DualSense's own hardware calibration and driving the same
-  gyro-mouse and gyro-to-stick pipeline as Joy-Cons/Pro Controller, not a second implementation.
+* **Nintendo and PlayStation controller support** - Joy-Con pairs or individual halves, Switch Pro,
+  Switch SNES/N64, DualShock 4, and DualSense share one controller pipeline with XInput or
+  DualShock 4 virtual output. Sony support includes buttons, sticks, analog triggers, battery state,
+  rumble, lightbars, touchpads, and calibrated gyro/accelerometer motion.
+* **Clean physical/virtual device ownership** - integrated HidHide management prevents games and
+  remappers from consuming both the physical controller and BetterJoy2's virtual output. BetterJoy2
+  excludes its own virtual devices from discovery and can restore hidden controllers on exit.
 * **Gravity-referenced filtered gyro mouse** - a full rework around "Player Space" motion math
   (adapted from GamepadMotionHelpers): yaw/pitch tracked relative to true gravity instead of the
   controller's raw local axes, so aiming stays consistent no matter how the controller is tilted
@@ -25,17 +70,31 @@ to this fork:
   modes (Rate, Absolute tilt, Hybrid), per-stick axis source and invert, configurable deflection
   limits, and a ratchet bind for repositioning your wrist mid-turn without it registering as
   reverse input.
+* **Touchpad mouse, gestures, and stick output** - DualShock 4 and DualSense touchpads can act as
+  relative pointers or floating-origin virtual sticks. Profiles provide separate mouse/stick
+  sensitivity, per-axis deflection limits, tap-to-click-and-drag, assignable one- and two-finger
+  taps, two-finger scrolling, click/scroll actions, activation chords, clenching, pressure lockout,
+  and optional inhibition of conflicting controller actions.
 * **Silent auto-calibration** - gyro, accelerometer, and stick centers are recalibrated
   automatically in the background the moment a controller is detected sitting genuinely still, no
   wizard or user action required. A guided manual recalibration wizard is still available for
   when it's needed.
 * **Runs as a Windows Service** - the core controller pipeline can run independent of the GUI,
   surviving sign-out/sign-in and working from elevated windows and the Windows lock screen, with
-  crash recovery and a session-launched helper so keyboard/mouse remapping still works across the
+  crash recovery and a session-launched helper so keyboard/mouse actions still work across the
   service boundary.
-* **Per-controller profiles** - multiple named special-button mapping profiles per controller
-  (not just one), with button-combo bindings, a mappable shake input, and reassignable virtual
-  Guide/PS button output.
+* **Per-controller profiles** - multiple named profiles per physical controller cover virtual
+  output, motion, touch, device behavior, and optional mappings. Bindings support physical-only
+  capture, button combinations, touch gestures, a mappable shake input, and reassignable virtual
+  Guide/PS output without mapped outputs contaminating subsequent bind capture.
+* **Controller-owned hardware behavior** - profile-scoped rumble, arbitrary Sony lightbar colors,
+  battery percentage/status, Bluetooth disconnect, headphone-jack detection and routing, gyro
+  recentering, and controller-specific calibration remain attached to the physical device rather
+  than being reduced to generic remapping concepts.
+* **PlayStation controller audio** - route Windows audio to DualShock 4 or DualSense speakers and
+  connected headsets over USB or Bluetooth, with automatic jack switching and headphone-gated
+  startup. Bluetooth transport is experimental because timing and reliability vary across Windows
+  Bluetooth adapters and system load.
 * **Optional virtual HID mouse backend** (via FakerInput) - lets gyro mouse work across elevated
   windows, the Windows sign-in screen, and service/session boundaries where the standard approach
   can't reach.
@@ -43,7 +102,11 @@ to this fork:
 
 If anyone would like to donate (for whatever reason), [you can do so here](https://www.paypal.me/DavidKhachaturov/5). 
 
-#### Personal note
+#### Original BetterJoy author's note
+
+The note below is retained from the upstream BetterJoy project whose work and history this fork
+inherits.
+
 Thank you for using my software and all the constructive feedback I've been getting about it. I started writing this project a while back and have since then learnt a lot more about programming and software development in general. I don't have too much time to work on this project, but I will try to fix bugs when and if they arise. Thank you for your patience in that regard too!
 
 It's been quite a wild ride, with nearly **590k** (!!) official download on GitHub and probably many more through the nightlies. I think this project was responsible for both software jobs I landed so far, so I am quite proud of it.
@@ -52,27 +115,37 @@ It's been quite a wild ride, with nearly **590k** (!!) official download on GitH
 ![Example](https://raw.githubusercontent.com/Geofferey/BetterJoy2/b1378869a53dfe976f1677d887a6298f6e84b334/screenshots/BetterJoy_Screenshot_Main_UI.png)
 
 # Downloads
-Go to the [Releases tab](https://github.com/Geofferey/BetterJoy/releases/)!
+Go to the [BetterJoy2 Releases tab](https://github.com/Geofferey/BetterJoy2/releases/)!
 
 # How to use
 1. Install drivers
     1. Read the READMEs (they're there for a reason!)
     1. Run *Drivers/ViGEmBus_1.22.0_x64_x86_arm64.exe*
     1. Restart your computer
-    1. Optional: if other programs (e.g. Steam) fight BetterJoy2 over your controller, run *Drivers/HidHide_1.5.230_x64.exe* and enable "UseHidHide" in the settings panel, this hides the controller from every other program entirely.
+    1. Recommended: install *Drivers/HidHide_1.5.230_x64.exe*. On a fresh install BetterJoy2
+       enables **Use HidHide** automatically when the driver is detected, then manages each
+       physical controller's visibility so games see only the selected virtual output. If HidHide
+       is installed later, enable it under **Global** options and restart BetterJoy2.
 2. Run *BetterJoyForCemu.exe* 
     1. Run as Administrator if your keyboard/mouse button mappings don't work
 3. Connect your controllers.
-4. Start Cemu and ensure CemuHook has the controller selected.
+4. For normal PC games, select XInput or DualShock 4 as the profile's virtual-controller output,
+   then configure that controller normally in the game. BetterJoy2 profiles and downstream
+   remapping are optional.
+5. For CemuHook/DSU applications, start the application and select BetterJoy2 as the motion source.
     1. If using Joycons, CemuHook will detect two controllers - each will give all buttons, but choosing one over the other just chooses preference for which hand to use for gyro controls.
-5. Go into *Input Settings*, choose XInput as a source and assign buttons normally.
+6. In Cemu's *Input Settings*, choose XInput as a source and assign buttons normally.
     1. If you don't want to do this for some reason, just have one input profile set up with *Wii U Gamepad* as the controller and enable "Also use for buttons/axes" under *GamePad motion source*. **This is no longer required as of version 3**
     2. Turn rumble up to 70-80% if you want rumble.
 
-* As of version 3, you can use the pro controller and Joycons as normal xbox controllers on your PC - try it with Steam!
+* BetterJoy2's virtual XInput/DS4 output can be consumed directly by games or passed into Steam
+  Input and other remappers when their additional configuration is wanted.
 
 # More Info
-Check out the [wiki](https://github.com/Geofferey/BetterJoy2/wiki)! There, you'll find all sorts of goodness such as the changelog, description of app settings, and the FAQ and Problems page. If Steam (or another program) fights BetterJoy over your controller, see the optional HidHide driver mentioned above - it hides the controller from everything except BetterJoy.
+Check out the [wiki](https://github.com/Geofferey/BetterJoy2/wiki)! There, you'll find the
+changelog, app-setting descriptions, FAQ, and troubleshooting information. HidHide is recommended
+when creating a virtual controller: BetterJoy2 manages the physical device so games and Steam do
+not receive both physical and virtual input.
 
 # Connecting and Disconnecting the Controller
 ## Bluetooth Mode
