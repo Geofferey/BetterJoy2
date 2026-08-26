@@ -52,6 +52,16 @@ namespace BetterJoyForCemu {
         private ComboBox useAsSelector;
         private ComboBox inactivitySelector;
         private ComboBox gyroActivationModeSelector;
+        private ComboBox adaptiveTriggerModeLeftSelector;
+        private ComboBox adaptiveTriggerModeRightSelector;
+        private TextBox adaptiveTriggerStartLeftInput;
+        private TextBox adaptiveTriggerSecondaryLeftInput;
+        private TextBox adaptiveTriggerStrengthLeftInput;
+        private TextBox adaptiveTriggerStartRightInput;
+        private TextBox adaptiveTriggerSecondaryRightInput;
+        private TextBox adaptiveTriggerStrengthRightInput;
+        private Label adaptiveTriggerSecondaryLeftLabel;
+        private Label adaptiveTriggerSecondaryRightLabel;
         private SplitButton gyroStickModeSelector;
         private SplitButton gyroStickModeRightSelector;
         private SplitButton gyroStickAxisXSelector;
@@ -525,18 +535,21 @@ namespace BetterJoyForCemu {
             Panel bindingsPage = BuildBindingsPage();
             Panel gyroPage = BuildGyroPage();
             Panel touchpadPage = BuildTouchpadPage();
+            Panel adaptiveTriggersPage = BuildAdaptiveTriggersPage();
             Panel behaviorPage = BuildDeviceBehaviorPage();
             Panel virtualControllerPage = BuildVirtualControllerPage();
             Panel globalPage = BuildGlobalPage();
             profilePages.Add("bindings", bindingsPage);
             profilePages.Add("gyro", gyroPage);
             profilePages.Add("touchpad", touchpadPage);
+            profilePages.Add("adaptive_triggers", adaptiveTriggersPage);
             profilePages.Add("behavior", behaviorPage);
             profilePages.Add("virtual", virtualControllerPage);
             profilePages.Add("global", globalPage);
             profilePageHost.Controls.Add(bindingsPage);
             profilePageHost.Controls.Add(gyroPage);
             profilePageHost.Controls.Add(touchpadPage);
+            profilePageHost.Controls.Add(adaptiveTriggersPage);
             profilePageHost.Controls.Add(behaviorPage);
             profilePageHost.Controls.Add(virtualControllerPage);
             profilePageHost.Controls.Add(globalPage);
@@ -671,11 +684,12 @@ namespace BetterJoyForCemu {
             sidebar.Controls.Add(CreateNavigationButton("Bindings", "bindings", 60));
             sidebar.Controls.Add(CreateNavigationButton("Gyro", "gyro", 104));
             sidebar.Controls.Add(CreateNavigationButton("Touchpad", "touchpad", 148));
-            sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 192));
-            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 236));
-            sidebar.Controls.Add(CreateLabel("GLOBAL", 20, 306,
+            sidebar.Controls.Add(CreateNavigationButton("Adaptive triggers", "adaptive_triggers", 192));
+            sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 236));
+            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 280));
+            sidebar.Controls.Add(CreateLabel("GLOBAL", 20, 350,
                 Color.FromArgb(151, 174, 205), false, 8F));
-            sidebar.Controls.Add(CreateNavigationButton("Global options", "global", 336));
+            sidebar.Controls.Add(CreateNavigationButton("Global options", "global", 380));
             return sidebar;
         }
 
@@ -812,16 +826,16 @@ namespace BetterJoyForCemu {
                     ProfileMuted, false, 8.25F));
 
             page.Controls.Add(CreateLabel("Left stick", 24, 734, ProfileText, false));
-            maxDeflectionXLeftInput = CreateDeflectionInput(page, deflectionColumnX[0], 728, "GyroStickMaxDeflectionXLeft");
-            maxDeflectionYLeftInput = CreateDeflectionInput(page, deflectionColumnX[1], 728, "GyroStickMaxDeflectionYLeft");
-            minDeflectionXLeftInput = CreateDeflectionInput(page, deflectionColumnX[2], 728, "GyroStickMinDeflectionXLeft");
-            minDeflectionYLeftInput = CreateDeflectionInput(page, deflectionColumnX[3], 728, "GyroStickMinDeflectionYLeft");
+            maxDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[0], 728, "GyroStickMaxDeflectionXLeft");
+            maxDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[1], 728, "GyroStickMaxDeflectionYLeft");
+            minDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[2], 728, "GyroStickMinDeflectionXLeft");
+            minDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[3], 728, "GyroStickMinDeflectionYLeft");
 
             page.Controls.Add(CreateLabel("Right stick", 24, 768, ProfileText, false));
-            maxDeflectionXRightInput = CreateDeflectionInput(page, deflectionColumnX[0], 762, "GyroStickMaxDeflectionXRight");
-            maxDeflectionYRightInput = CreateDeflectionInput(page, deflectionColumnX[1], 762, "GyroStickMaxDeflectionYRight");
-            minDeflectionXRightInput = CreateDeflectionInput(page, deflectionColumnX[2], 762, "GyroStickMinDeflectionXRight");
-            minDeflectionYRightInput = CreateDeflectionInput(page, deflectionColumnX[3], 762, "GyroStickMinDeflectionYRight");
+            maxDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[0], 762, "GyroStickMaxDeflectionXRight");
+            maxDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[1], 762, "GyroStickMaxDeflectionYRight");
+            minDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[2], 762, "GyroStickMinDeflectionXRight");
+            minDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[3], 762, "GyroStickMinDeflectionYRight");
 
             page.Controls.Add(CreateDivider(24, 805));
             AddSectionHeading(page, "Orientation", 820,
@@ -948,6 +962,86 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(btn_touchpad_click_lockout,
                 "Prevent pointer movement while the physical touchpad is pressed.");
             page.AutoScrollMinSize = new Size(0, 921);
+            return page;
+        }
+
+        private Panel BuildAdaptiveTriggersPage() {
+            Panel page = CreateProfilePage("Adaptive triggers",
+                "Add persistent DualSense trigger resistance even when a game outputs XInput or DS4.");
+
+            AddSectionHeading(page, "Trigger effects", 96,
+                "Effects are independent for L2 and R2, off by default, and apply after Apply is clicked.");
+            page.Controls.Add(CreateLabel("L2", 24, 154, ProfileText, true, 11F));
+            page.Controls.Add(CreateLabel("R2", 315, 154, ProfileText, true, 11F));
+
+            page.Controls.Add(CreateLabel("Effect", 24, 202, ProfileText, false));
+            adaptiveTriggerModeLeftSelector = CreateProfileComboBox(125, 196, 165);
+            page.Controls.Add(adaptiveTriggerModeLeftSelector);
+            page.Controls.Add(CreateLabel("Effect", 315, 202, ProfileText, false));
+            adaptiveTriggerModeRightSelector = CreateProfileComboBox(416, 196, 178);
+            page.Controls.Add(adaptiveTriggerModeRightSelector);
+            foreach (ComboBox selector in new[] {
+                adaptiveTriggerModeLeftSelector, adaptiveTriggerModeRightSelector,
+            }) {
+                selector.DropDownStyle = ComboBoxStyle.DropDownList;
+                selector.Items.AddRange(new object[] {
+                    "Off", "Resistance", "Weapon", "Vibration",
+                });
+                selector.SelectedIndexChanged += AdaptiveTriggerOptionChanged;
+            }
+
+            page.Controls.Add(CreateLabel("Start", 24, 244, ProfileText, false));
+            adaptiveTriggerStartLeftInput = CreateProfilePercentInput(
+                page, 125, 238, "AdaptiveTriggerStartLeft");
+            page.Controls.Add(CreateLabel("Start", 315, 244, ProfileText, false));
+            adaptiveTriggerStartRightInput = CreateProfilePercentInput(
+                page, 416, 238, "AdaptiveTriggerStartRight");
+
+            adaptiveTriggerSecondaryLeftLabel = CreateLabel(
+                "Wall", 24, 286, ProfileText, false);
+            page.Controls.Add(adaptiveTriggerSecondaryLeftLabel);
+            adaptiveTriggerSecondaryLeftInput = CreateProfilePercentInput(
+                page, 125, 280, "AdaptiveTriggerSecondaryLeft");
+            adaptiveTriggerSecondaryRightLabel = CreateLabel(
+                "Wall", 315, 286, ProfileText, false);
+            page.Controls.Add(adaptiveTriggerSecondaryRightLabel);
+            adaptiveTriggerSecondaryRightInput = CreateProfilePercentInput(
+                page, 416, 280, "AdaptiveTriggerSecondaryRight");
+
+            page.Controls.Add(CreateLabel("Strength", 24, 328, ProfileText, false));
+            adaptiveTriggerStrengthLeftInput = CreateProfilePercentInput(
+                page, 125, 322, "AdaptiveTriggerStrengthLeft");
+            page.Controls.Add(CreateLabel("Strength", 315, 328, ProfileText, false));
+            adaptiveTriggerStrengthRightInput = CreateProfilePercentInput(
+                page, 416, 322, "AdaptiveTriggerStrengthRight");
+
+            page.Controls.Add(CreateLabel("%", 181, 244, ProfileMuted, false));
+            page.Controls.Add(CreateLabel("%", 181, 286, ProfileMuted, false));
+            page.Controls.Add(CreateLabel("%", 181, 328, ProfileMuted, false));
+            page.Controls.Add(CreateLabel("%", 472, 244, ProfileMuted, false));
+            page.Controls.Add(CreateLabel("%", 472, 286, ProfileMuted, false));
+            page.Controls.Add(CreateLabel("%", 472, 328, ProfileMuted, false));
+
+            page.Controls.Add(CreateDivider(24, 380));
+            AddSectionHeading(page, "How the modes feel", 397,
+                "Resistance adds a firm pull after Start. Weapon creates a wall and break point. " +
+                "Vibration pulses from Start, with the middle value controlling Frequency.");
+            Label note = CreateLabel(
+                "Weapon constrains its start/wall to the trigger's reliable hardware zones. " +
+                "A strength of 0% disables the selected effect.",
+                24, 459, ProfileMuted, false, 8.75F);
+            note.AutoSize = false;
+            note.Size = new Size(570, 42);
+            page.Controls.Add(note);
+
+            tip_reassign.SetToolTip(adaptiveTriggerStartLeftInput,
+                "Where in the trigger pull the effect begins.");
+            tip_reassign.SetToolTip(adaptiveTriggerStartRightInput,
+                "Where in the trigger pull the effect begins.");
+            tip_reassign.SetToolTip(adaptiveTriggerSecondaryLeftInput,
+                "Weapon wall position or vibration frequency.");
+            tip_reassign.SetToolTip(adaptiveTriggerSecondaryRightInput,
+                "Weapon wall position or vibration frequency.");
             return page;
         }
 
@@ -1304,10 +1398,10 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Not NumericUpDown - nothing else in this dialog uses one, and its spin-button portion
-        // can't be recolored to match the dark flat theme every other control here already gets
+        // Shared by gyro deflection and adaptive-trigger percentages. Not NumericUpDown - its
+        // spin-button portion can't be recolored to match the dark flat theme every other control gets
         // via FlatStyle.Flat. A themed TextBox with digit-only input matches far better.
-        private TextBox CreateDeflectionInput(Panel page, int left, int top, string optionKey) {
+        private TextBox CreateProfilePercentInput(Panel page, int left, int top, string optionKey) {
             TextBox input = new TextBox {
                 Location = new Point(left, top),
                 Size = new Size(50, 25),
@@ -1322,7 +1416,7 @@ namespace BetterJoyForCemu {
                 if (!Char.IsDigit(e.KeyChar) && !Char.IsControl(e.KeyChar))
                     e.Handled = true;
             };
-            input.Leave += DeflectionInput_Leave;
+            input.Leave += ProfilePercentInput_Leave;
             page.Controls.Add(input);
             return input;
         }
@@ -1331,7 +1425,7 @@ namespace BetterJoyForCemu {
         // ProfileOptionControlChanged dispatcher every other control here uses (ComboBox.
         // SelectedIndexChanged/CheckBox.CheckedChanged) - a deferred-commit TextBox doesn't fit
         // that shape cleanly, so it gets its own handler instead.
-        private void DeflectionInput_Leave(object sender, EventArgs e) {
+        private void ProfilePercentInput_Leave(object sender, EventArgs e) {
             if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
                 return;
 
@@ -1344,12 +1438,18 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(SelectedProfileId, (string)input.Tag, value.ToString());
         }
 
-        private bool IsDeflectionInput(Control control) {
+        private bool IsProfilePercentInput(Control control) {
             return control != null && (
                 control == maxDeflectionXLeftInput || control == maxDeflectionYLeftInput ||
                 control == maxDeflectionXRightInput || control == maxDeflectionYRightInput ||
                 control == minDeflectionXLeftInput || control == minDeflectionYLeftInput ||
-                control == minDeflectionXRightInput || control == minDeflectionYRightInput);
+                control == minDeflectionXRightInput || control == minDeflectionYRightInput ||
+                control == adaptiveTriggerStartLeftInput ||
+                control == adaptiveTriggerSecondaryLeftInput ||
+                control == adaptiveTriggerStrengthLeftInput ||
+                control == adaptiveTriggerStartRightInput ||
+                control == adaptiveTriggerSecondaryRightInput ||
+                control == adaptiveTriggerStrengthRightInput);
         }
 
         private void ProfileOptionControlChanged(object sender, EventArgs e) {
@@ -1376,6 +1476,64 @@ namespace BetterJoyForCemu {
                 ControllerMappings.SetOptionValue(
                     SelectedProfileId, "PowerOffInactivity", minutes.ToString());
             }
+        }
+
+        private void AdaptiveTriggerOptionChanged(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            ComboBox selector = (ComboBox)sender;
+            string optionKey = selector == adaptiveTriggerModeLeftSelector
+                ? "AdaptiveTriggerModeLeft"
+                : "AdaptiveTriggerModeRight";
+            ControllerMappings.SetOptionValue(SelectedProfileId, optionKey,
+                AdaptiveTriggerModeValue(selector));
+            UpdateAdaptiveTriggerControlState(true);
+        }
+
+        private static string AdaptiveTriggerModeValue(ComboBox selector) {
+            switch (selector?.SelectedIndex ?? 0) {
+                case 1: return "resistance";
+                case 2: return "weapon";
+                case 3: return "vibration";
+                default: return "off";
+            }
+        }
+
+        private static void LoadAdaptiveTriggerMode(ComboBox selector, string value) {
+            if (selector == null)
+                return;
+            switch ((value ?? "off").Trim().ToLowerInvariant()) {
+                case "resistance": selector.SelectedIndex = 1; break;
+                case "weapon": selector.SelectedIndex = 2; break;
+                case "vibration": selector.SelectedIndex = 3; break;
+                default: selector.SelectedIndex = 0; break;
+            }
+        }
+
+        private void UpdateAdaptiveTriggerControlState(bool hasProfile) {
+            UpdateAdaptiveTriggerSide(adaptiveTriggerModeLeftSelector,
+                adaptiveTriggerStartLeftInput, adaptiveTriggerSecondaryLeftInput,
+                adaptiveTriggerStrengthLeftInput, adaptiveTriggerSecondaryLeftLabel,
+                hasProfile);
+            UpdateAdaptiveTriggerSide(adaptiveTriggerModeRightSelector,
+                adaptiveTriggerStartRightInput, adaptiveTriggerSecondaryRightInput,
+                adaptiveTriggerStrengthRightInput, adaptiveTriggerSecondaryRightLabel,
+                hasProfile);
+        }
+
+        private void UpdateAdaptiveTriggerSide(ComboBox selector, TextBox start,
+            TextBox secondary, TextBox strength, Label secondaryLabel, bool hasProfile) {
+            if (selector == null)
+                return;
+            string mode = AdaptiveTriggerModeValue(selector);
+            bool active = hasProfile && mode != "off";
+            selector.Enabled = hasProfile;
+            start.Enabled = active;
+            strength.Enabled = active;
+            secondary.Enabled = active && (mode == "weapon" || mode == "vibration");
+            secondaryLabel.Text = mode == "vibration" ? "Frequency" : "Wall";
+            secondaryLabel.ForeColor = secondary.Enabled ? ProfileText : ProfileMuted;
         }
 
         private void LightColorButton_Click(object sender, EventArgs e) {
@@ -1521,8 +1679,8 @@ namespace BetterJoyForCemu {
             // from WHATEVER control had it on every single tick, not just these 8 boxes -
             // including mid-calibration or any other dialog/input in progress, which is exactly
             // the kind of thing that looks like the app "quit" partway through. Only force a
-            // commit when one of the deflection TextBoxes specifically is the thing focused.
-            if (IsDeflectionInput(ActiveControl))
+            // commit when one of the deferred percentage TextBoxes specifically is focused.
+            if (IsProfilePercentInput(ActiveControl))
                 this.ActiveControl = null;
 
             Control[] controls = {
@@ -1545,6 +1703,10 @@ namespace BetterJoyForCemu {
                 maxDeflectionXRightInput, maxDeflectionYRightInput,
                 minDeflectionXLeftInput, minDeflectionYLeftInput,
                 minDeflectionXRightInput, minDeflectionYRightInput,
+                adaptiveTriggerModeLeftSelector, adaptiveTriggerModeRightSelector,
+                adaptiveTriggerStartLeftInput, adaptiveTriggerSecondaryLeftInput,
+                adaptiveTriggerStrengthLeftInput, adaptiveTriggerStartRightInput,
+                adaptiveTriggerSecondaryRightInput, adaptiveTriggerStrengthRightInput,
             };
             updatingProfileOptions = true;
             try {
@@ -1652,6 +1814,25 @@ namespace BetterJoyForCemu {
                 minDeflectionYRightInput.Text = ControllerMappings.IntOption(
                     SelectedProfileId, "GyroStickMinDeflectionYRight", 0).ToString();
 
+                LoadAdaptiveTriggerMode(adaptiveTriggerModeLeftSelector,
+                    ControllerMappings.OptionValue(SelectedProfileId,
+                        "AdaptiveTriggerModeLeft"));
+                LoadAdaptiveTriggerMode(adaptiveTriggerModeRightSelector,
+                    ControllerMappings.OptionValue(SelectedProfileId,
+                        "AdaptiveTriggerModeRight"));
+                adaptiveTriggerStartLeftInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "AdaptiveTriggerStartLeft", 30).ToString();
+                adaptiveTriggerSecondaryLeftInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "AdaptiveTriggerSecondaryLeft", 70).ToString();
+                adaptiveTriggerStrengthLeftInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "AdaptiveTriggerStrengthLeft", 50).ToString();
+                adaptiveTriggerStartRightInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "AdaptiveTriggerStartRight", 30).ToString();
+                adaptiveTriggerSecondaryRightInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "AdaptiveTriggerSecondaryRight", 70).ToString();
+                adaptiveTriggerStrengthRightInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "AdaptiveTriggerStrengthRight", 50).ToString();
+
                 int inactivityMinutes = ControllerMappings.IntOption(
                     SelectedProfileId, "PowerOffInactivity", -1);
                 string inactivityText = inactivityMinutes <= 0
@@ -1663,6 +1844,7 @@ namespace BetterJoyForCemu {
                     inactivityIndex = inactivitySelector.Items.Count - 1;
                 }
                 inactivitySelector.SelectedIndex = inactivityIndex;
+                UpdateAdaptiveTriggerControlState(true);
             } finally {
                 updatingProfileOptions = false;
             }
@@ -1848,6 +2030,8 @@ namespace BetterJoyForCemu {
             bool hasTouchpad = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
+            bool hasAdaptiveTriggers = selected != null &&
+                selected.Kind == ControllerKind.DualSense;
             bool hasConfigurableLight = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
@@ -1873,6 +2057,12 @@ namespace BetterJoyForCemu {
                 touchpadNavigation.Visible = hasTouchpad;
             if (!hasTouchpad && profilePages.TryGetValue("touchpad", out Panel touchpadPage) &&
                 touchpadPage.Visible)
+                ShowProfilePage("gyro");
+            if (profileNavigationButtons.TryGetValue("adaptive_triggers",
+                    out Button adaptiveTriggersNavigation))
+                adaptiveTriggersNavigation.Visible = hasAdaptiveTriggers;
+            if (!hasAdaptiveTriggers && profilePages.TryGetValue("adaptive_triggers",
+                    out Panel adaptiveTriggersPage) && adaptiveTriggersPage.Visible)
                 ShowProfilePage("gyro");
             foreach (SplitButton button in specialButtons) {
                 button.Enabled = hasController;
@@ -2489,9 +2679,9 @@ namespace BetterJoyForCemu {
         }
 
         private void Reassign_FormClosing(object sender, FormClosingEventArgs e) {
-            // Commit any uncommitted deflection-input edit (its Leave handler is the only thing
+            // Commit any uncommitted percentage-input edit (its Leave handler is the only thing
             // that saves it) rather than relying on implicit WinForms focus teardown order.
-            if (IsDeflectionInput(ActiveControl))
+            if (IsProfilePercentInput(ActiveControl))
                 this.ActiveControl = null;
 
             keyboard?.Dispose();

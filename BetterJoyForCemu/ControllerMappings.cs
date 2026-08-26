@@ -76,6 +76,10 @@ namespace BetterJoyForCemu {
             "GyroStickMaxDeflectionXRight", "GyroStickMaxDeflectionYRight",
             "GyroStickMinDeflectionXLeft", "GyroStickMinDeflectionYLeft",
             "GyroStickMinDeflectionXRight", "GyroStickMinDeflectionYRight",
+            "AdaptiveTriggerModeLeft", "AdaptiveTriggerStartLeft",
+            "AdaptiveTriggerSecondaryLeft", "AdaptiveTriggerStrengthLeft",
+            "AdaptiveTriggerModeRight", "AdaptiveTriggerStartRight",
+            "AdaptiveTriggerSecondaryRight", "AdaptiveTriggerStrengthRight",
         };
 
         // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected
@@ -773,6 +777,16 @@ namespace BetterJoyForCemu {
                 return String.Empty;
             if (key == "ControllerAudioRouteHeadphones")
                 return "false";
+            if (key == "AdaptiveTriggerModeLeft" || key == "AdaptiveTriggerModeRight")
+                return "off";
+            if (key == "AdaptiveTriggerStartLeft" || key == "AdaptiveTriggerStartRight")
+                return "30";
+            if (key == "AdaptiveTriggerSecondaryLeft" ||
+                key == "AdaptiveTriggerSecondaryRight")
+                return "70";
+            if (key == "AdaptiveTriggerStrengthLeft" ||
+                key == "AdaptiveTriggerStrengthRight")
+                return "50";
 
             string value = ConfigurationManager.AppSettings[key];
             return value ?? String.Empty;

@@ -127,6 +127,17 @@ namespace BetterJoyForCemu {
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
+                    if (jc is DualSenseController triggerController) {
+                        triggerController.SetAdaptiveTriggerProfile(
+                            ControllerMappings.OptionValue(profileId, "AdaptiveTriggerModeLeft"),
+                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStartLeft", 30),
+                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerSecondaryLeft", 70),
+                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStrengthLeft", 50),
+                            ControllerMappings.OptionValue(profileId, "AdaptiveTriggerModeRight"),
+                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStartRight", 30),
+                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerSecondaryRight", 70),
+                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStrengthRight", 50));
+                    }
                     bool audioEnabled = ControllerMappings.BoolOption(profileId, "ControllerAudioEnabled");
                     int audioVolume = ControllerMappings.IntOption(profileId, "ControllerAudioVolume", 75);
                     if (audioEnabled)

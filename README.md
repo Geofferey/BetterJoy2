@@ -8,7 +8,7 @@
 Windows.** It
 makes Joy-Cons, Switch Pro, Switch SNES/N64, DualShock 4, and DualSense controllers usable through
 standard virtual XInput or DualShock 4 output while preserving the motion, touch, lighting, audio,
-and device features that make the physical controllers worth owning.
+adaptive triggers, and device features that make the physical controllers worth owning.
 
 BetterJoy2 does not require Steam, an account, online ownership checks, per-machine purchases, or
 paid feature tiers. Install it on the computers you own and use your controllers where you want.
@@ -91,6 +91,10 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   battery percentage/status, Bluetooth disconnect, headphone-jack detection and routing, gyro
   recentering, and controller-specific calibration remain attached to the physical device rather
   than being reduced to generic remapping concepts.
+* **DualSense adaptive triggers** - assign independent, profile-scoped L2 and R2 resistance,
+  weapon-wall, or vibration effects with percentage controls for start, strength, wall, and
+  frequency. Effects work over USB or Bluetooth even when the game sees a virtual XInput or
+  DualShock 4 controller, and remain composed with speaker, microphone, rumble, and lightbar state.
 * **PlayStation controller audio** - route Windows audio to DualShock 4 or DualSense speakers and
   connected headsets over USB or Bluetooth, with automatic jack switching and headphone-gated
   startup. Bluetooth transport is experimental because timing and reliability vary across Windows
@@ -314,6 +318,12 @@ this repository:
   project: it launches the separately licensed VIIPER process on demand and exchanges framed PCM
   over TCP. The physical mic button controls hardware/software mute while remaining available to
   the ordinary binding system.
+* DualSense adaptive-trigger effect packing is adapted from John “Nielk1” Klein's
+  [MIT-licensed TriggerEffectGenerator](https://gist.github.com/Nielk1/6d54cc2c00d2201ccb8c2720ad7538db),
+  copyright 2021–2022. USB report offsets were cross-checked against Microsoft's
+  [MIT-licensed GameInput DualSense helper](https://github.com/microsoftconnect/GameInput/tree/main/companion/DualSense),
+  while the shared USB/Bluetooth report structure was checked against the public Linux
+  `hid-playstation` protocol definition.
 
 ## Implementations studied during the motion-control rework
 

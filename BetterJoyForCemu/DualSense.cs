@@ -52,6 +52,14 @@ namespace BetterJoyForCemu {
         private byte bluetoothOutputSequence;
         private byte currentLeftMotor;
         private byte currentRightMotor;
+        // DualSense's two adaptive-trigger blocks are part of the same common output state as
+        // rumble, audio, microphone routing, and the lightbar. Keep the encoded hardware state
+        // here so every transport writer can compose it instead of competing with a trigger-only
+        // HID writer. Each block is the controller-native 11-byte right/left trigger payload.
+        private readonly byte[] currentRightTriggerEffect = CreateOffTriggerEffect();
+        private readonly byte[] currentLeftTriggerEffect = CreateOffTriggerEffect();
+        private bool adaptiveTriggerStateKnown;
+        private bool adaptiveTriggerUpdatePending = true;
         private bool bluetoothOutputStateDirty = true;
         private bool lightbarControlReleased;
         private bool connectionLightFlashStarted;
@@ -522,6 +530,17 @@ namespace BetterJoyForCemu {
                 }
 
                 lightbarTransportKnown = true;
+                if (adaptiveTriggerUpdatePending) {
+                    lock (outputReportLock) {
+                        if (adaptiveTriggerUpdatePending && !bluetoothAudioStreaming &&
+                            !bluetoothMicrophoneStreaming &&
+                            !bluetoothMicrophoneDisablePending &&
+                            !bluetoothMicrophoneControlPending) {
+                            SendAdaptiveTriggerStateLocked();
+                            adaptiveTriggerUpdatePending = false;
+                        }
+                    }
+                }
                 if (lightbarUpdatePending) {
                     long lightbarNow = Stopwatch.GetTimestamp();
                     if (!connectionLightFlashStarted) {
@@ -1342,6 +1361,7 @@ namespace BetterJoyForCemu {
 
                     if (submitted) {
                         bluetoothOutputStateDirty = false;
+                        adaptiveTriggerUpdatePending = false;
                     } else {
                         // Building a carrier reserves both protocol sequence values. A saturated
                         // native pool did not publish it, so preserve contiguous wire sequences for
@@ -1533,6 +1553,8 @@ namespace BetterJoyForCemu {
             report[BtAudioStateOffset + 9] = bluetoothMicrophoneMuted
                 ? (byte)0x10
                 : (byte)0x00;
+            WriteAdaptiveTriggerState(report, BtAudioStateOffset,
+                bluetoothOutputStateDirty);
             report[BtAudioStateOffset + 37] = 0x0A;
             report[BtAudioStateOffset + 44] = lightbarRed;
             report[BtAudioStateOffset + 45] = lightbarGreen;
@@ -1565,6 +1587,166 @@ namespace BetterJoyForCemu {
         private static byte MapBluetoothHeadphoneVolume(int volumePercent) {
             volumePercent = Math.Max(0, Math.Min(100, volumePercent));
             return (byte)(volumePercent * 0x64 / 100);
+        }
+
+        // Applies profile-owned, persistent DualSense trigger effects. These are real hardware
+        // adaptive-trigger effects even when the virtual output is XInput/DS4; "pseudo" only
+        // describes the fact that a profile supplies the effect instead of native game feedback.
+        // The three modes use the public zone packing documented by Nielk1's MIT-licensed
+        // TriggerEffectGenerator and cross-checked against hbashton/DS4Windows's Trigger Lab:
+        // resistance, weapon wall/break, and vibration.
+        public void SetAdaptiveTriggerProfile(
+            string leftMode, int leftStartPercent, int leftSecondaryPercent,
+            int leftStrengthPercent, string rightMode, int rightStartPercent,
+            int rightSecondaryPercent, int rightStrengthPercent) {
+            byte[] nextLeft = EncodeAdaptiveTriggerEffect(leftMode, leftStartPercent,
+                leftSecondaryPercent, leftStrengthPercent);
+            byte[] nextRight = EncodeAdaptiveTriggerEffect(rightMode, rightStartPercent,
+                rightSecondaryPercent, rightStrengthPercent);
+
+            lock (outputReportLock) {
+                if (adaptiveTriggerStateKnown &&
+                    ByteArraysEqual(currentLeftTriggerEffect, nextLeft) &&
+                    ByteArraysEqual(currentRightTriggerEffect, nextRight))
+                    return;
+
+                Buffer.BlockCopy(nextLeft, 0, currentLeftTriggerEffect, 0,
+                    currentLeftTriggerEffect.Length);
+                Buffer.BlockCopy(nextRight, 0, currentRightTriggerEffect, 0,
+                    currentRightTriggerEffect.Length);
+                adaptiveTriggerStateKnown = true;
+                adaptiveTriggerUpdatePending = true;
+                bluetoothOutputStateDirty = true;
+
+                // Until the first full input report arrives, isUSB is only a constructor-time
+                // guess. Defer exactly like the lightbar so the effect gets the correct USB/BT
+                // framing after ReceiveRaw establishes the physical transport.
+                if (!lightbarTransportKnown)
+                    return;
+
+                // A streaming Bluetooth media report owns this HID lane and will publish the
+                // dirty state on its next frame. USB and idle Bluetooth can apply immediately.
+                if (!isUSB && (bluetoothAudioStreaming || bluetoothMicrophoneStreaming ||
+                    bluetoothMicrophoneDisablePending || bluetoothMicrophoneControlPending))
+                    return;
+
+                SendAdaptiveTriggerStateLocked();
+                adaptiveTriggerUpdatePending = false;
+            }
+        }
+
+        private void SendAdaptiveTriggerStateLocked() {
+            bool bt = !isUSB;
+            int len = bt ? DualSenseMaxReportLen : 64;
+            byte[] report = new byte[len];
+            int commonOffset;
+            if (bt) {
+                report[0] = 0x31;
+                report[1] = (byte)(bluetoothOutputSequence << 4);
+                bluetoothOutputSequence = (byte)((bluetoothOutputSequence + 1) & 0x0F);
+                report[2] = 0x10;
+                commonOffset = 3;
+            } else {
+                report[0] = 0x02;
+                commonOffset = 1;
+            }
+
+            WriteAdaptiveTriggerState(report, commonOffset, true);
+            if (bt) {
+                uint crc = Crc32(0xA2, report, report.Length - 4);
+                report[report.Length - 4] = (byte)crc;
+                report[report.Length - 3] = (byte)(crc >> 8);
+                report[report.Length - 2] = (byte)(crc >> 16);
+                report[report.Length - 1] = (byte)(crc >> 24);
+            }
+            HIDapi.hid_write(handle, report, new UIntPtr((uint)report.Length));
+        }
+
+        private void WriteAdaptiveTriggerState(byte[] report, int commonOffset,
+                                               bool enableEffects) {
+            // valid_flag0 bits 2/3 select the right/left trigger blocks. The common structure
+            // starts at USB byte 1, ordinary BT byte 3, and BtAudioStateOffset in report 0x36.
+            if (enableEffects)
+                report[commonOffset] |= 0x0C;
+            Buffer.BlockCopy(currentRightTriggerEffect, 0, report, commonOffset + 10,
+                currentRightTriggerEffect.Length);
+            Buffer.BlockCopy(currentLeftTriggerEffect, 0, report, commonOffset + 21,
+                currentLeftTriggerEffect.Length);
+        }
+
+        private static byte[] EncodeAdaptiveTriggerEffect(string mode, int startPercent,
+                                                           int secondaryPercent,
+                                                           int strengthPercent) {
+            mode = (mode ?? "off").Trim().ToLowerInvariant();
+            int strength = PercentToTriggerStrength(strengthPercent);
+            if ((mode != "resistance" && mode != "weapon" && mode != "vibration") ||
+                strength == 0)
+                return CreateOffTriggerEffect();
+
+            int start = PercentToTriggerPosition(startPercent);
+            if (mode == "weapon") {
+                start = Math.Max(2, Math.Min(7, start));
+                int wall = Math.Max(start + 1,
+                    Math.Min(8, PercentToTriggerPosition(secondaryPercent)));
+                int zones = (1 << start) | (1 << wall);
+                byte[] effect = new byte[11];
+                effect[0] = 0x25;
+                effect[1] = (byte)zones;
+                effect[2] = (byte)(zones >> 8);
+                effect[3] = (byte)((strength - 1) & 0x07);
+                return effect;
+            }
+
+            byte effectMode = mode == "vibration" ? (byte)0x26 : (byte)0x21;
+            int activeZones = 0;
+            uint packedStrength = 0;
+            uint value = (uint)((strength - 1) & 0x07);
+            for (int zone = start; zone < 10; zone++) {
+                activeZones |= 1 << zone;
+                packedStrength |= value << (3 * zone);
+            }
+
+            byte[] zoneEffect = new byte[11];
+            zoneEffect[0] = effectMode;
+            zoneEffect[1] = (byte)activeZones;
+            zoneEffect[2] = (byte)(activeZones >> 8);
+            zoneEffect[3] = (byte)packedStrength;
+            zoneEffect[4] = (byte)(packedStrength >> 8);
+            zoneEffect[5] = (byte)(packedStrength >> 16);
+            zoneEffect[6] = (byte)(packedStrength >> 24);
+            if (effectMode == 0x26)
+                zoneEffect[9] = (byte)Math.Max(1,
+                    (ClampPercent(secondaryPercent) * 28 + 50) / 100);
+            return zoneEffect;
+        }
+
+        private static byte[] CreateOffTriggerEffect() {
+            byte[] effect = new byte[11];
+            effect[0] = 0x05;
+            return effect;
+        }
+
+        private static int PercentToTriggerStrength(int percent) {
+            percent = ClampPercent(percent);
+            return percent == 0 ? 0 : Math.Max(1, (percent * 8 + 99) / 100);
+        }
+
+        private static int PercentToTriggerPosition(int percent) {
+            return Math.Min(9, (ClampPercent(percent) + 5) / 10);
+        }
+
+        private static int ClampPercent(int percent) {
+            return Math.Max(0, Math.Min(100, percent));
+        }
+
+        private static bool ByteArraysEqual(byte[] left, byte[] right) {
+            if (left == null || right == null || left.Length != right.Length)
+                return false;
+            for (int i = 0; i < left.Length; i++) {
+                if (left[i] != right[i])
+                    return false;
+            }
+            return true;
         }
 
         protected override void OnDetachingWhileAttached() {
