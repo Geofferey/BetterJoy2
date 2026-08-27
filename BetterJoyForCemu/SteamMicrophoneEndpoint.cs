@@ -90,13 +90,19 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Ownership (IsOwnedByBetterJoy) is the sole, authoritative check - it doesn't depend on
+        // the endpoint's display name at all. A name-substring pre-filter used to gate it too, but
+        // that broke discovery outright: the devnode's own OwnerMarker leaks into the endpoint's
+        // *default* composed name as Windows' fallback (confirmed on real hardware - before the
+        // runtime rename below ever runs, the endpoint already shows e.g. "Speakers (<marker>)"),
+        // so any OwnerMarker value not itself containing EndpointNameHint made the device
+        // permanently unfindable, independent of whether it was actually installed correctly.
         private static bool TryFindDevice(DataFlow flow, out MMDevice device) {
             device = null;
             using (var enumerator = new MMDeviceEnumerator()) {
                 foreach (MMDevice candidate in enumerator.EnumerateAudioEndPoints(
                         flow, DeviceState.Active)) {
-                    if (candidate.FriendlyName.IndexOf(EndpointNameHint,
-                            StringComparison.OrdinalIgnoreCase) >= 0 && IsOwnedByBetterJoy(candidate)) {
+                    if (IsOwnedByBetterJoy(candidate)) {
                         device = candidate;
                         return true;
                     }

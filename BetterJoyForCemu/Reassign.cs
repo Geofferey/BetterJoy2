@@ -1291,8 +1291,7 @@ namespace BetterJoyForCemu {
 
             page.Controls.Add(CreateDivider(24, 629));
             AddSectionHeading(page, "Microphone backend", 646,
-                "Which Windows device the DualSense's built-in Bluetooth microphone is presented " +
-                "through. Both backends are bundled and installed by BetterJoy's own installer.");
+                "Which Windows device the DualSense's built-in Bluetooth microphone is presented as");
             page.Controls.Add(CreateGlobalCheckBox(
                 "Use VIIPER for DualSense microphone", 24, 703,
                 "UseViiperForDualSenseMicrophone"));
