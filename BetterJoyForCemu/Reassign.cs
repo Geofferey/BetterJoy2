@@ -83,6 +83,7 @@ namespace BetterJoyForCemu {
         private ProfileChoiceSelector controllerAudioVolumeSelector;
         private ProfileChoiceSelector controllerAudioEndpointSelector;
         private Button controllerAudioTestButton;
+        private CheckBox controllerAudioUsbLoopbackCheckBox;
         private Label controllerAudioEnabledLabel;
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
@@ -1161,17 +1162,30 @@ namespace BetterJoyForCemu {
             controllerAudioTestButton.Click += ControllerAudioTestButton_Click;
             page.Controls.Add(controllerAudioTestButton);
             tip_reassign.SetToolTip(controllerAudioEndpointSelector,
-                "Select the Windows audio endpoint for this controller. USB: the playback device " +
-                "the test tone plays through. Bluetooth (DualShock 4 and DualSense, experimental): the " +
-                "device live audio is captured from and streamed to the controller's speaker " +
-                "while Controller audio is enabled and it's connected over Bluetooth.");
+                "Select the Windows audio endpoint for this controller, or leave it on Default. " +
+                "USB: the playback device the test tone plays through, and the source Loopback " +
+                "captures from when Default (your normal desktop audio). Bluetooth (DualShock 4 " +
+                "and DualSense, experimental): the device live audio is captured from and streamed " +
+                "to the controller's speaker while Controller audio is enabled and it's connected " +
+                "over Bluetooth - Default there is the system's current default playback device, " +
+                "i.e. whatever you're already listening through.");
             tip_reassign.SetToolTip(controllerAudioTestButton,
                 "Play a short tone through the selected controller speaker.");
 
+            controllerAudioUsbLoopbackCheckBox = CreateProfileCheckBox(
+                "Loopback desktop audio to controller (USB, experimental)", 24, 820,
+                "ControllerAudioUsbLoopback");
+            page.Controls.Add(controllerAudioUsbLoopbackCheckBox);
+            tip_reassign.SetToolTip(controllerAudioUsbLoopbackCheckBox,
+                "Off by default. Instead of relying on this controller being your Windows default " +
+                "playback device, capture the system's current default device and stream it to the " +
+                "controller's speaker directly - useful when you'd rather keep your normal speakers " +
+                "as the default output.");
+
             controllerBluetoothMicrophoneLabel = CreateLabel(
-                "Built-in mic", 24, 830, ProfileText, false);
+                "Built-in mic", 24, 870, ProfileText, false);
             page.Controls.Add(controllerBluetoothMicrophoneLabel);
-            controllerBluetoothMicrophoneSelector = CreateProfileChoiceSelector(145, 824, 180);
+            controllerBluetoothMicrophoneSelector = CreateProfileChoiceSelector(145, 864, 180);
             controllerBluetoothMicrophoneSelector.Items.AddRange(new object[] {
                 "Enable", "Disable",
             });
@@ -1181,14 +1195,14 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(controllerBluetoothMicrophoneSelector,
                 "Expose the DualSense built-in microphone while Bluetooth controller audio is enabled.");
 
-            page.Controls.Add(CreateDivider(24, 870));
-            AddSectionHeading(page, "Orientation", 887,
+            page.Controls.Add(CreateDivider(24, 910));
+            AddSectionHeading(page, "Orientation", 927,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
                 "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
             AddMappingRow(page, null, btn_default_orientation, "Default orientation",
-                962, 24, 145, 449);
+                1002, 24, 145, 449);
 
-            page.AutoScrollMinSize = new Size(0, 1020);
+            page.AutoScrollMinSize = new Size(0, 1060);
             return page;
         }
 
@@ -1608,20 +1622,27 @@ namespace BetterJoyForCemu {
 
             string selectedId = ControllerMappings.OptionValue(
                 SelectedProfileId, "ControllerAudioEndpointId");
-            ControllerProfileInfo profile = SelectedProfile;
+            // Empty Id (String.Empty) is what an unset ControllerAudioEndpointId already
+            // persists as - "Default" is just a real, explicitly selectable entry for that same
+            // value rather than leaving the dropdown showing nothing until the user happens to
+            // pick something. What "Default" actually resolves to differs by transport/feature
+            // (system default render device for Bluetooth capture and the ordinary "set the
+            // controller as your Windows default playback device" USB flow; the controller's own
+            // endpoint, via UsbAudioEndpointNameHint, for USB loopback specifically - see
+            // UsbAudioLoopback.StartInner) - explained in the tooltip below rather than trying to
+            // show one universally-correct device name here.
+            var defaultEndpoint = new ControllerAudioEndpoint { Id = String.Empty, Name = "Default" };
             List<ControllerAudioEndpoint> endpoints = ControllerAudio.GetRenderEndpoints();
             controllerAudioEndpointSelector.SelectedIndex = -1;
             controllerAudioEndpointSelector.Items.Clear();
+            controllerAudioEndpointSelector.Items.Add(defaultEndpoint);
             controllerAudioEndpointSelector.Items.AddRange(endpoints.Cast<object>().ToArray());
 
-            ControllerAudioEndpoint selected = endpoints.FirstOrDefault(endpoint =>
-                String.Equals(endpoint.Id, selectedId, StringComparison.Ordinal));
-            if (selected == null && profile != null &&
-                !String.IsNullOrEmpty(profile.AudioEndpointNameHint)) {
-                selected = endpoints.FirstOrDefault(endpoint => endpoint.Name.IndexOf(
-                    profile.AudioEndpointNameHint, StringComparison.OrdinalIgnoreCase) >= 0);
-            }
-            controllerAudioEndpointSelector.SelectedItem = selected;
+            ControllerAudioEndpoint selected = String.IsNullOrEmpty(selectedId)
+                ? defaultEndpoint
+                : endpoints.FirstOrDefault(endpoint =>
+                    String.Equals(endpoint.Id, selectedId, StringComparison.Ordinal));
+            controllerAudioEndpointSelector.SelectedItem = selected ?? defaultEndpoint;
         }
 
         private void ControllerAudioOptionChanged(object sender, EventArgs e) {
@@ -1661,6 +1682,24 @@ namespace BetterJoyForCemu {
             if (profile == null || !profile.IsConnected || !profile.IsUsb || endpoint == null)
                 return;
 
+            // "Default" (empty Id) means the controller's own endpoint for USB - resolve it the
+            // same way UsbAudioLoopback does at runtime, rather than PlayTestToneAsync rejecting
+            // an empty endpoint ID outright.
+            string endpointId = endpoint.Id;
+            if (String.IsNullOrEmpty(endpointId) && !String.IsNullOrEmpty(profile.AudioEndpointNameHint)) {
+                ControllerAudioEndpoint resolved = ControllerAudio.GetRenderEndpoints()
+                    .FirstOrDefault(candidate => candidate.Name.IndexOf(
+                        profile.AudioEndpointNameHint, StringComparison.OrdinalIgnoreCase) >= 0);
+                endpointId = resolved?.Id ?? String.Empty;
+            }
+            if (String.IsNullOrEmpty(endpointId)) {
+                MessageBox.Show(this,
+                    "BetterJoy could not automatically find this controller's Windows audio " +
+                    "device. Pick it manually from the dropdown instead of Default.",
+                    "Controller audio", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             int volume = ControllerMappings.IntOption(
                 profile.ProfileId, "ControllerAudioVolume", 75);
             string oldText = controllerAudioTestButton.Text;
@@ -1669,7 +1708,7 @@ namespace BetterJoyForCemu {
             try {
                 serviceClient.PrepareUsbAudio(profile.PadId, volume);
                 await Task.Delay(100);
-                await ControllerAudio.PlayTestToneAsync(endpoint.Id, volume);
+                await ControllerAudio.PlayTestToneAsync(endpointId, volume);
             } catch (Exception ex) {
                 MessageBox.Show(this,
                     "BetterJoy could not play through that controller endpoint.\r\n\r\n" + ex.Message,
@@ -1704,6 +1743,8 @@ namespace BetterJoyForCemu {
             if (controllerAudioTestButton != null)
                 controllerAudioTestButton.Enabled = available && selected.IsUsb &&
                     controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
+            if (controllerAudioUsbLoopbackCheckBox != null)
+                controllerAudioUsbLoopbackCheckBox.Enabled = available && selected.IsUsb;
             if (controllerBluetoothMicrophoneSelector != null) {
                 bool supportsBluetoothMicrophone = selected != null &&
                     selected.Kind == ControllerKind.DualSense;
@@ -1738,7 +1779,7 @@ namespace BetterJoyForCemu {
                 swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
                 lightColorButton, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
-                controllerBluetoothMicrophoneSelector,
+                controllerAudioUsbLoopbackCheckBox, controllerBluetoothMicrophoneSelector,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1800,6 +1841,8 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "ControllerAudioVolume", 75);
                 controllerAudioVolumeSelector.SelectedItem = ClosestAudioVolume(audioVolume) + "%";
                 LoadControllerAudioEndpoints();
+                controllerAudioUsbLoopbackCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "ControllerAudioUsbLoopback");
                 controllerBluetoothMicrophoneSelector.SelectedIndex =
                     ControllerMappings.BluetoothMicrophoneMode(SelectedProfileId) ==
                     ControllerMappings.ModeEnable ? 0 : 1;
@@ -2097,6 +2140,7 @@ namespace BetterJoyForCemu {
                 controllerAudioEndpointLabel,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
+                controllerAudioUsbLoopbackCheckBox,
             }) {
                 if (control != null)
                     control.Visible = true;

@@ -514,6 +514,44 @@ namespace BetterJoyForCemu {
             }
         }
 
+        public bool StartUsbAudioLoopback(int padId, string sourceEndpointId, string targetEndpointId,
+            string targetNameHint, int volumePercent) {
+            lock (pipeLock) {
+                if (!helperReady || pipe == null || !pipe.IsConnected)
+                    return false;
+                try {
+                    var writer = new BinaryWriter(pipe);
+                    new InputMessage {
+                        Type = InputMessageType.StartUsbAudioLoopback,
+                        A = padId,
+                        B = volumePercent
+                    }.WriteTo(writer);
+                    writer.Write(sourceEndpointId ?? String.Empty);
+                    writer.Write(targetEndpointId ?? String.Empty);
+                    writer.Write(targetNameHint ?? String.Empty);
+                    writer.Flush();
+                    return true;
+                } catch {
+                    // best-effort - if the helper is gone, there's simply nowhere to render to
+                    return false;
+                }
+            }
+        }
+
+        public void StopUsbAudioLoopback(int padId) {
+            lock (pipeLock) {
+                if (!helperReady || pipe == null || !pipe.IsConnected)
+                    return;
+                try {
+                    var writer = new BinaryWriter(pipe);
+                    new InputMessage { Type = InputMessageType.StopUsbAudioLoopback, A = padId }.WriteTo(writer);
+                    writer.Flush();
+                } catch {
+                    // best-effort
+                }
+            }
+        }
+
         // ---------------------------------------------------------------------------------
         // GUI control pipe (live status + rumble test/join-split/calibration commands) - see
         // ServiceControlProtocol. Unlike the input helper pipe above, this one is long-lived

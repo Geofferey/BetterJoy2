@@ -82,6 +82,13 @@ namespace BetterJoyForCemu {
                     }
 
                     joycon.Detach(true);
+                    // UsbAudioLoopback lives outside the controller classes entirely (driven
+                    // straight from Program.cs/form, not a per-controller Detach hook like
+                    // Bluetooth audio's OnDetachingWhileAttached), so nothing else stops it when
+                    // a controller drops - this is the one place every dropped controller
+                    // actually passes through. Always safe to call: Stop is idempotent and a
+                    // no-op if nothing was ever started for this pad.
+                    form.StopUsbAudioLoopback(joycon.PadId);
                     rem.Add(joycon);
 
                     droppedNotify.Add(joycon);

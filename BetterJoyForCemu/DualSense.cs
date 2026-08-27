@@ -1861,7 +1861,8 @@ namespace BetterJoyForCemu {
 
         // The USB audio endpoint's first pair is ordinary audio; its second pair drives the
         // voice-coil actuators. ControllerAudio keeps the test tone off that actuator pair. This
-        // report sends the right audio channel to the built-in mono speaker and sets its volume.
+        // report sends the right audio channel to the built-in mono speaker and sets its volume -
+        // or, when the aux jack is occupied, both channels to the headphones instead.
         public override void PrepareUsbAudio(int volumePercent) {
             if (!isUSB || state <= state_.DROPPED)
                 return;
@@ -1873,7 +1874,13 @@ namespace BetterJoyForCemu {
                 buf[1] = 0xB0; // headphone volume + speaker volume + audio routing are valid
                 buf[5] = (byte)(volumePercent * 0x7F / 100);
                 buf[6] = (byte)(volumePercent * 0x64 / 100);
-                buf[8] = 0x30; // internal speaker only; the speaker consumes the right channel
+                // byte 8 bits 4-5 (DS_OUTPUT_AUDIO_FLAGS_OUTPUT_PATH_SEL in the Linux
+                // hid-playstation driver, cross-checked against this codebase's own pre-existing
+                // 0x30 speaker-only value): 0x30 mutes headphones and routes the right channel to
+                // the internal speaker, 0x00 mutes the speaker and routes both channels to
+                // headphones. This never read HeadphonesConnected at all before, so plugging in
+                // headphones over USB never routed audio to them.
+                buf[8] = HeadphonesConnected ? (byte)0x00 : (byte)0x30;
                 HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
             }
         }

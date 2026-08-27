@@ -50,6 +50,19 @@ namespace BetterJoyForCemu {
         // written/read with BinaryWriter.Write(byte[])/ReadBytes - no separate length prefix,
         // since B already carries it).
         AudioFrame = 32,
+
+        // Service -> helper: start/stop the opt-in USB loopback audio router (UsbAudioLoopback.cs)
+        // - captures the system's default playback device and renders it into the controller's
+        // own USB Audio Class endpoint, entirely inside the helper process (both capture and
+        // render need an interactive desktop). Unlike StartAudioCapture this never sends audio
+        // data back over the pipe at all: capture and render both happen locally in the helper.
+        // A = padId, B = volume percent (0-100). StartUsbAudioLoopback carries three trailing
+        // length-prefixed strings (BinaryWriter.Write(string)/ReadString(): source, target, then
+        // target's name-hint fallback) - an empty source means "use the system default render
+        // device"; an empty target means "use the controller's own endpoint", resolved via the
+        // name-hint substring match when the target ID itself doesn't resolve.
+        StartUsbAudioLoopback = 33,
+        StopUsbAudioLoopback = 34,
     }
 
     // Fixed-size (9 byte) message: 1 byte type + two 4-byte ints. Simple and robust over a

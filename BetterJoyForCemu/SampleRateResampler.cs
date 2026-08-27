@@ -63,7 +63,13 @@ namespace BetterJoyForCemu {
     public sealed class SampleRateResampler : IDisposable {
         private IntPtr state;
 
-        public double Ratio { get; }
+        // Settable, not just constructor-fixed: a caller bridging two independently-clocked
+        // audio devices (see UsbAudioLoopback.cs) needs to nudge this by a tiny amount over time
+        // to track real clock drift between them, or the output buffer slowly drains/fills until
+        // it audibly under/overruns. libsamplerate documents src_ratio as safe to change between
+        // Process() calls - it interpolates smoothly rather than producing a seam, as long as the
+        // change per call is small (a caller doing gentle proportional correction, not a jump).
+        public double Ratio { get; set; }
 
         public SampleRateResampler(ResampleQuality quality, int channels, double ratio) {
             state = SampleRateNative.src_new((int)quality, channels, out int error);

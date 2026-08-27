@@ -80,5 +80,18 @@ namespace BetterJoyForCemu {
         bool StartBluetoothAudioCapture(int padId, string endpointId,
             BluetoothAudioCodec codec = BluetoothAudioCodec.DualShock4Sbc);
         void StopBluetoothAudioCapture(int padId);
+
+        // Opt-in USB loopback audio router (UsbAudioLoopback.cs) - captures sourceEndpointId
+        // (falls back to the system default render device when null/not found) and renders it
+        // into targetEndpointId, the controller's own USB Audio Class endpoint, entirely inside
+        // the desktop helper process. Unlike Bluetooth capture this never streams audio data back
+        // over the pipe. When targetEndpointId is empty ("Default"), targetNameHint (the
+        // controller's own UsbAudioEndpointNameHint) resolves which real device that means - the
+        // controller's own endpoint, not the system default, since looping the system default
+        // back into itself would be a feedback loop. True only when the command reached a
+        // connected desktop helper, same reasoning as StartBluetoothAudioCapture.
+        bool StartUsbAudioLoopback(int padId, string sourceEndpointId, string targetEndpointId,
+            string targetNameHint, int volumePercent);
+        void StopUsbAudioLoopback(int padId);
     }
 }

@@ -332,6 +332,9 @@ namespace BetterJoyForCemu {
         public bool StartBluetoothAudioCapture(int padId, string endpointId,
             BluetoothAudioCodec codec = BluetoothAudioCodec.DualShock4Sbc) { return false; }
         public void StopBluetoothAudioCapture(int padId) { }
+        public bool StartUsbAudioLoopback(int padId, string sourceEndpointId,
+            string targetEndpointId, string targetNameHint, int volumePercent) { return false; }
+        public void StopUsbAudioLoopback(int padId) { }
 
         // Only ever consulted after a direct pipe-connect attempt has already failed, to decide
         // which error message to show - "not installed/not running, go start it" vs. "reported

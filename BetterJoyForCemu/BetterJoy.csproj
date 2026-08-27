@@ -177,6 +177,7 @@
     <Compile Include="HIDapi.cs" />
     <Compile Include="SbcEncoder.cs" />
     <Compile Include="BluetoothAudioCapture.cs" />
+    <Compile Include="UsbAudioLoopback.cs" />
     <Compile Include="AudioDebugLog.cs" />
     <Compile Include="SampleRateResampler.cs" />
     <Compile Include="IJoyconHost.cs" />

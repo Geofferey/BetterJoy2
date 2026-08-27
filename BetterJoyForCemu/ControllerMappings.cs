@@ -64,6 +64,7 @@ namespace BetterJoyForCemu {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
+            "ControllerAudioUsbLoopback",
             "ControllerBluetoothMicrophoneEnabled",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
@@ -814,6 +815,8 @@ namespace BetterJoyForCemu {
             if (key == "ControllerAudioEndpointId")
                 return String.Empty;
             if (key == "ControllerAudioRouteHeadphones")
+                return "false";
+            if (key == "ControllerAudioUsbLoopback")
                 return "false";
             if (key == "ControllerBluetoothMicrophoneEnabled")
                 return ModeDisable;

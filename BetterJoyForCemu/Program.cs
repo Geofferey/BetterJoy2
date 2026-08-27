@@ -143,8 +143,33 @@ namespace BetterJoyForCemu {
                     bool requireHeadphones =
                         audioMode == ControllerMappings.AudioModeRequireHeadphones;
                     int audioVolume = ControllerMappings.IntOption(profileId, "ControllerAudioVolume", 75);
-                    if (audioEnabled)
+                    // Matches the Bluetooth gating just below: "Require headphones" means no
+                    // speaker fallback, not just correct routing once already enabled. DS4/
+                    // DualSense both expose HeadphonesConnected but don't share a common base
+                    // member for it, hence the per-type check here instead of on jc directly.
+                    bool usbHeadphonesSatisfied = !requireHeadphones ||
+                        (jc is DualShock4Controller ds4Headphones && ds4Headphones.HeadphonesConnected) ||
+                        (jc is DualSenseController dualSenseHeadphones && dualSenseHeadphones.HeadphonesConnected);
+                    if (audioEnabled && usbHeadphonesSatisfied)
                         jc.PrepareUsbAudio(audioVolume);
+                    // Opt-in alternative to the "set the controller as your Windows default
+                    // playback device" flow above - off by default (see ControllerMappings'
+                    // "false" default for this key). Target is the controller's own selected
+                    // endpoint (ControllerAudioEndpointId, the same one PrepareUsbAudio's test
+                    // tone already targets) - empty ("Default") resolves via
+                    // UsbAudioEndpointNameHint to the controller's own device rather than the
+                    // system default, since looping the system default into itself would be a
+                    // feedback loop. Source is left empty for now (the system default render
+                    // device), matching Bluetooth capture's own fallback rather than adding a
+                    // second endpoint picker for this first pass.
+                    bool usbLoopbackEnabled =
+                        ControllerMappings.BoolOption(profileId, "ControllerAudioUsbLoopback");
+                    if (jc.isUSB && audioEnabled && usbHeadphonesSatisfied && usbLoopbackEnabled)
+                        form.StartUsbAudioLoopback(jc.PadId, String.Empty,
+                            ControllerMappings.OptionValue(profileId, "ControllerAudioEndpointId"),
+                            jc.UsbAudioEndpointNameHint, audioVolume);
+                    else
+                        form.StopUsbAudioLoopback(jc.PadId);
                     // Bluetooth has no audio-class endpoint to prepare - DualShock4Controller owns
                     // a full continuous capture/encode/stream lifecycle instead (see
                     // StartBluetoothAudioStream). Both calls are idempotent no-ops when already in
@@ -714,6 +739,7 @@ namespace BetterJoyForCemu {
                 if (ControllerMappings.BoolOption(ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
                     v.PowerOff();
 
+                form.StopUsbAudioLoopback(v.PadId);
                 v.Detach();
 
                 // A target that was created but never actually got plugged in (or was already

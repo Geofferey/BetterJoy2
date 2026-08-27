@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Threading.Tasks;
@@ -35,6 +36,12 @@ namespace BetterJoyForCemu {
                 if (audioCapturePadId >= 0)
                     SendAudioFrame(pipe, writer, writeLock, audioCapturePadId, frame);
             });
+
+            // Unlike Bluetooth audio, USB loopback never sends data over the pipe at all (capture
+            // and render both happen locally here), and has none of hidapi's single-handle
+            // thread-safety concerns forcing one-at-a-time scope - one independent instance per
+            // pad is fine.
+            var usbAudioLoopbacks = new Dictionary<int, UsbAudioLoopback>();
 
             var keyboard = WindowsInput.Capture.Global.KeyboardAsync();
             keyboard.KeyEvent += (sender, e) => {
@@ -80,6 +87,23 @@ namespace BetterJoyForCemu {
                                 audioCapture.Stop();
                                 audioCapturePadId = -1;
                                 break;
+                            case InputMessageType.StartUsbAudioLoopback: {
+                                string sourceEndpointId = reader.ReadString();
+                                string targetEndpointId = reader.ReadString();
+                                string targetNameHint = reader.ReadString();
+                                if (!usbAudioLoopbacks.TryGetValue(msg.A, out UsbAudioLoopback loopback)) {
+                                    loopback = new UsbAudioLoopback();
+                                    usbAudioLoopbacks[msg.A] = loopback;
+                                }
+                                loopback.Start(sourceEndpointId, targetEndpointId, targetNameHint, msg.B);
+                                break;
+                            }
+                            case InputMessageType.StopUsbAudioLoopback:
+                                if (usbAudioLoopbacks.TryGetValue(msg.A, out UsbAudioLoopback toStop)) {
+                                    toStop.Dispose();
+                                    usbAudioLoopbacks.Remove(msg.A);
+                                }
+                                break;
                             default:
                                 DesktopInputBackend.Execute(msg, desktopInput);
                                 break;
@@ -97,6 +121,8 @@ namespace BetterJoyForCemu {
             keyboard.Dispose();
             mouse.Dispose();
             audioCapture.Dispose();
+            foreach (UsbAudioLoopback loopback in usbAudioLoopbacks.Values)
+                loopback.Dispose();
             desktopInput.Dispose();
             try { pipe.Dispose(); } catch { }
         }
