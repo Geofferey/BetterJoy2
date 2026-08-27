@@ -71,7 +71,8 @@ namespace BetterJoyForCemu {
         private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
-        private CheckBox rumbleEnabledCheckBox;
+        private ComboBox rumbleModeSelector;
+        private Label rumbleModeLabel;
         private CheckBox dragToggleCheckBox;
         private CheckBox swapAbCheckBox;
         private CheckBox swapXyCheckBox;
@@ -85,8 +86,8 @@ namespace BetterJoyForCemu {
         private Label controllerAudioEnabledLabel;
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
-        private CheckBox controllerAudioRouteHeadphonesCheckBox;
-        private CheckBox controllerBluetoothMicrophoneEnabledCheckBox;
+        private ComboBox controllerBluetoothMicrophoneSelector;
+        private Label controllerBluetoothMicrophoneLabel;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
@@ -1048,7 +1049,7 @@ namespace BetterJoyForCemu {
 
         private Panel BuildDeviceBehaviorPage() {
             Panel page = CreateProfilePage("Device behavior",
-                "Control power, button layout, gyro activation, and controller lighting.");
+                "Control power, input behavior, lighting, haptics, and audio for this profile.");
 
             AddSectionHeading(page, "Power", 96,
                 "Choose when this controller powers itself off.");
@@ -1089,21 +1090,16 @@ namespace BetterJoyForCemu {
             page.Controls.Add(gyroHelp);
 
             page.Controls.Add(CreateDivider(24, 440));
-            AddSectionHeading(page, "Feedback", 457,
-                "Control vibration and controller lighting for this profile.");
-            rumbleEnabledCheckBox = CreateProfileCheckBox(
-                "Enable rumble", 24, 514, "EnableRumble");
+            AddSectionHeading(page, "Lighting", 457,
+                "Choose the lightbar color or Home LED behavior for this profile.");
             homeLedCheckBox = CreateProfileCheckBox(
-                "Keep the Home LED on", 315, 514, "HomeLEDOn");
-            page.Controls.Add(rumbleEnabledCheckBox);
+                "Keep the Home LED on", 24, 514, "HomeLEDOn");
             page.Controls.Add(homeLedCheckBox);
-            tip_reassign.SetToolTip(rumbleEnabledCheckBox,
-                "Allow games and BetterJoy's controller test to vibrate this controller.");
 
-            lightColorLabel = CreateLabel("Light color", 315, 520, ProfileText, false);
+            lightColorLabel = CreateLabel("Light color", 24, 520, ProfileText, false);
             lightColorButton = new Button {
-                Location = new Point(423, 508),
-                Size = new Size(171, 31),
+                Location = new Point(145, 508),
+                Size = new Size(180, 31),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(8, 0, 0, 0),
             };
@@ -1114,18 +1110,40 @@ namespace BetterJoyForCemu {
             page.Controls.Add(lightColorLabel);
             page.Controls.Add(lightColorButton);
 
+            page.Controls.Add(CreateDivider(24, 558));
+            AddSectionHeading(page, "Haptics", 575,
+                "Control controller vibration for this profile.");
+            rumbleModeLabel = CreateLabel("Rumble", 24, 638, ProfileText, false);
+            page.Controls.Add(rumbleModeLabel);
+            rumbleModeSelector = CreateProfileComboBox(145, 632, 180);
+            rumbleModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            rumbleModeSelector.Items.AddRange(new object[] {
+                "Enable", "Disable", "Disable with gyro",
+            });
+            rumbleModeSelector.SelectedIndexChanged += RumbleModeOptionChanged;
+            page.Controls.Add(rumbleModeSelector);
+            tip_reassign.SetToolTip(rumbleModeSelector,
+                "Allow rumble, disable it completely, or suppress it only while gyro output is active.");
+
+            page.Controls.Add(CreateDivider(24, 676));
+            AddSectionHeading(page, "Audio", 693,
+                "Route Windows audio to supported controller speakers, headphones, and microphones.");
             controllerAudioEnabledLabel = CreateLabel(
-                "Controller audio", 24, 570, ProfileText, false);
+                "Controller audio", 24, 750, ProfileText, false);
             page.Controls.Add(controllerAudioEnabledLabel);
-            controllerAudioEnabledSelector = CreateProfileComboBox(145, 564, 180);
+            controllerAudioEnabledSelector = CreateProfileComboBox(145, 744, 180);
             controllerAudioEnabledSelector.DropDownStyle = ComboBoxStyle.DropDownList;
-            controllerAudioEnabledSelector.Items.AddRange(new object[] { "Disabled", "Enabled" });
+            controllerAudioEnabledSelector.Items.AddRange(new object[] {
+                "Enable", "Disable", "Require headphones",
+            });
             controllerAudioEnabledSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
             page.Controls.Add(controllerAudioEnabledSelector);
+            tip_reassign.SetToolTip(controllerAudioEnabledSelector,
+                "Enable controller audio, disable it, or wait for Bluetooth headphones before streaming.");
 
-            controllerAudioVolumeLabel = CreateLabel("Volume", 356, 570, ProfileText, false);
+            controllerAudioVolumeLabel = CreateLabel("Volume", 356, 750, ProfileText, false);
             page.Controls.Add(controllerAudioVolumeLabel);
-            controllerAudioVolumeSelector = CreateProfileComboBox(423, 564, 171);
+            controllerAudioVolumeSelector = CreateProfileComboBox(423, 744, 171);
             controllerAudioVolumeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
             controllerAudioVolumeSelector.Items.AddRange(new object[] {
                 "25%", "50%", "75%", "100%",
@@ -1134,15 +1152,15 @@ namespace BetterJoyForCemu {
             page.Controls.Add(controllerAudioVolumeSelector);
 
             controllerAudioEndpointLabel = CreateLabel(
-                "Audio endpoint", 24, 610, ProfileText, false);
+                "Audio endpoint", 24, 790, ProfileText, false);
             page.Controls.Add(controllerAudioEndpointLabel);
-            controllerAudioEndpointSelector = CreateProfileComboBox(145, 604, 320);
+            controllerAudioEndpointSelector = CreateProfileComboBox(145, 784, 320);
             controllerAudioEndpointSelector.DropDownStyle = ComboBoxStyle.DropDownList;
             controllerAudioEndpointSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
             page.Controls.Add(controllerAudioEndpointSelector);
 
             controllerAudioTestButton = new Button {
-                Location = new Point(475, 603),
+                Location = new Point(475, 783),
                 Size = new Size(119, 27),
                 Text = "Test speaker",
             };
@@ -1153,34 +1171,32 @@ namespace BetterJoyForCemu {
                 "Select the Windows audio endpoint for this controller. USB: the playback device " +
                 "the test tone plays through. Bluetooth (DualShock 4 and DualSense, experimental): the " +
                 "device live audio is captured from and streamed to the controller's speaker " +
-                "while Controller audio is Enabled and it's connected over Bluetooth.");
+                "while Controller audio is enabled and it's connected over Bluetooth.");
             tip_reassign.SetToolTip(controllerAudioTestButton,
                 "Play a short tone through the selected controller speaker.");
 
-            controllerAudioRouteHeadphonesCheckBox = CreateProfileCheckBox(
-                "Require headphones for Bluetooth audio", 24, 644,
-                "ControllerAudioRouteHeadphones");
-            page.Controls.Add(controllerAudioRouteHeadphonesCheckBox);
-            tip_reassign.SetToolTip(controllerAudioRouteHeadphonesCheckBox,
-                "DualShock 4 and DualSense always switch to headphones when detected. When this is " +
-                "enabled, Bluetooth audio waits for the 3.5 mm jack instead of using the speaker, " +
-                "and stops again when headphones are unplugged.");
-
-            controllerBluetoothMicrophoneEnabledCheckBox = CreateProfileCheckBox(
-                "Built-in Bluetooth microphone", 315, 644,
-                "ControllerBluetoothMicrophoneEnabled");
-            page.Controls.Add(controllerBluetoothMicrophoneEnabledCheckBox);
-            tip_reassign.SetToolTip(controllerBluetoothMicrophoneEnabledCheckBox,
+            controllerBluetoothMicrophoneLabel = CreateLabel(
+                "Built-in Bluetooth microphone", 24, 830, ProfileText, false);
+            page.Controls.Add(controllerBluetoothMicrophoneLabel);
+            controllerBluetoothMicrophoneSelector = CreateProfileComboBox(232, 824, 180);
+            controllerBluetoothMicrophoneSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerBluetoothMicrophoneSelector.Items.AddRange(new object[] {
+                "Enable", "Disable",
+            });
+            controllerBluetoothMicrophoneSelector.SelectedIndexChanged +=
+                ControllerAudioOptionChanged;
+            page.Controls.Add(controllerBluetoothMicrophoneSelector);
+            tip_reassign.SetToolTip(controllerBluetoothMicrophoneSelector,
                 "Expose the DualSense built-in microphone while Bluetooth controller audio is enabled.");
 
-            page.Controls.Add(CreateDivider(24, 690));
-            AddSectionHeading(page, "Orientation", 707,
+            page.Controls.Add(CreateDivider(24, 870));
+            AddSectionHeading(page, "Orientation", 887,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
                 "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
             AddMappingRow(page, null, btn_default_orientation, "Default orientation",
-                782, 24, 232, 362);
+                962, 24, 232, 362);
 
-            page.AutoScrollMinSize = new Size(0, 840);
+            page.AutoScrollMinSize = new Size(0, 1020);
             return page;
         }
 
@@ -1486,6 +1502,18 @@ namespace BetterJoyForCemu {
             }
         }
 
+        private void RumbleModeOptionChanged(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string mode = rumbleModeSelector.SelectedIndex == 0
+                ? ControllerMappings.ModeEnable
+                : (rumbleModeSelector.SelectedIndex == 2
+                    ? ControllerMappings.RumbleModeDisableWithGyro
+                    : ControllerMappings.ModeDisable);
+            ControllerMappings.SetOptionValue(SelectedProfileId, "EnableRumble", mode);
+        }
+
         private void AdaptiveTriggerOptionChanged(object sender, EventArgs e) {
             if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
                 return;
@@ -1611,8 +1639,13 @@ namespace BetterJoyForCemu {
                 return;
 
             if (sender == controllerAudioEnabledSelector) {
-                ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioEnabled",
-                    (controllerAudioEnabledSelector.SelectedIndex == 1).ToString().ToLowerInvariant());
+                string mode = controllerAudioEnabledSelector.SelectedIndex == 0
+                    ? ControllerMappings.ModeEnable
+                    : (controllerAudioEnabledSelector.SelectedIndex == 2
+                        ? ControllerMappings.AudioModeRequireHeadphones
+                        : ControllerMappings.ModeDisable);
+                ControllerMappings.SetOptionValue(
+                    SelectedProfileId, "ControllerAudioEnabled", mode);
             } else if (sender == controllerAudioVolumeSelector) {
                 ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioVolume",
                     controllerAudioVolumeSelector.Text.TrimEnd('%'));
@@ -1621,6 +1654,12 @@ namespace BetterJoyForCemu {
                     controllerAudioEndpointSelector.SelectedItem as ControllerAudioEndpoint;
                 ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioEndpointId",
                     endpoint?.Id ?? String.Empty);
+            } else if (sender == controllerBluetoothMicrophoneSelector) {
+                ControllerMappings.SetOptionValue(
+                    SelectedProfileId, "ControllerBluetoothMicrophoneEnabled",
+                    controllerBluetoothMicrophoneSelector.SelectedIndex == 0
+                        ? ControllerMappings.ModeEnable
+                        : ControllerMappings.ModeDisable);
             }
             UpdateControllerAudioControlState();
         }
@@ -1668,22 +1707,15 @@ namespace BetterJoyForCemu {
             if (controllerAudioTestButton != null)
                 controllerAudioTestButton.Enabled = available && selected.IsUsb &&
                     controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
-            if (controllerAudioRouteHeadphonesCheckBox != null) {
-                bool supportsBluetoothHeadphones = selected != null &&
-                    (selected.Kind == ControllerKind.DualShock4 ||
-                     selected.Kind == ControllerKind.DualSense);
-                controllerAudioRouteHeadphonesCheckBox.Visible =
-                    supportsBluetoothHeadphones;
-                controllerAudioRouteHeadphonesCheckBox.Enabled = available &&
-                    supportsBluetoothHeadphones;
-            }
-            if (controllerBluetoothMicrophoneEnabledCheckBox != null) {
+            if (controllerBluetoothMicrophoneSelector != null) {
                 bool supportsBluetoothMicrophone = selected != null &&
                     selected.Kind == ControllerKind.DualSense;
-                controllerBluetoothMicrophoneEnabledCheckBox.Visible =
+                controllerBluetoothMicrophoneSelector.Visible =
                     supportsBluetoothMicrophone;
-                controllerBluetoothMicrophoneEnabledCheckBox.Enabled = available &&
+                controllerBluetoothMicrophoneSelector.Enabled = available &&
                     supportsBluetoothMicrophone;
+                if (controllerBluetoothMicrophoneLabel != null)
+                    controllerBluetoothMicrophoneLabel.Visible = supportsBluetoothMicrophone;
             }
         }
 
@@ -1707,11 +1739,10 @@ namespace BetterJoyForCemu {
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
-                swapAbCheckBox, swapXyCheckBox, rumbleEnabledCheckBox, homeLedCheckBox,
+                swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
                 lightColorButton, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
-                controllerAudioRouteHeadphonesCheckBox,
-                controllerBluetoothMicrophoneEnabledCheckBox,
+                controllerBluetoothMicrophoneSelector,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1758,21 +1789,24 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
                 swapXyCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapXY");
-                rumbleEnabledCheckBox.Checked = ControllerMappings.BoolOption(
-                    SelectedProfileId, "EnableRumble");
+                string rumbleMode = ControllerMappings.RumbleMode(SelectedProfileId);
+                rumbleModeSelector.SelectedIndex =
+                    rumbleMode == ControllerMappings.ModeEnable ? 0 :
+                    (rumbleMode == ControllerMappings.RumbleModeDisableWithGyro ? 2 : 1);
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 UpdateLightColorButton(
                     ControllerMappings.OptionValue(SelectedProfileId, "LightColor"));
-                controllerAudioEnabledSelector.SelectedIndex = ControllerMappings.BoolOption(
-                    SelectedProfileId, "ControllerAudioEnabled") ? 1 : 0;
+                string audioMode = ControllerMappings.ControllerAudioMode(SelectedProfileId);
+                controllerAudioEnabledSelector.SelectedIndex =
+                    audioMode == ControllerMappings.ModeEnable ? 0 :
+                    (audioMode == ControllerMappings.AudioModeRequireHeadphones ? 2 : 1);
                 int audioVolume = ControllerMappings.IntOption(
                     SelectedProfileId, "ControllerAudioVolume", 75);
                 controllerAudioVolumeSelector.SelectedItem = ClosestAudioVolume(audioVolume) + "%";
                 LoadControllerAudioEndpoints();
-                controllerAudioRouteHeadphonesCheckBox.Checked = ControllerMappings.BoolOption(
-                    SelectedProfileId, "ControllerAudioRouteHeadphones");
-                controllerBluetoothMicrophoneEnabledCheckBox.Checked = ControllerMappings.BoolOption(
-                    SelectedProfileId, "ControllerBluetoothMicrophoneEnabled");
+                controllerBluetoothMicrophoneSelector.SelectedIndex =
+                    ControllerMappings.BluetoothMicrophoneMode(SelectedProfileId) ==
+                    ControllerMappings.ModeEnable ? 0 : 1;
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(

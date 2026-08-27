@@ -35,6 +35,10 @@ namespace BetterJoyForCemu {
     public static class ControllerMappings {
         public const string FileName = "controller_mappings.xml";
         public const string DefaultLightColor = "#0000FF";
+        public const string ModeEnable = "enable";
+        public const string ModeDisable = "disable";
+        public const string RumbleModeDisableWithGyro = "disable_with_gyro";
+        public const string AudioModeRequireHeadphones = "require_headphones";
 
         public static readonly string[] Keys = {
             "capture", "home", "guide", "mic_mute", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
@@ -372,6 +376,39 @@ namespace BetterJoyForCemu {
         public static bool BoolOption(string profileId, string key) {
             bool value;
             return Boolean.TryParse(OptionValue(profileId, key), out value) && value;
+        }
+
+        public static string RumbleMode(string profileId) {
+            string value = OptionValue(profileId, "EnableRumble");
+            bool legacyValue;
+            if (Boolean.TryParse(value, out legacyValue))
+                return legacyValue ? ModeEnable : ModeDisable;
+            if (value == RumbleModeDisableWithGyro)
+                return value;
+            return value == ModeEnable ? ModeEnable : ModeDisable;
+        }
+
+        public static string ControllerAudioMode(string profileId) {
+            string value = OptionValue(profileId, "ControllerAudioEnabled");
+            bool legacyValue;
+            if (Boolean.TryParse(value, out legacyValue)) {
+                if (!legacyValue)
+                    return ModeDisable;
+                return BoolOption(profileId, "ControllerAudioRouteHeadphones")
+                    ? AudioModeRequireHeadphones
+                    : ModeEnable;
+            }
+            if (value == AudioModeRequireHeadphones)
+                return value;
+            return value == ModeEnable ? ModeEnable : ModeDisable;
+        }
+
+        public static string BluetoothMicrophoneMode(string profileId) {
+            string value = OptionValue(profileId, "ControllerBluetoothMicrophoneEnabled");
+            bool legacyValue;
+            if (Boolean.TryParse(value, out legacyValue))
+                return legacyValue ? ModeEnable : ModeDisable;
+            return value == ModeEnable ? ModeEnable : ModeDisable;
         }
 
         public static int IntOption(string profileId, string key, int fallback = -1) {
@@ -771,7 +808,7 @@ namespace BetterJoyForCemu {
             }
 
             if (key == "ControllerAudioEnabled")
-                return "false";
+                return ModeDisable;
             if (key == "ControllerAudioVolume")
                 return "75";
             if (key == "ControllerAudioEndpointId")
@@ -779,7 +816,12 @@ namespace BetterJoyForCemu {
             if (key == "ControllerAudioRouteHeadphones")
                 return "false";
             if (key == "ControllerBluetoothMicrophoneEnabled")
-                return "false";
+                return ModeDisable;
+            if (key == "EnableRumble") {
+                bool enabled;
+                Boolean.TryParse(ConfigurationManager.AppSettings[key], out enabled);
+                return enabled ? ModeEnable : ModeDisable;
+            }
             if (key == "AdaptiveTriggerModeLeft" || key == "AdaptiveTriggerModeRight")
                 return "off";
             if (key == "AdaptiveTriggerStartLeft" || key == "AdaptiveTriggerStartRight")

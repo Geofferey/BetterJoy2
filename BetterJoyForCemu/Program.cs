@@ -138,7 +138,10 @@ namespace BetterJoyForCemu {
                             ControllerMappings.IntOption(profileId, "AdaptiveTriggerSecondaryRight", 70),
                             ControllerMappings.IntOption(profileId, "AdaptiveTriggerStrengthRight", 50));
                     }
-                    bool audioEnabled = ControllerMappings.BoolOption(profileId, "ControllerAudioEnabled");
+                    string audioMode = ControllerMappings.ControllerAudioMode(profileId);
+                    bool audioEnabled = audioMode != ControllerMappings.ModeDisable;
+                    bool requireHeadphones =
+                        audioMode == ControllerMappings.AudioModeRequireHeadphones;
                     int audioVolume = ControllerMappings.IntOption(profileId, "ControllerAudioVolume", 75);
                     if (audioEnabled)
                         jc.PrepareUsbAudio(audioVolume);
@@ -150,8 +153,6 @@ namespace BetterJoyForCemu {
                     // controller reconnects - mid-stream disconnect is handled separately via
                     // OnDetachingWhileAttached, since this loop only reaches attached controllers.
                     if (!jc.isUSB && jc is DualShock4Controller ds4) {
-                        bool requireHeadphones = ControllerMappings.BoolOption(
-                            profileId, "ControllerAudioRouteHeadphones");
                         // The physical jack always selects speaker vs. headset output. This option
                         // only controls whether speaker fallback is allowed while the jack is empty.
                         if (audioEnabled && (!requireHeadphones || ds4.HeadphonesConnected))
@@ -162,10 +163,9 @@ namespace BetterJoyForCemu {
                             ds4.StopBluetoothAudioStream();
                     }
                     if (jc is DualSenseController dualSense) {
-                        bool requireHeadphones = ControllerMappings.BoolOption(
-                            profileId, "ControllerAudioRouteHeadphones");
-                        bool bluetoothMicrophoneEnabled = ControllerMappings.BoolOption(
-                            profileId, "ControllerBluetoothMicrophoneEnabled");
+                        bool bluetoothMicrophoneEnabled =
+                            ControllerMappings.BluetoothMicrophoneMode(profileId) ==
+                            ControllerMappings.ModeEnable;
                         // The built-in Bluetooth microphone is independent of the 3.5 mm jack.
                         // Controller audio remains the single opt-in for the physical media
                         // transport; a missing optional virtual-mic backend must not disturb the

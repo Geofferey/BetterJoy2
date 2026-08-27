@@ -232,8 +232,49 @@ namespace BetterJoyForCemu {
         protected int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
         protected int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
 
-        public bool RumbleEnabled => ControllerMappings.BoolOption(
-            ControllerMappings.ProfileIdFor(this), "EnableRumble");
+        public bool RumbleEnabled {
+            get {
+                string mode = ControllerMappings.RumbleMode(
+                    ControllerMappings.ProfileIdFor(this));
+                if (mode == ControllerMappings.ModeDisable)
+                    return false;
+                return mode != ControllerMappings.RumbleModeDisableWithGyro ||
+                    !PairHasActiveGyroOutput();
+            }
+        }
+
+        private bool HasActiveGyroOutput() {
+            return gyroMouseEnabledThisReport || gyroLeftStickActiveThisReport ||
+                gyroRightStickActiveThisReport;
+        }
+
+        private bool PairHasActiveGyroOutput() {
+            return HasActiveGyroOutput() ||
+                (other != null && other != this && other.HasActiveGyroOutput());
+        }
+
+        // A game can leave its last nonzero rumble command running while gyro becomes active.
+        // Stop both halves of a joined pair once at that transition; repeatedly sending zero
+        // output reports can interfere with shared Sony light/audio state.
+        private void UpdateGyroRumbleSuppression() {
+            bool suppress = ControllerMappings.RumbleMode(
+                ControllerMappings.ProfileIdFor(this)) ==
+                ControllerMappings.RumbleModeDisableWithGyro &&
+                PairHasActiveGyroOutput();
+            bool wasSuppressed = rumbleSuppressedByGyro ||
+                (other != null && other != this && other.rumbleSuppressedByGyro);
+
+            rumbleSuppressedByGyro = suppress;
+            if (other != null && other != this)
+                other.rumbleSuppressedByGyro = suppress;
+
+            if (!suppress || wasSuppressed)
+                return;
+
+            StopRumble();
+            if (other != null && other != this)
+                other.StopRumble();
+        }
 
         // Profile changes are applied while a controller may already be vibrating. Queue an
         // explicit stop when rumble is disabled so removing the virtual feedback subscription
@@ -907,6 +948,7 @@ namespace BetterJoyForCemu {
         public bool active_gyro = false;
         protected bool activeGyroLeftStick = false;
         protected bool activeGyroRightStick = false;
+        private bool rumbleSuppressedByGyro = false;
         protected bool activeTouchpadMouse = false;
         protected bool activeTouchpadLeftStick = false;
         protected bool activeTouchpadRightStick = false;
@@ -1539,6 +1581,7 @@ namespace BetterJoyForCemu {
             ResetTouchpadGestureState();
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
+            rumbleSuppressedByGyro = false;
             prevResetMouseComboHeld = false;
             gyroMouseClenched = false;
             gyroStickRatcheted = false;
@@ -2271,6 +2314,7 @@ namespace BetterJoyForCemu {
             gyroRightStickActiveThisReport = UpdateOutputActivation(
                 "active_gyro_right_stick", ref activeGyroRightStick,
                 ref prevActiveGyroRightStickComboHeld, out gyroRightStickJustEnabled);
+            UpdateGyroRumbleSuppression();
             bool touchpadMouseJustEnabled = false;
             touchpadMouseEnabledThisReport = HasTouchpad && UpdateOutputActivation(
                 "active_touchpad_mouse", ref activeTouchpadMouse,
