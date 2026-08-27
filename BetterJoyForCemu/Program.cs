@@ -188,17 +188,27 @@ namespace BetterJoyForCemu {
                             ds4.StopBluetoothAudioStream();
                     }
                     if (jc is DualSenseController dualSense) {
-                        bool bluetoothMicrophoneEnabled =
-                            ControllerMappings.BluetoothMicrophoneMode(profileId) ==
-                            ControllerMappings.ModeEnable;
+                        string microphoneMode = ControllerMappings.BluetoothMicrophoneMode(profileId);
+                        bool bluetoothMicrophoneEnabled = microphoneMode == ControllerMappings.ModeEnable ||
+                            microphoneMode == ControllerMappings.MicrophoneModeStartMuted;
                         // The built-in Bluetooth microphone is independent of the 3.5 mm jack.
                         // Controller audio remains the single opt-in for the physical media
                         // transport; a missing optional virtual-mic backend must not disturb the
                         // existing speaker/headset path.
                         if (!jc.isUSB && audioEnabled && bluetoothMicrophoneEnabled)
-                            dualSense.StartBluetoothMicrophone();
+                            dualSense.StartBluetoothMicrophone(
+                                microphoneMode == ControllerMappings.MicrophoneModeStartMuted);
                         else
                             dualSense.StopBluetoothMicrophone();
+                        // USB's mic is a native USB Audio Class endpoint - no BetterJoy-owned
+                        // start/stop lifecycle the way Bluetooth's is, but the mute LED is the
+                        // same shared hardware state either way (see microphoneMuted), so Muted
+                        // still needs applying once per connection. Deliberately independent of
+                        // audioEnabled/Controller audio: the LED should reflect this dropdown's
+                        // own setting, not get entangled with a separate master switch's timing.
+                        if (jc.isUSB)
+                            dualSense.ApplyUsbMicrophoneMuteDefault(
+                                microphoneMode == ControllerMappings.MicrophoneModeStartMuted);
                         if (!jc.isUSB && audioEnabled &&
                             (!requireHeadphones || dualSense.HeadphonesConnected))
                             dualSense.StartBluetoothAudioStream(audioVolume,

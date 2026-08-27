@@ -1187,13 +1187,15 @@ namespace BetterJoyForCemu {
             page.Controls.Add(controllerBluetoothMicrophoneLabel);
             controllerBluetoothMicrophoneSelector = CreateProfileChoiceSelector(145, 864, 180);
             controllerBluetoothMicrophoneSelector.Items.AddRange(new object[] {
-                "Enable", "Disable",
+                "Enable", "Muted", "Disable",
             });
             controllerBluetoothMicrophoneSelector.SelectedIndexChanged +=
                 ControllerAudioOptionChanged;
             page.Controls.Add(controllerBluetoothMicrophoneSelector);
             tip_reassign.SetToolTip(controllerBluetoothMicrophoneSelector,
-                "Expose the DualSense built-in microphone while Bluetooth controller audio is enabled.");
+                "Expose the DualSense built-in microphone while Bluetooth controller audio is " +
+                "enabled. Muted starts it muted every time it connects, requiring a press of the " +
+                "controller's own mute button before anything is actually captured.");
 
             page.Controls.Add(CreateDivider(24, 910));
             AddSectionHeading(page, "Orientation", 927,
@@ -1666,11 +1668,13 @@ namespace BetterJoyForCemu {
                 ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioEndpointId",
                     endpoint?.Id ?? String.Empty);
             } else if (sender == controllerBluetoothMicrophoneSelector) {
-                ControllerMappings.SetOptionValue(
-                    SelectedProfileId, "ControllerBluetoothMicrophoneEnabled",
-                    controllerBluetoothMicrophoneSelector.SelectedIndex == 0
-                        ? ControllerMappings.ModeEnable
+                string mode = controllerBluetoothMicrophoneSelector.SelectedIndex == 0
+                    ? ControllerMappings.ModeEnable
+                    : (controllerBluetoothMicrophoneSelector.SelectedIndex == 1
+                        ? ControllerMappings.MicrophoneModeStartMuted
                         : ControllerMappings.ModeDisable);
+                ControllerMappings.SetOptionValue(
+                    SelectedProfileId, "ControllerBluetoothMicrophoneEnabled", mode);
             }
             UpdateControllerAudioControlState();
         }
@@ -1843,9 +1847,10 @@ namespace BetterJoyForCemu {
                 LoadControllerAudioEndpoints();
                 controllerAudioUsbLoopbackCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "ControllerAudioUsbLoopback");
+                string microphoneMode = ControllerMappings.BluetoothMicrophoneMode(SelectedProfileId);
                 controllerBluetoothMicrophoneSelector.SelectedIndex =
-                    ControllerMappings.BluetoothMicrophoneMode(SelectedProfileId) ==
-                    ControllerMappings.ModeEnable ? 0 : 1;
+                    microphoneMode == ControllerMappings.ModeEnable ? 0 :
+                    (microphoneMode == ControllerMappings.MicrophoneModeStartMuted ? 1 : 2);
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(

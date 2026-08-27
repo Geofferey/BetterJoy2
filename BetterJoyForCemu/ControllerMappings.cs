@@ -39,6 +39,7 @@ namespace BetterJoyForCemu {
         public const string ModeDisable = "disable";
         public const string RumbleModeDisableWithGyro = "disable_with_gyro";
         public const string AudioModeRequireHeadphones = "require_headphones";
+        public const string MicrophoneModeStartMuted = "start_muted";
 
         public static readonly string[] Keys = {
             "capture", "home", "guide", "mic_mute", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
@@ -409,6 +410,8 @@ namespace BetterJoyForCemu {
             bool legacyValue;
             if (Boolean.TryParse(value, out legacyValue))
                 return legacyValue ? ModeEnable : ModeDisable;
+            if (value == MicrophoneModeStartMuted)
+                return value;
             return value == ModeEnable ? ModeEnable : ModeDisable;
         }
 

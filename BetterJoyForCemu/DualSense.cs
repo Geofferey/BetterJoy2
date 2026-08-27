@@ -175,7 +175,18 @@ namespace BetterJoyForCemu {
         private readonly AutoResetEvent bluetoothMicrophoneSignal = new AutoResetEvent(false);
         private volatile bool bluetoothMicrophoneRequested;
         private volatile bool bluetoothMicrophoneStreaming;
-        private volatile bool bluetoothMicrophoneMuted;
+        // Not Bluetooth-specific despite the neighboring fields - the physical mute button and
+        // its LED are the same hardware/report field (mute_button_led, valid_flag1 bit 0 in the
+        // Linux hid-playstation driver's dualsense_output_report_common) on both transports, so
+        // this tracks the mute toggle regardless of whether Bluetooth mic streaming happens to be
+        // active. See WriteRetainedRumbleAndTriggerState.
+        private volatile bool microphoneMuted;
+        private volatile bool microphoneMuteStatePending;
+        // USB has no equivalent to StartBluetoothMicrophone's "genuine fresh start" moment - the
+        // mic is a native USB Audio Class endpoint, no BetterJoy-owned capture pipeline to start
+        // at all - so ApplyUsbMicrophoneMuteDefault needs its own one-shot latch instead, reset
+        // on every fresh Attach so a later reconnect re-applies the Muted default again.
+        private volatile bool usbMicrophoneMuteDefaultApplied;
         private volatile bool bluetoothMicrophoneDisablePending;
         private volatile bool bluetoothMicrophoneControlPending;
         private Thread bluetoothMicrophoneThread;
@@ -292,6 +303,8 @@ namespace BetterJoyForCemu {
             getActiveStickData();
 
             ReadGyroCalibration();
+
+            usbMicrophoneMuteDefaultApplied = false;
 
             form.AppendTextBox("DualSense attached (baseline mode).\r\n");
             return 0;
@@ -738,9 +751,12 @@ namespace BetterJoyForCemu {
                 b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
                 b[(int)Button.TOUCHPAD] = (btn3 & 0x02) != 0;
                 b[(int)Button.MIC_MUTE] = (btn3 & 0x04) != 0;
-                if (b[(int)Button.MIC_MUTE] && !down_[(int)Button.MIC_MUTE] &&
-                    bluetoothMicrophoneRequested)
-                    SetBluetoothMicrophoneMuted(!bluetoothMicrophoneMuted);
+                // Toggle unconditionally on press, not just while Bluetooth mic streaming is
+                // requested - the mute LED/state is the same shared hardware field on USB too
+                // (see the field comment on microphoneMuted), and previously never got set at
+                // all outside that one Bluetooth feature, so the button did nothing over USB.
+                if (b[(int)Button.MIC_MUTE] && !down_[(int)Button.MIC_MUTE])
+                    SetMicrophoneMuted(!microphoneMuted);
                 // Edge paddles remain unmapped; SL/SR have no DualSense equivalent.
 
                 buttons = b;
@@ -996,7 +1012,12 @@ namespace BetterJoyForCemu {
             bluetoothMicrophoneSignal.Set();
         }
 
-        public void StartBluetoothMicrophone() {
+        // startMuted applies microphoneMuted=true only on a genuine fresh start (the worker
+        // thread wasn't already running) - Program.cs's reconciliation loop calls this every
+        // ~2 seconds regardless of whether anything changed, and forcing muted on every one of
+        // those calls would make the physical unmute button unusable, re-muting moments after
+        // every press.
+        public void StartBluetoothMicrophone(bool startMuted) {
             if (isUSB || state <= state_.DROPPED)
                 return;
 
@@ -1005,11 +1026,30 @@ namespace BetterJoyForCemu {
             if (worker != null && worker.IsAlive)
                 return;
 
+            if (startMuted)
+                SetMicrophoneMuted(true);
+
             bluetoothMicrophoneThread = new Thread(BluetoothMicrophoneWorker) {
                 IsBackground = true,
                 Name = "BetterJoyDualSenseMicrophone"
             };
             bluetoothMicrophoneThread.Start();
+        }
+
+        // USB's built-in mic is a native USB Audio Class endpoint with no BetterJoy-owned capture
+        // pipeline to start - there's no equivalent "genuine fresh start" moment to hang the
+        // startMuted default on the way StartBluetoothMicrophone does, so this is applied once
+        // per physical connection instead (the usbMicrophoneMuteDefaultApplied latch, reset in
+        // Attach). Program.cs's reconciliation loop calls this every ~2 seconds for every USB
+        // DualSense regardless of the Built-in mic setting; the latch is what keeps this a true
+        // one-shot "on connect" default rather than fighting the physical mute button afterward.
+        public void ApplyUsbMicrophoneMuteDefault(bool startMuted) {
+            if (!isUSB || usbMicrophoneMuteDefaultApplied)
+                return;
+
+            usbMicrophoneMuteDefaultApplied = true;
+            if (startMuted)
+                SetMicrophoneMuted(true);
         }
 
         public void StopBluetoothMicrophone() {
@@ -1069,7 +1109,7 @@ namespace BetterJoyForCemu {
                                 if (decoded <= 0)
                                     continue;
 
-                                bool muted = bluetoothMicrophoneMuted;
+                                bool muted = microphoneMuted;
                                 Array.Clear(stereoPcm, 0, stereoPcm.Length);
                                 int frames = Math.Min(decoded, BtMicrophonePcmFrames);
                                 if (!muted) {
@@ -1117,8 +1157,8 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private void SetBluetoothMicrophoneMuted(bool muted) {
-            bluetoothMicrophoneMuted = muted;
+        private void SetMicrophoneMuted(bool muted) {
+            microphoneMuted = muted;
             lock (bluetoothAudioStateLock) {
                 // The mic button is useful even before an application opens the recording
                 // endpoint. Publish its LED/mute state through one FE media carrier, then release
@@ -1131,6 +1171,15 @@ namespace BetterJoyForCemu {
                 lock (outputReportLock)
                     bluetoothOutputStateDirty = true;
             }
+
+            // USB (and Bluetooth outside the media-carrier path above) has no continuously-polled
+            // report loop to piggyback the new mute state on - the ordinary rumble/lightbar report
+            // is the only channel, so push it out immediately rather than waiting for it to
+            // happen to be resent for an unrelated reason. SendDualSenseRumble already skips
+            // sending on its own while the Bluetooth media carrier is authoritative instead
+            // (bluetoothAudioStreaming/bluetoothMicrophoneStreaming/...), so this is a no-op there.
+            microphoneMuteStatePending = true;
+            SendDualSenseRumble(currentLeftMotor, currentRightMotor);
         }
 
         public bool IsStreamingBluetoothAudio => bluetoothAudioStreaming;
@@ -1585,10 +1634,10 @@ namespace BetterJoyForCemu {
             report[BtAudioStateOffset + 7] = bluetoothAudioRouteHeadphones
                 ? (byte)0x00
                 : (byte)0x09;
-            report[BtAudioStateOffset + 8] = bluetoothMicrophoneMuted
+            report[BtAudioStateOffset + 8] = microphoneMuted
                 ? (byte)0x01
                 : (byte)0x00;
-            report[BtAudioStateOffset + 9] = bluetoothMicrophoneMuted
+            report[BtAudioStateOffset + 9] = microphoneMuted
                 ? (byte)0x10
                 : (byte)0x00;
             WriteAdaptiveTriggerState(report, BtAudioStateOffset,
@@ -1718,9 +1767,15 @@ namespace BetterJoyForCemu {
             // blocks. The trigger payloads must therefore accompany it; advertising 0x0C while
             // leaving those bytes zero silently replaces the profile's adaptive-trigger state.
             report[commonOffset] = DualSenseValidRumbleAndTriggers;
+            // 0x55 already sets valid_flag1 bit 0 (DS_OUTPUT_VALID_FLAG1_MIC_MUTE_LED_CONTROL_
+            // ENABLE in the Linux hid-playstation driver), claiming authority over the mute LED
+            // byte below on every single report - previously that byte was just left at its
+            // zero-initialized default, meaning every rumble/lightbar report silently forced the
+            // controller back to unmuted regardless of what the physical button had set.
             report[commonOffset + 1] = 0x55;
             report[commonOffset + 2] = rightMotor;
             report[commonOffset + 3] = leftMotor;
+            report[commonOffset + 8] = microphoneMuted ? (byte)1 : (byte)0; // mute_button_led
             WriteAdaptiveTriggerState(report, commonOffset, true);
             report[commonOffset + 44] = lightbarRed;
             report[commonOffset + 45] = lightbarGreen;
@@ -1819,9 +1874,13 @@ namespace BetterJoyForCemu {
                 // emit a fresh zero-motor 0x31 report when the physical state is already stopped:
                 // on Bluetooth that report shares state with the lightbar and alternated with the
                 // profile color report, visibly strobing whenever headphone-gated audio was idle.
-                // A real nonzero -> zero transition still falls through and sends the stop.
+                // A real nonzero -> zero transition still falls through and sends the stop. A
+                // pending mic-mute toggle also forces this through even at rest - it's the only
+                // report that carries mute_button_led outside the Bluetooth media carrier, so
+                // skipping it here would silently drop the mute press whenever rumble was idle.
                 if (leftMotor == 0 && rightMotor == 0 &&
-                    currentLeftMotor == 0 && currentRightMotor == 0)
+                    currentLeftMotor == 0 && currentRightMotor == 0 &&
+                    !microphoneMuteStatePending)
                     return;
 
                 currentLeftMotor = leftMotor;
@@ -1829,8 +1888,13 @@ namespace BetterJoyForCemu {
                 bluetoothOutputStateDirty = true;
                 if (!isUSB && (bluetoothAudioStreaming ||
                     bluetoothMicrophoneStreaming || bluetoothMicrophoneDisablePending ||
-                    bluetoothMicrophoneControlPending))
+                    bluetoothMicrophoneControlPending)) {
+                    // The Bluetooth media carrier (bluetoothMicrophoneControlPending) is the
+                    // authoritative channel for mute state while it's active, not this report.
+                    microphoneMuteStatePending = false;
                     return;
+                }
+                microphoneMuteStatePending = false;
 
                 bool bt = !isUSB;
                 int len = bt ? DualSenseMaxReportLen : 64;
