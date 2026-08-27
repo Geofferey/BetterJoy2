@@ -185,6 +185,7 @@
     <Compile Include="InputIpcProtocol.cs" />
     <Compile Include="ViiperMicrophoneEndpoint.cs" />
     <Compile Include="SteamMicrophoneEndpoint.cs" />
+    <Compile Include="SteamMicrophoneInstaller.cs" />
     <Compile Include="IMicrophoneEndpoint.cs" />
     <Compile Include="MicrophoneEndpointFactory.cs" />
     <Compile Include="InputState.cs" />

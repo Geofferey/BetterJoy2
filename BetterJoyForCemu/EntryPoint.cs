@@ -34,6 +34,18 @@ namespace BetterJoyForCemu {
                 return;
             }
 
+            // Installer/BetterJoy.iss's InstallSteamStreamingMicrophone step launches this rather
+            // than calling SetupAPI directly from Pascal Script: Setup.exe is always a 32-bit
+            // (WOW64) process regardless of ArchitecturesInstallIn64BitMode (confirmed by
+            // inspecting its actual PE header), so those calls would hit the WOW64-redirected
+            // 32-bit copies of setupapi.dll/newdev.dll, which don't reliably install a native x64
+            // kernel driver - this exe is itself a native x64 build, so it doesn't have that
+            // problem. Environment.Exit's return code is what Exec's ResultCode picks up there.
+            if (args.Length >= 2 && args[0].Equals("-installsteammic", StringComparison.OrdinalIgnoreCase)) {
+                Environment.Exit(SteamMicrophoneInstaller.Install(args[1]));
+                return;
+            }
+
             // Both of these used to happen inside Program.Main() itself, which only the GUI path
             // ever calls - a Windows Service goes straight into ServiceBase.Run below, bypassing
             // Program.Main entirely, so it never got hidapi.dll's directory added to the DLL

@@ -41,7 +41,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "vigembus"; Description: "Install the ViGEmBus driver (required for XInput/DS4 output)"; GroupDescription: "Drivers:"; Flags: checkedonce
 Name: "hidhide"; Description: "Install the HidHide driver (hides controllers from other programs, e.g. Steam)"; GroupDescription: "Drivers:"; Flags: unchecked
 Name: "fakerinput"; Description: "Install FakerInput virtual mouse (works in elevated apps, UAC, and before login in service mode)"; GroupDescription: "Drivers:"; Flags: unchecked
-Name: "dualsensemic"; Description: "Install the Bluetooth microphone backend (VIIPER + signed usbip-win2 driver, and the Steam Streaming Microphone driver as a fallback)"; GroupDescription: "Drivers:"; Flags: checkedonce
+Name: "dualsensemic"; Description: "Install the Bluetooth microphone backend (VIIPER + signed usbip-win2 driver)"; GroupDescription: "Drivers:"; Flags: checkedonce
+Name: "steammic"; Description: "Install the Steam Streaming Microphone driver (fallback Bluetooth microphone backend, used if VIIPER is off/unavailable)"; GroupDescription: "Drivers:"; Flags: checkedonce
 
 [Files]
 ; Everything from the Release build, except runtime-generated state that shouldn't ship pre-populated
@@ -186,177 +187,27 @@ end;
 // pnputil's /add-driver ... /install only updates a device that already exists (confirmed via
 // Microsoft's own guidance recommending it specifically to AVOID creating a root-enumerated
 // device); devcon's "install" command is the documented way to create one, but devcon.exe isn't
-// redistributable outside the WDK. This calls the same underlying SetupAPI sequence devcon uses
-// internally instead - verified end-to-end against the real bundled INF on real hardware before
-// writing this (SetupDiCreateDeviceInfoW's DeviceName parameter becomes the generated instance
-// ID's own segment, e.g. passing "SteamStreamingMicrophone" here yields
-// ROOT\SteamStreamingMicrophone\0000, not just a class-name lookup).
-// The bundled INF/CAT pair is Valve's own, unmodified - a CAT file's signature covers the hash of
-// every file it lists, including the INF itself, so editing the INF's strings (tried once, to give
-// this its own distinct hardware ID) breaks that hash and Windows refuses it
-// (ERROR_FILE_HASH_NOT_IN_CATALOG), right back to the "needs test-signing mode" problem this
-// driver was chosen specifically to avoid. So this intentionally targets the exact same hardware
-// ID Steam's own installer would use - if Steam already created it (or does later), this step is a
-// harmless no-op (see SteamMicDeviceAlreadyExists below). SteamMicrophoneEndpoint.cs re-applies a
-// distinguishing friendly name to the endpoint on every open instead, since that's a plain
-// registry property unrelated to driver signing and (unlike editing the INF) survives Steam
-// recreating the device later.
-const
-  DIGCF_PRESENT = $00000002;
-  DICD_GENERATE_ID = $00000001;
-  SPDRP_HARDWAREID = $00000001;
-  DIF_REGISTERDEVICE = $00000019;
-  DIF_REMOVE = $00000005;
-  INSTALLFLAG_FORCE = $00000001;
-  INSTALLFLAG_NONINTERACTIVE = $00000004;
-  SteamMicHardwareId = 'ROOT\SteamStreamingMicrophone';
-  SteamMicDeviceName = 'SteamStreamingMicrophone';
-
-type
-  TDeviceGuid = record
-    D1: LongWord;
-    D2: Word;
-    D3: Word;
-    D4: array[0..7] of Byte;
-  end;
-
-  SP_DEVINFO_DATA = record
-    cbSize: LongWord;
-    ClassGuid: TDeviceGuid;
-    DevInst: LongWord;
-    Reserved: LongInt;
-  end;
-
-function SetupDiGetClassDevsW(ClassGuid: TDeviceGuid; Enumerator: LongInt; hwndParent: LongWord; Flags: LongWord): LongWord;
-  external 'SetupDiGetClassDevsW@setupapi.dll stdcall';
-function SetupDiEnumDeviceInfo(DeviceInfoSet: LongWord; MemberIndex: LongWord; var DeviceInfoData: SP_DEVINFO_DATA): BOOL;
-  external 'SetupDiEnumDeviceInfo@setupapi.dll stdcall';
-function SetupDiGetDeviceRegistryPropertyW(DeviceInfoSet: LongWord; var DeviceInfoData: SP_DEVINFO_DATA; Prop: LongWord; var PropRegDataType: LongWord; PropertyBuffer: string; PropertyBufferSize: LongWord; var RequiredSize: LongWord): BOOL;
-  external 'SetupDiGetDeviceRegistryPropertyW@setupapi.dll stdcall';
-function SetupDiCreateDeviceInfoList(ClassGuid: TDeviceGuid; hwndParent: LongWord): LongWord;
-  external 'SetupDiCreateDeviceInfoList@setupapi.dll stdcall';
-function SetupDiCreateDeviceInfoW(DeviceInfoSet: LongWord; DeviceName: string; ClassGuid: TDeviceGuid; DeviceDescription: string; hwndParent: LongWord; CreationFlags: LongWord; var DeviceInfoData: SP_DEVINFO_DATA): BOOL;
-  external 'SetupDiCreateDeviceInfoW@setupapi.dll stdcall';
-function SetupDiSetDeviceRegistryPropertyW(DeviceInfoSet: LongWord; var DeviceInfoData: SP_DEVINFO_DATA; Prop: LongWord; PropertyBuffer: string; PropertyBufferSize: LongWord): BOOL;
-  external 'SetupDiSetDeviceRegistryPropertyW@setupapi.dll stdcall';
-function SetupDiCallClassInstaller(InstallFunction: LongWord; DeviceInfoSet: LongWord; var DeviceInfoData: SP_DEVINFO_DATA): BOOL;
-  external 'SetupDiCallClassInstaller@setupapi.dll stdcall';
-function SetupDiDestroyDeviceInfoList(DeviceInfoSet: LongWord): BOOL;
-  external 'SetupDiDestroyDeviceInfoList@setupapi.dll stdcall';
-function UpdateDriverForPlugAndPlayDevicesW(hwndParent: LongWord; HardwareId: string; FullInfPath: string; InstallFlags: LongWord; var bRebootRequired: BOOL): BOOL;
-  external 'UpdateDriverForPlugAndPlayDevicesW@newdev.dll stdcall';
-
-function SteamMicClassGuid: TDeviceGuid;
-begin
-  // {4d36e96c-e325-11ce-bfc1-08002be10318} - MEDIA, matches the INF's own [Version] ClassGuid.
-  Result.D1 := $4d36e96c;
-  Result.D2 := $e325;
-  Result.D3 := $11ce;
-  Result.D4[0] := $bf; Result.D4[1] := $c1; Result.D4[2] := $08; Result.D4[3] := $00;
-  Result.D4[4] := $2b; Result.D4[5] := $e1; Result.D4[6] := $03; Result.D4[7] := $18;
-end;
-
-// A device's HARDWAREID property is a REG_MULTI_SZ (list of null-separated strings, double-null
-// terminated) - only the first entry is ever set here, so comparing up to the first embedded null
-// is enough to know whether it's our hardware ID.
-function DeviceHardwareIdMatches(DeviceInfoSet: LongWord; var DeviceInfoData: SP_DEVINFO_DATA; TargetHardwareId: string): Boolean;
-var
-  PropType, RequiredSize: LongWord;
-  Buffer: string;
-  NullPos: Integer;
-begin
-  Result := False;
-  SetLength(Buffer, 512);
-  if not SetupDiGetDeviceRegistryPropertyW(DeviceInfoSet, DeviceInfoData, SPDRP_HARDWAREID,
-      PropType, Buffer, Length(Buffer) * 2, RequiredSize) then
-    exit;
-  NullPos := Pos(#0, Buffer);
-  if NullPos > 0 then
-    Buffer := Copy(Buffer, 1, NullPos - 1);
-  Result := CompareText(Buffer, TargetHardwareId) = 0;
-end;
-
-// Repeat installs/upgrades must not create a second devnode - checked this the hard way while
-// verifying this code: re-running the create sequence without a guard produced a second full set
-// of render+capture endpoints alongside the original one instead of reusing it. Also true,
-// harmlessly, if Steam itself already created the device via its own first-run trigger before
-// BetterJoy was ever installed - same hardware ID either way (see comment above).
-function SteamMicDeviceAlreadyExists: Boolean;
-var
-  DevInfoSet: LongWord;
-  DevInfoData: SP_DEVINFO_DATA;
-  Index: LongWord;
-begin
-  Result := False;
-  DevInfoSet := SetupDiGetClassDevsW(SteamMicClassGuid, 0, 0, DIGCF_PRESENT);
-  if DevInfoSet = 0 then
-    exit;
-  try
-    Index := 0;
-    DevInfoData.cbSize := SizeOf(DevInfoData);
-    while SetupDiEnumDeviceInfo(DevInfoSet, Index, DevInfoData) do begin
-      if DeviceHardwareIdMatches(DevInfoSet, DevInfoData, SteamMicHardwareId) then begin
-        Result := True;
-        exit;
-      end;
-      Index := Index + 1;
-      DevInfoData.cbSize := SizeOf(DevInfoData);
-    end;
-  finally
-    SetupDiDestroyDeviceInfoList(DevInfoSet);
-  end;
-end;
-
-// Mirrors devcon's own "install" command: create a root-enumerated devnode with the target
-// hardware ID, then bind the bundled INF's driver to it. Verified against the real bundled INF on
-// real hardware before this was written (see comment above). On a failed driver bind, rolls the
-// devnode back out rather than leaving an orphaned, driverless "Steam Streaming Microphone" entry
-// in Device Manager.
+// redistributable outside the WDK. The actual SetupAPI sequence devcon uses internally now lives
+// in BetterJoyForCemu.exe itself (SteamMicrophoneInstaller.cs, run via the "-installsteammic"
+// flag below) rather than here in Pascal Script: Setup.exe is always a 32-bit (WOW64) process
+// regardless of ArchitecturesInstallIn64BitMode (confirmed by inspecting its actual PE header),
+// so calling SetupAPI/newdev.dll directly from here would hit the WOW64-redirected 32-bit copies
+// of those DLLs - which don't reliably install a native x64 kernel driver, and did in fact fail
+// silently in practice when this used to be implemented as raw P/Invoke here. BetterJoyForCemu.exe
+// is a native x64 build, so running the real work there avoids the problem entirely.
 procedure InstallSteamStreamingMicrophone;
 var
-  DevInfoSet: LongWord;
-  DevInfoData: SP_DEVINFO_DATA;
-  ClassGuid: TDeviceGuid;
-  RebootRequired: BOOL;
-  InfPath: string;
-  Created, Bound: Boolean;
+  ResultCode: Integer;
+  Params: String;
 begin
-  if not WizardIsTaskSelected('dualsensemic') then
-    exit;
-  if SteamMicDeviceAlreadyExists then
+  if not WizardIsTaskSelected('steammic') then
     exit;
 
-  ClassGuid := SteamMicClassGuid;
-  Created := False;
-  Bound := False;
-  DevInfoSet := SetupDiCreateDeviceInfoList(ClassGuid, 0);
-  if DevInfoSet = 0 then
-    exit;
-  try
-    DevInfoData.cbSize := SizeOf(DevInfoData);
-    if not SetupDiCreateDeviceInfoW(DevInfoSet, SteamMicDeviceName, ClassGuid, '', 0,
-        DICD_GENERATE_ID, DevInfoData) then
-      exit;
-
-    if not SetupDiSetDeviceRegistryPropertyW(DevInfoSet, DevInfoData, SPDRP_HARDWAREID,
-        SteamMicHardwareId + #0 + #0, (Length(SteamMicHardwareId) + 2) * 2) then
-      exit;
-
-    if not SetupDiCallClassInstaller(DIF_REGISTERDEVICE, DevInfoSet, DevInfoData) then
-      exit;
-    Created := True;
-
-    InfPath := ExpandConstant('{app}\Drivers\{#MySteamMicInf}');
-    RebootRequired := False;
-    Bound := UpdateDriverForPlugAndPlayDevicesW(0, SteamMicHardwareId, InfPath,
-      INSTALLFLAG_FORCE or INSTALLFLAG_NONINTERACTIVE, RebootRequired);
-    if Bound then
-      SteamMicRebootRequired := RebootRequired
-    else if Created then
-      SetupDiCallClassInstaller(DIF_REMOVE, DevInfoSet, DevInfoData);
-  finally
-    SetupDiDestroyDeviceInfoList(DevInfoSet);
-  end;
+  Params := '-installsteammic "' + ExpandConstant('{app}\Drivers\{#MySteamMicInf}') + '"';
+  if Exec(ExpandConstant('{app}\{#MyAppExeName}'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    SteamMicRebootRequired := ResultCode = 3010
+  else
+    SteamMicRebootRequired := False;
 end;
 
 // sc.exe's binPath value has to be one single argument containing the (space-containing,

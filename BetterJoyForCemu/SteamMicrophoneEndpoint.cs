@@ -1,8 +1,11 @@
 using System;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using Microsoft.Win32;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using static BetterJoyForCemu.SteamMicrophoneInstaller;
 
 namespace BetterJoyForCemu {
     // Alternative to ViiperMicrophoneEndpoint that needs nothing bundled beyond a driver Valve
@@ -12,22 +15,27 @@ namespace BetterJoyForCemu {
     // bundled INF/CAT are Valve's own, byte-for-byte unmodified - the CAT's signature covers the
     // INF's own hash, so editing its hardware ID or strings (tried once) breaks that hash and
     // Windows refuses to load it (ERROR_FILE_HASH_NOT_IN_CATALOG), right back to the "needs
-    // test-signing mode" problem this driver was chosen specifically to avoid. So this always
-    // targets Steam's own hardware ID/default name (harmless no-op if Steam already created the
-    // same device via its own first-run trigger - see BetterJoy.iss's install step) and instead
-    // distinguishes itself with a friendly-name override applied here at runtime, re-applied on
-    // every Open() so it self-heals if Steam recreates the device later (confirmed on real
-    // hardware that reconnecting a controller through Steam does exactly that, wiping any prior
-    // rename). This targets each endpoint's own SWD\MMDEVAPI PnP node under
-    // HKLM\SYSTEM\CurrentControlSet\Enum, not the audio subsystem's PKEY_Device_FriendlyName -
-    // that property is documented read-only for any client app (E_ACCESSDENIED via
-    // IPropertyStore::SetValue, confirmed even elevated), and the underlying MMDevices\Audio
-    // property-store registry keys are ACL-locked against admin writes too. The SWD\MMDEVAPI PnP
-    // node's plain FriendlyName is a different, normally-writable location that Windows composes
-    // the endpoint's displayed name from - confirmed on real hardware.
+    // test-signing mode" problem this driver was chosen specifically to avoid. So this targets
+    // Steam's own hardware ID, but always BetterJoy's own separate device instance (see
+    // BetterJoy.iss's install step) - never an instance Steam itself created for its own Remote
+    // Play/Link voice forwarding, even though both would share the same hardware ID and, until
+    // renamed, the same default name. IsOwnedByBetterJoy below is what tells them apart.
+    // This also applies a distinguishing friendly-name override to the endpoint at runtime,
+    // re-applied on every Open() so it self-heals if Steam recreates ITS OWN device later
+    // (confirmed on real hardware that reconnecting a controller through Steam does exactly that
+    // to ITS instance - BetterJoy's own separate instance is never touched by that). This targets
+    // each endpoint's own SWD\MMDEVAPI PnP node under HKLM\SYSTEM\CurrentControlSet\Enum, not the
+    // audio subsystem's PKEY_Device_FriendlyName - that property is documented read-only for any
+    // client app (E_ACCESSDENIED via IPropertyStore::SetValue, confirmed even elevated), and the
+    // underlying MMDevices\Audio property-store registry keys are ACL-locked against admin writes
+    // too. The SWD\MMDEVAPI PnP node's plain FriendlyName is a different, normally-writable
+    // location that Windows composes the endpoint's displayed name from - confirmed on real
+    // hardware, along with the fact that its PnP parent is always the underlying
+    // ROOT\SteamStreamingMicrophone\NNNN devnode directly, no intermediate node in between.
     internal sealed class SteamMicrophoneEndpoint : IMicrophoneEndpoint {
         public const string EndpointNameHint = "Steam Streaming Microphone";
-        private const string DisplayName = "DualSense Microphone (Steam Streaming Microphone)";
+        private const string RenderDisplayName = "Speakers (BetterJoy)";
+        private const string CaptureDisplayName = "Microphone (BetterJoy)";
 
         private const int SourceSampleRate = 48000;
         private const int SourceChannels = 2;
@@ -40,13 +48,55 @@ namespace BetterJoyForCemu {
         private readonly double resampleRatio;
         private int disposed;
 
+        private const uint SPDRP_FRIENDLYNAME = 0x0000000C;
+
+        // Walks from the audio endpoint's own SWD\MMDEVAPI PnP node up to its parent devnode
+        // (confirmed on real hardware to be the ROOT\SteamStreamingMicrophone\NNNN device
+        // directly) and checks that devnode's FriendlyName for BetterJoy's own ownership marker -
+        // the only way to tell "the instance BetterJoy's installer created" apart from "an
+        // instance Steam created for its own Remote Play voice forwarding" when both share the
+        // exact same hardware ID and, until renamed, the exact same default name.
+        private static bool IsOwnedByBetterJoy(MMDevice device) {
+            IntPtr devInfoSet = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+            if (devInfoSet == IntPtr.Zero)
+                return false;
+
+            try {
+                var endpointInfo = new SP_DEVINFO_DATA { cbSize = (uint)Marshal.SizeOf<SP_DEVINFO_DATA>() };
+                if (!SetupDiOpenDeviceInfoW(devInfoSet, @"SWD\MMDEVAPI\" + device.ID, IntPtr.Zero, 0,
+                        ref endpointInfo))
+                    return false;
+
+                if (CM_Get_Parent(out uint parentDevInst, endpointInfo.devInst, 0) != 0)
+                    return false;
+
+                var parentId = new StringBuilder(512);
+                if (CM_Get_Device_IDW(parentDevInst, parentId, parentId.Capacity, 0) != 0)
+                    return false;
+
+                var parentInfo = new SP_DEVINFO_DATA { cbSize = (uint)Marshal.SizeOf<SP_DEVINFO_DATA>() };
+                if (!SetupDiOpenDeviceInfoW(devInfoSet, parentId.ToString(), IntPtr.Zero, 0, ref parentInfo))
+                    return false;
+
+                var nameBuffer = new byte[512];
+                if (!SetupDiGetDeviceRegistryPropertyW(devInfoSet, ref parentInfo, SPDRP_FRIENDLYNAME,
+                        out _, nameBuffer, (uint)nameBuffer.Length, out uint requiredSize) || requiredSize < 2)
+                    return false;
+
+                string friendlyName = Encoding.Unicode.GetString(nameBuffer, 0, (int)requiredSize).TrimEnd('\0');
+                return string.Equals(friendlyName, OwnerMarker, StringComparison.OrdinalIgnoreCase);
+            } finally {
+                SetupDiDestroyDeviceInfoList(devInfoSet);
+            }
+        }
+
         private static bool TryFindDevice(DataFlow flow, out MMDevice device) {
             device = null;
             using (var enumerator = new MMDeviceEnumerator()) {
                 foreach (MMDevice candidate in enumerator.EnumerateAudioEndPoints(
                         flow, DeviceState.Active)) {
                     if (candidate.FriendlyName.IndexOf(EndpointNameHint,
-                            StringComparison.OrdinalIgnoreCase) >= 0) {
+                            StringComparison.OrdinalIgnoreCase) >= 0 && IsOwnedByBetterJoy(candidate)) {
                         device = candidate;
                         return true;
                     }
@@ -59,11 +109,11 @@ namespace BetterJoyForCemu {
         // Cosmetic only - must never take down the actual microphone feature if it fails (e.g.
         // running unelevated, the registry key not existing yet). Idempotent: safe to call on
         // every Open(), which is what makes it self-heal after Steam recreates the device.
-        private static void TryRenameEndpoint(MMDevice device) {
+        private static void TryRenameEndpoint(MMDevice device, string displayName) {
             try {
                 using (RegistryKey key = Registry.LocalMachine.OpenSubKey(
                         @"SYSTEM\CurrentControlSet\Enum\SWD\MMDEVAPI\" + device.ID, writable: true))
-                    key?.SetValue("FriendlyName", DisplayName, RegistryValueKind.String);
+                    key?.SetValue("FriendlyName", displayName, RegistryValueKind.String);
             } catch {
                 // Best-effort - the device still works fine under whatever name Windows already
                 // has for it.
@@ -75,10 +125,10 @@ namespace BetterJoyForCemu {
                 throw new InvalidOperationException(
                     "\"" + EndpointNameHint + "\" was not found or not installed.");
 
-            TryRenameEndpoint(device);
+            TryRenameEndpoint(device, RenderDisplayName);
             if (TryFindDevice(DataFlow.Capture, out MMDevice captureDevice)) {
                 using (captureDevice)
-                    TryRenameEndpoint(captureDevice);
+                    TryRenameEndpoint(captureDevice, CaptureDisplayName);
             }
 
             try {
