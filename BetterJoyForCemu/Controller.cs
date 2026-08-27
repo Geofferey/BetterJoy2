@@ -1116,6 +1116,22 @@ namespace BetterJoyForCemu {
             touchpadMovementRemainderY = 0.0f;
         }
 
+        // A mouse-button binding (mse_N, alone or as part of a chord) on Tap fires on every
+        // accidental brush of a touchpad the user has said is "so sensitive it's easy to fire
+        // off the left click in games" - gating it on touchpadMouseEnabledThisReport reuses
+        // exactly the check the "Mouse actions" section's own gyro mouse-button bindings already
+        // use (SimulateMouseActionButton's enabled parameter, gyroMouseActionsEnabled), rather
+        // than inventing a separate inhibit mechanism. Key/joystick targets are unaffected -
+        // only mouse-button actions are sensitive to this, and only those were asked to be
+        // inhibited outside mouse mode.
+        private static bool MappingIncludesMouseAction(string mapping) {
+            foreach (string part in mapping.Split('+')) {
+                if (part.StartsWith("mse_"))
+                    return true;
+            }
+            return false;
+        }
+
         protected void TriggerTouchpadTap() {
             // Publish Tap as an input even when its output mapping is Disabled. Bind capture and
             // activation chords are input-side consumers and must not depend on what Tap itself
@@ -1125,6 +1141,8 @@ namespace BetterJoyForCemu {
 
             string mapping = MappingValue("touchpad_tap");
             if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return;
+            if (!touchpadMouseEnabledThisReport && MappingIncludesMouseAction(mapping))
                 return;
 
             // Key/mouse targets are discrete clicks. Controller targets become a one-report
@@ -1204,6 +1222,8 @@ namespace BetterJoyForCemu {
         protected bool BeginTouchpadTapHold(TouchContact contact) {
             string mapping = MappingValue("touchpad_tap");
             if (String.IsNullOrEmpty(mapping) || mapping == "0")
+                return false;
+            if (!touchpadMouseEnabledThisReport && MappingIncludesMouseAction(mapping))
                 return false;
 
             touchpadTapHoldActive = true;
