@@ -86,6 +86,7 @@ namespace BetterJoyForCemu {
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
         private CheckBox controllerAudioRouteHeadphonesCheckBox;
+        private CheckBox controllerBluetoothMicrophoneEnabledCheckBox;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
@@ -1165,6 +1166,13 @@ namespace BetterJoyForCemu {
                 "enabled, Bluetooth audio waits for the 3.5 mm jack instead of using the speaker, " +
                 "and stops again when headphones are unplugged.");
 
+            controllerBluetoothMicrophoneEnabledCheckBox = CreateProfileCheckBox(
+                "Built-in Bluetooth microphone", 315, 644,
+                "ControllerBluetoothMicrophoneEnabled");
+            page.Controls.Add(controllerBluetoothMicrophoneEnabledCheckBox);
+            tip_reassign.SetToolTip(controllerBluetoothMicrophoneEnabledCheckBox,
+                "Expose the DualSense built-in microphone while Bluetooth controller audio is enabled.");
+
             page.Controls.Add(CreateDivider(24, 690));
             AddSectionHeading(page, "Orientation", 707,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
@@ -1669,6 +1677,14 @@ namespace BetterJoyForCemu {
                 controllerAudioRouteHeadphonesCheckBox.Enabled = available &&
                     supportsBluetoothHeadphones;
             }
+            if (controllerBluetoothMicrophoneEnabledCheckBox != null) {
+                bool supportsBluetoothMicrophone = selected != null &&
+                    selected.Kind == ControllerKind.DualSense;
+                controllerBluetoothMicrophoneEnabledCheckBox.Visible =
+                    supportsBluetoothMicrophone;
+                controllerBluetoothMicrophoneEnabledCheckBox.Enabled = available &&
+                    supportsBluetoothMicrophone;
+            }
         }
 
         private void LoadProfileOptions(bool hasProfile) {
@@ -1695,6 +1711,7 @@ namespace BetterJoyForCemu {
                 lightColorButton, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
                 controllerAudioRouteHeadphonesCheckBox,
+                controllerBluetoothMicrophoneEnabledCheckBox,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1754,6 +1771,8 @@ namespace BetterJoyForCemu {
                 LoadControllerAudioEndpoints();
                 controllerAudioRouteHeadphonesCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "ControllerAudioRouteHeadphones");
+                controllerBluetoothMicrophoneEnabledCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "ControllerBluetoothMicrophoneEnabled");
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(
