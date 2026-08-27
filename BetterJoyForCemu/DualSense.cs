@@ -107,6 +107,13 @@ namespace BetterJoyForCemu {
         private const int BtMicrophonePcmFrames = 480;
         private const byte BtAudioSpeakerPacketType = 0x93;
         private const byte BtAudioHeadsetPacketType = 0x96;
+        private const byte DualSenseValidCompatibleVibration = 0x01;
+        private const byte DualSenseValidHapticsSelect = 0x02;
+        private const byte DualSenseValidRightTrigger = 0x04;
+        private const byte DualSenseValidLeftTrigger = 0x08;
+        private const byte DualSenseValidRumbleAndTriggers =
+            DualSenseValidCompatibleVibration | DualSenseValidHapticsSelect |
+            DualSenseValidRightTrigger | DualSenseValidLeftTrigger;
         private const int BtAudioPrimeFrameCount = 8;
         // Bound latency as well as memory. With the capture/media clocks matched this remains near
         // the eight-frame prime; twelve frames leaves jitter margin but can never hide ~1 second
@@ -1521,12 +1528,22 @@ namespace BetterJoyForCemu {
             Buffer.BlockCopy(DefaultBluetoothAudioState, 0, report, BtAudioStateOffset,
                 DefaultBluetoothAudioState.Length);
 
-            // The low validity bits are one-shot state strobes. Publish them on the first report
-            // and whenever rumble/lightbar changes, then retain only the steady audio flags.
+            // Trigger and LED validity bits are one-shot state strobes. Compatible rumble is the
+            // exception: both main-motor bits must remain asserted while either motor is active.
+            // Dropping from F3 to F1 immediately after the transition switches the controller
+            // back to its audio-haptics lane before ordinary rumble can be felt. A zero-motor
+            // transition is still published once through bluetoothOutputStateDirty, after which
+            // steady media carriers return to F1.
             if (!bluetoothOutputStateDirty) {
                 report[BtAudioStateOffset] &= 0xF0;
+                report[BtAudioStateOffset] |= DualSenseValidCompatibleVibration;
                 report[BtAudioStateOffset + 1] &= 0x83;
                 report[BtAudioStateOffset + 38] = 0;
+            }
+
+            if (bluetoothOutputStateDirty || currentLeftMotor != 0 || currentRightMotor != 0) {
+                report[BtAudioStateOffset] |=
+                    DualSenseValidCompatibleVibration | DualSenseValidHapticsSelect;
             }
 
             report[BtAudioStateOffset + 2] = currentRightMotor;
@@ -1674,6 +1691,21 @@ namespace BetterJoyForCemu {
                 currentLeftTriggerEffect.Length);
         }
 
+        private void WriteRetainedRumbleAndTriggerState(byte[] report, int commonOffset,
+                                                        byte leftMotor, byte rightMotor) {
+            // A rumble publication enables both compatibility-rumble bits and both trigger
+            // blocks. The trigger payloads must therefore accompany it; advertising 0x0C while
+            // leaving those bytes zero silently replaces the profile's adaptive-trigger state.
+            report[commonOffset] = DualSenseValidRumbleAndTriggers;
+            report[commonOffset + 1] = 0x55;
+            report[commonOffset + 2] = rightMotor;
+            report[commonOffset + 3] = leftMotor;
+            WriteAdaptiveTriggerState(report, commonOffset, true);
+            report[commonOffset + 44] = lightbarRed;
+            report[commonOffset + 45] = lightbarGreen;
+            report[commonOffset + 46] = lightbarBlue;
+        }
+
         private static byte[] EncodeAdaptiveTriggerEffect(string mode, int startPercent,
                                                            int secondaryPercent,
                                                            int strengthPercent) {
@@ -1782,16 +1814,15 @@ namespace BetterJoyForCemu {
                 bool bt = !isUSB;
                 int len = bt ? DualSenseMaxReportLen : 64;
                 byte[] buf = new byte[len];
+                int commonOffset;
                 if (bt) {
                     buf[0] = 0x31;
-                    buf[1] = 0x02;
-                    buf[2] = 0x0F; // enable rumble
-                    // Required feature-flags byte (mic LED, audio mute, touchpad strips, player lights,
-                    // motor power) - NOT safe to leave at 0x00 (confirmed on real hardware: omitting
-                    // this the first time caused continuous, non-stopping rumble).
-                    buf[3] = 0x55;
-                    buf[4] = rightMotor;
-                    buf[5] = leftMotor;
+                    buf[1] = (byte)(bluetoothOutputSequence << 4);
+                    bluetoothOutputSequence = (byte)((bluetoothOutputSequence + 1) & 0x0F);
+                    buf[2] = 0x10;
+                    commonOffset = 3;
+                    WriteRetainedRumbleAndTriggerState(
+                        buf, commonOffset, leftMotor, rightMotor);
                     uint crc = Crc32(0xA2, buf, len - 4);
                     buf[len - 4] = (byte)crc;
                     buf[len - 3] = (byte)(crc >> 8);
@@ -1799,10 +1830,9 @@ namespace BetterJoyForCemu {
                     buf[len - 1] = (byte)(crc >> 24);
                 } else {
                     buf[0] = 0x02;
-                    buf[1] = 0x0F; // enable rumble
-                    buf[2] = 0x55; // required feature-flags byte - see the BT branch's comment
-                    buf[3] = rightMotor;
-                    buf[4] = leftMotor;
+                    commonOffset = 1;
+                    WriteRetainedRumbleAndTriggerState(
+                        buf, commonOffset, leftMotor, rightMotor);
                 }
                 HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
             }
@@ -1841,8 +1871,9 @@ namespace BetterJoyForCemu {
                     const int len = 64;
                     byte[] buf = new byte[len];
                     buf[0] = 0x02;
-                    buf[1] = 0x0C; // rumble motors not in use for this report
+                    buf[1] = DualSenseValidRightTrigger | DualSenseValidLeftTrigger;
                     buf[2] = 0x55;
+                    WriteAdaptiveTriggerState(buf, 1, true);
                     buf[45] = red;
                     buf[46] = green;
                     buf[47] = blue;
