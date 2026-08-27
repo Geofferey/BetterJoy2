@@ -49,11 +49,11 @@ namespace BetterJoyForCemu {
         private Label profileStatusLabel;
         private Label virtualControllerNameLabel;
         private Label virtualControllerDetailLabel;
-        private ComboBox useAsSelector;
-        private ComboBox inactivitySelector;
-        private ComboBox gyroActivationModeSelector;
-        private ComboBox adaptiveTriggerModeLeftSelector;
-        private ComboBox adaptiveTriggerModeRightSelector;
+        private ProfileChoiceSelector useAsSelector;
+        private ProfileChoiceSelector inactivitySelector;
+        private ProfileChoiceSelector gyroActivationModeSelector;
+        private ProfileChoiceSelector adaptiveTriggerModeLeftSelector;
+        private ProfileChoiceSelector adaptiveTriggerModeRightSelector;
         private TextBox adaptiveTriggerStartLeftInput;
         private TextBox adaptiveTriggerSecondaryLeftInput;
         private TextBox adaptiveTriggerStrengthLeftInput;
@@ -71,7 +71,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
-        private ComboBox rumbleModeSelector;
+        private ProfileChoiceSelector rumbleModeSelector;
         private Label rumbleModeLabel;
         private CheckBox dragToggleCheckBox;
         private CheckBox swapAbCheckBox;
@@ -79,14 +79,14 @@ namespace BetterJoyForCemu {
         private CheckBox homeLedCheckBox;
         private Label lightColorLabel;
         private Button lightColorButton;
-        private ComboBox controllerAudioEnabledSelector;
-        private ComboBox controllerAudioVolumeSelector;
-        private ComboBox controllerAudioEndpointSelector;
+        private ProfileChoiceSelector controllerAudioEnabledSelector;
+        private ProfileChoiceSelector controllerAudioVolumeSelector;
+        private ProfileChoiceSelector controllerAudioEndpointSelector;
         private Button controllerAudioTestButton;
         private Label controllerAudioEnabledLabel;
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
-        private ComboBox controllerBluetoothMicrophoneSelector;
+        private ProfileChoiceSelector controllerBluetoothMicrophoneSelector;
         private Label controllerBluetoothMicrophoneLabel;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
@@ -777,23 +777,23 @@ namespace BetterJoyForCemu {
             AddSectionHeading(page, "Output activation", 86,
                 "Set each output to always on, disabled, or activate it with a binding.");
             page.Controls.Add(CreateLabel("Output", 24, 137, ProfileMuted, false, 8.25F));
-            page.Controls.Add(CreateLabel("Activation", 232, 137, ProfileMuted, false, 8.25F));
-            AddMappingRow(page, lbl_activate_gyro, btn_active_gyro, "Mouse", 158, 24, 232, 362);
-            AddMappingRow(page, null, gyroStickActivationButtons[0], "Left stick", 195, 24, 232, 362);
-            AddMappingRow(page, null, gyroStickActivationButtons[1], "Right stick", 232, 24, 232, 362);
+            page.Controls.Add(CreateLabel("Activation", 180, 137, ProfileMuted, false, 8.25F));
+            AddMappingRow(page, lbl_activate_gyro, btn_active_gyro, "Mouse", 158, 24, 180, 414);
+            AddMappingRow(page, null, gyroStickActivationButtons[0], "Left stick", 195, 24, 180, 414);
+            AddMappingRow(page, null, gyroStickActivationButtons[1], "Right stick", 232, 24, 180, 414);
 
             // Gyro-driven L2/R2 analog output while a stick-gyro output button is held (see
             // Joycon.GyroAnalogSliders) - listed last since it modifies the stick outputs above
             // rather than being an output of its own. A plain on/off flag, not a bind, so its
             // SplitButton opens menu_gyro_analog_sliders on any click (wired in
             // CreateDynamicProfileControls) instead of the Remap combo-capture the other rows use.
-            AddMappingRow(page, null, btn_gyro_analog_sliders, "Analog triggers", 269, 24, 232, 362);
+            AddMappingRow(page, null, btn_gyro_analog_sliders, "Analog triggers", 269, 24, 180, 414);
 
             // While held, zeroes gyro-to-stick output instead of tracking live rotation - lets
             // the wrist reposition back to a comfortable angle without that motion registering as
             // a reverse turn, or a mid-turn hold continuing to turn on its own (see
             // Joycon.gyroStickRatcheted).
-            AddMappingRow(page, null, btn_ratchet_gyro, "Ratchet gyro", 306, 24, 232, 362);
+            AddMappingRow(page, null, btn_ratchet_gyro, "Ratchet gyro", 306, 24, 180, 414);
 
             page.Controls.Add(CreateDivider(24, 348));
             AddSectionHeading(page, "Stick mapping", 363,
@@ -895,7 +895,7 @@ namespace BetterJoyForCemu {
             AddSectionHeading(page, "Two-finger scroll", 257,
                 "Enable vertical scrolling and optionally replace either direction's wheel action.");
             AddMappingRow(page, null, btn_touchpad_two_finger_scroll, "Scrolling",
-                318, 24, 232, 362);
+                318, 24, 114, 480);
             tip_reassign.SetToolTip(btn_touchpad_two_finger_scroll,
                 "Enable or disable recognition of two-finger vertical scroll gestures.");
             AddMappingRow(page, null, btn_touchpad_two_finger_scroll_up, "Scroll up",
@@ -911,13 +911,13 @@ namespace BetterJoyForCemu {
             AddSectionHeading(page, "Output activation", 418,
                 "Enable mouse or floating-origin stick output independently with bindings.");
             page.Controls.Add(CreateLabel("Output", 24, 469, ProfileMuted, false, 8.25F));
-            page.Controls.Add(CreateLabel("Activation", 232, 469, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 114, 469, ProfileMuted, false, 8.25F));
             AddMappingRow(page, null, btn_active_touchpad_mouse, "Mouse",
-                490, 24, 232, 362);
+                490, 24, 114, 480);
             AddMappingRow(page, null, touchpadStickActivationButtons[0], "Left stick",
-                527, 24, 232, 362);
+                527, 24, 114, 480);
             AddMappingRow(page, null, touchpadStickActivationButtons[1], "Right stick",
-                564, 24, 232, 362);
+                564, 24, 114, 480);
 
             AddMappingRow(page, null, btn_touchpad_sensitivity, "Mouse sensitivity",
                 601, 24, 114, 181);
@@ -977,15 +977,14 @@ namespace BetterJoyForCemu {
             page.Controls.Add(CreateLabel("R2", 315, 154, ProfileText, true, 11F));
 
             page.Controls.Add(CreateLabel("Effect", 24, 202, ProfileText, false));
-            adaptiveTriggerModeLeftSelector = CreateProfileComboBox(125, 196, 165);
+            adaptiveTriggerModeLeftSelector = CreateProfileChoiceSelector(125, 196, 165);
             page.Controls.Add(adaptiveTriggerModeLeftSelector);
             page.Controls.Add(CreateLabel("Effect", 315, 202, ProfileText, false));
-            adaptiveTriggerModeRightSelector = CreateProfileComboBox(416, 196, 178);
+            adaptiveTriggerModeRightSelector = CreateProfileChoiceSelector(416, 196, 178);
             page.Controls.Add(adaptiveTriggerModeRightSelector);
-            foreach (ComboBox selector in new[] {
+            foreach (ProfileChoiceSelector selector in new[] {
                 adaptiveTriggerModeLeftSelector, adaptiveTriggerModeRightSelector,
             }) {
-                selector.DropDownStyle = ComboBoxStyle.DropDownList;
                 selector.Items.AddRange(new object[] {
                     "Off", "Resistance", "Weapon", "Vibration",
                 });
@@ -1060,8 +1059,7 @@ namespace BetterJoyForCemu {
             page.Controls.Add(autoPowerOffCheckBox);
             page.Controls.Add(homeLongPowerOffCheckBox);
             page.Controls.Add(CreateLabel("After inactivity", 24, 198, ProfileText, false));
-            inactivitySelector = CreateProfileComboBox(145, 192, 180);
-            inactivitySelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            inactivitySelector = CreateProfileChoiceSelector(145, 192, 180);
             inactivitySelector.Items.AddRange(new object[] {
                 "Never", "1 minute", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes",
             });
@@ -1079,8 +1077,7 @@ namespace BetterJoyForCemu {
             page.Controls.Add(swapXyCheckBox);
             page.Controls.Add(dragToggleCheckBox);
             page.Controls.Add(CreateLabel("Output binding behavior", 24, 366, ProfileText, false));
-            gyroActivationModeSelector = CreateProfileComboBox(180, 360, 180);
-            gyroActivationModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            gyroActivationModeSelector = CreateProfileChoiceSelector(180, 360, 180);
             gyroActivationModeSelector.Items.AddRange(new object[] { "Hold", "Toggle" });
             gyroActivationModeSelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(gyroActivationModeSelector);
@@ -1098,7 +1095,7 @@ namespace BetterJoyForCemu {
 
             lightColorLabel = CreateLabel("Light color", 24, 520, ProfileText, false);
             lightColorButton = new Button {
-                Location = new Point(145, 508),
+                Location = new Point(114, 508),
                 Size = new Size(180, 31),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(8, 0, 0, 0),
@@ -1115,8 +1112,7 @@ namespace BetterJoyForCemu {
                 "Control controller vibration for this profile.");
             rumbleModeLabel = CreateLabel("Rumble", 24, 638, ProfileText, false);
             page.Controls.Add(rumbleModeLabel);
-            rumbleModeSelector = CreateProfileComboBox(145, 632, 180);
-            rumbleModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            rumbleModeSelector = CreateProfileChoiceSelector(114, 632, 180);
             rumbleModeSelector.Items.AddRange(new object[] {
                 "Enable", "Disable", "Disable with gyro",
             });
@@ -1131,8 +1127,7 @@ namespace BetterJoyForCemu {
             controllerAudioEnabledLabel = CreateLabel(
                 "Controller audio", 24, 750, ProfileText, false);
             page.Controls.Add(controllerAudioEnabledLabel);
-            controllerAudioEnabledSelector = CreateProfileComboBox(145, 744, 180);
-            controllerAudioEnabledSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerAudioEnabledSelector = CreateProfileChoiceSelector(145, 744, 180);
             controllerAudioEnabledSelector.Items.AddRange(new object[] {
                 "Enable", "Disable", "Require headphones",
             });
@@ -1143,8 +1138,7 @@ namespace BetterJoyForCemu {
 
             controllerAudioVolumeLabel = CreateLabel("Volume", 356, 750, ProfileText, false);
             page.Controls.Add(controllerAudioVolumeLabel);
-            controllerAudioVolumeSelector = CreateProfileComboBox(423, 744, 171);
-            controllerAudioVolumeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerAudioVolumeSelector = CreateProfileChoiceSelector(423, 744, 171);
             controllerAudioVolumeSelector.Items.AddRange(new object[] {
                 "25%", "50%", "75%", "100%",
             });
@@ -1154,8 +1148,7 @@ namespace BetterJoyForCemu {
             controllerAudioEndpointLabel = CreateLabel(
                 "Audio endpoint", 24, 790, ProfileText, false);
             page.Controls.Add(controllerAudioEndpointLabel);
-            controllerAudioEndpointSelector = CreateProfileComboBox(145, 784, 320);
-            controllerAudioEndpointSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerAudioEndpointSelector = CreateProfileChoiceSelector(145, 784, 320);
             controllerAudioEndpointSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
             page.Controls.Add(controllerAudioEndpointSelector);
 
@@ -1176,10 +1169,9 @@ namespace BetterJoyForCemu {
                 "Play a short tone through the selected controller speaker.");
 
             controllerBluetoothMicrophoneLabel = CreateLabel(
-                "Built-in Bluetooth microphone", 24, 830, ProfileText, false);
+                "Built-in mic", 24, 830, ProfileText, false);
             page.Controls.Add(controllerBluetoothMicrophoneLabel);
-            controllerBluetoothMicrophoneSelector = CreateProfileComboBox(232, 824, 180);
-            controllerBluetoothMicrophoneSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            controllerBluetoothMicrophoneSelector = CreateProfileChoiceSelector(145, 824, 180);
             controllerBluetoothMicrophoneSelector.Items.AddRange(new object[] {
                 "Enable", "Disable",
             });
@@ -1194,7 +1186,7 @@ namespace BetterJoyForCemu {
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
                 "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
             AddMappingRow(page, null, btn_default_orientation, "Default orientation",
-                962, 24, 232, 362);
+                962, 24, 145, 449);
 
             page.AutoScrollMinSize = new Size(0, 1020);
             return page;
@@ -1207,8 +1199,7 @@ namespace BetterJoyForCemu {
                 "Windows exposes connected profiles as virtual game controllers.");
 
             page.Controls.Add(CreateLabel("Use as", 24, 163, ProfileText, false));
-            useAsSelector = CreateProfileComboBox(115, 157, 300);
-            useAsSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            useAsSelector = CreateProfileChoiceSelector(115, 157, 300);
             useAsSelector.Items.AddRange(new object[] {
                 "Xbox 360 controller", "DualShock 4 controller", "Disabled",
             });
@@ -1357,15 +1348,13 @@ namespace BetterJoyForCemu {
             };
         }
 
-        private ComboBox CreateProfileComboBox(int left, int top, int width) {
-            return new ComboBox {
-                Location = new Point(left, top),
-                Size = new Size(width, 25),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = ProfileSurface,
-                ForeColor = ProfileText,
-                Font = new Font("Segoe UI", 9F),
-            };
+        private ProfileChoiceSelector CreateProfileChoiceSelector(int left, int top, int width) {
+            ProfileChoiceSelector selector = new ProfileChoiceSelector();
+            StyleMappingButton(selector);
+            selector.Location = new Point(left, top);
+            selector.Size = new Size(width, 31);
+            selector.StyleMenu(ProfileSurface, ProfileText, new Font("Segoe UI", 9F));
+            return selector;
         }
 
         private CheckBox CreateProfileCheckBox(string text, int left, int top, string optionKey) {
@@ -1518,7 +1507,7 @@ namespace BetterJoyForCemu {
             if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
                 return;
 
-            ComboBox selector = (ComboBox)sender;
+            ProfileChoiceSelector selector = (ProfileChoiceSelector)sender;
             string optionKey = selector == adaptiveTriggerModeLeftSelector
                 ? "AdaptiveTriggerModeLeft"
                 : "AdaptiveTriggerModeRight";
@@ -1527,7 +1516,7 @@ namespace BetterJoyForCemu {
             UpdateAdaptiveTriggerControlState(true);
         }
 
-        private static string AdaptiveTriggerModeValue(ComboBox selector) {
+        private static string AdaptiveTriggerModeValue(ProfileChoiceSelector selector) {
             switch (selector?.SelectedIndex ?? 0) {
                 case 1: return "resistance";
                 case 2: return "weapon";
@@ -1536,7 +1525,7 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private static void LoadAdaptiveTriggerMode(ComboBox selector, string value) {
+        private static void LoadAdaptiveTriggerMode(ProfileChoiceSelector selector, string value) {
             if (selector == null)
                 return;
             switch ((value ?? "off").Trim().ToLowerInvariant()) {
@@ -1558,7 +1547,7 @@ namespace BetterJoyForCemu {
                 hasProfile);
         }
 
-        private void UpdateAdaptiveTriggerSide(ComboBox selector, TextBox start,
+        private void UpdateAdaptiveTriggerSide(ProfileChoiceSelector selector, TextBox start,
             TextBox secondary, TextBox strength, Label secondaryLabel, bool hasProfile) {
             if (selector == null)
                 return;
@@ -1621,6 +1610,7 @@ namespace BetterJoyForCemu {
                 SelectedProfileId, "ControllerAudioEndpointId");
             ControllerProfileInfo profile = SelectedProfile;
             List<ControllerAudioEndpoint> endpoints = ControllerAudio.GetRenderEndpoints();
+            controllerAudioEndpointSelector.SelectedIndex = -1;
             controllerAudioEndpointSelector.Items.Clear();
             controllerAudioEndpointSelector.Items.AddRange(endpoints.Cast<object>().ToArray());
 
@@ -1698,6 +1688,13 @@ namespace BetterJoyForCemu {
             bool available = selected != null && selected.IsConnected &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
+            foreach (Control label in new Control[] {
+                controllerAudioEnabledLabel, controllerAudioVolumeLabel,
+                controllerAudioEndpointLabel,
+            }) {
+                if (label != null)
+                    label.Enabled = available;
+            }
             if (controllerAudioEnabledSelector != null)
                 controllerAudioEnabledSelector.Enabled = available;
             if (controllerAudioVolumeSelector != null)
@@ -1710,12 +1707,11 @@ namespace BetterJoyForCemu {
             if (controllerBluetoothMicrophoneSelector != null) {
                 bool supportsBluetoothMicrophone = selected != null &&
                     selected.Kind == ControllerKind.DualSense;
-                controllerBluetoothMicrophoneSelector.Visible =
-                    supportsBluetoothMicrophone;
                 controllerBluetoothMicrophoneSelector.Enabled = available &&
                     supportsBluetoothMicrophone;
                 if (controllerBluetoothMicrophoneLabel != null)
-                    controllerBluetoothMicrophoneLabel.Visible = supportsBluetoothMicrophone;
+                    controllerBluetoothMicrophoneLabel.Enabled = available &&
+                        supportsBluetoothMicrophone;
             }
         }
 
@@ -2088,13 +2084,14 @@ namespace BetterJoyForCemu {
             bool hasConfigurableLight = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
-            bool hasControllerAudio = hasConfigurableLight;
+            // These controls intentionally share one occupied row. Unlike the capability
+            // controls below, swapping them does not leave an unexplained layout gap.
             if (lightColorLabel != null)
                 lightColorLabel.Visible = hasConfigurableLight;
             if (lightColorButton != null)
                 lightColorButton.Visible = hasConfigurableLight;
             if (homeLedCheckBox != null)
-                homeLedCheckBox.Visible = selected != null && !hasConfigurableLight;
+                homeLedCheckBox.Visible = !hasConfigurableLight;
             foreach (Control control in new Control[] {
                 controllerAudioEnabledLabel, controllerAudioVolumeLabel,
                 controllerAudioEndpointLabel,
@@ -2102,18 +2099,22 @@ namespace BetterJoyForCemu {
                 controllerAudioEndpointSelector, controllerAudioTestButton,
             }) {
                 if (control != null)
-                    control.Visible = hasControllerAudio;
+                    control.Visible = true;
             }
             // UpdateControllerAudioControlState (called below) is the source of truth for
             // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
-            if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation))
-                touchpadNavigation.Visible = hasTouchpad;
+            if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation)) {
+                touchpadNavigation.Visible = true;
+                touchpadNavigation.Enabled = hasTouchpad;
+            }
             if (!hasTouchpad && profilePages.TryGetValue("touchpad", out Panel touchpadPage) &&
                 touchpadPage.Visible)
                 ShowProfilePage("gyro");
             if (profileNavigationButtons.TryGetValue("adaptive_triggers",
-                    out Button adaptiveTriggersNavigation))
-                adaptiveTriggersNavigation.Visible = hasAdaptiveTriggers;
+                    out Button adaptiveTriggersNavigation)) {
+                adaptiveTriggersNavigation.Visible = true;
+                adaptiveTriggersNavigation.Enabled = hasAdaptiveTriggers;
+            }
             if (!hasAdaptiveTriggers && profilePages.TryGetValue("adaptive_triggers",
                     out Panel adaptiveTriggersPage) && adaptiveTriggersPage.Visible)
                 ShowProfilePage("gyro");
@@ -2837,6 +2838,68 @@ namespace BetterJoyForCemu {
         private void btn_close_Click(object sender, EventArgs e) {
             btn_apply_Click(sender, e);
             Close();
+        }
+    }
+
+    // Choice-only profile options use the same split-selector presentation as mappings while
+    // retaining the SelectedIndex/SelectedItem behavior expected from the old ComboBoxes.
+    public sealed class ProfileChoiceSelector : SplitButton {
+        private int selectedIndex = -1;
+        private Color menuBackColor;
+        private Color menuForeColor;
+
+        public List<object> Items { get; } = new List<object>();
+        public event EventHandler SelectedIndexChanged;
+
+        public int SelectedIndex {
+            get => selectedIndex;
+            set {
+                int normalized = value >= 0 && value < Items.Count ? value : -1;
+                if (selectedIndex == normalized)
+                    return;
+                selectedIndex = normalized;
+                Text = selectedIndex >= 0 ? Convert.ToString(Items[selectedIndex]) : String.Empty;
+                SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public object SelectedItem {
+            get => selectedIndex >= 0 && selectedIndex < Items.Count
+                ? Items[selectedIndex]
+                : null;
+            set => SelectedIndex = value == null ? -1 : Items.FindIndex(item => Equals(item, value));
+        }
+
+        public ProfileChoiceSelector() {
+            Menu = new ContextMenuStrip { ShowImageMargin = false };
+            Menu.Opening += (sender, e) => RebuildMenu();
+            Click += (sender, e) => Menu.Show(this, 0, Height);
+        }
+
+        public int FindStringExact(string text) {
+            return Items.FindIndex(item => String.Equals(
+                Convert.ToString(item), text, StringComparison.CurrentCulture));
+        }
+
+        public void StyleMenu(Color backColor, Color foreColor, Font font) {
+            menuBackColor = backColor;
+            menuForeColor = foreColor;
+            Menu.BackColor = backColor;
+            Menu.ForeColor = foreColor;
+            Menu.Font = font;
+        }
+
+        private void RebuildMenu() {
+            Menu.Items.Clear();
+            for (int index = 0; index < Items.Count; index++) {
+                ToolStripMenuItem item = new ToolStripMenuItem(Convert.ToString(Items[index])) {
+                    Tag = index,
+                    BackColor = menuBackColor,
+                    ForeColor = menuForeColor,
+                };
+                item.Click += (sender, e) => SelectedIndex = (int)((ToolStripItem)sender).Tag;
+                Menu.Items.Add(item);
+            }
         }
     }
 }
