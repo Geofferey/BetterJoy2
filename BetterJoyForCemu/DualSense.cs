@@ -754,9 +754,10 @@ namespace BetterJoyForCemu {
             SubmitTouchpadReport(ReadPackedTouchContact(r, 32 + o),
                                  ReadPackedTouchContact(r, 36 + o));
 
-            // DS4Windows reads the capacity from status[0] and the charging flag from status[1].
-            // The controller exposes eight usable capacity steps, so scale the low nibble against
-            // 8 (clamped at 100) instead of presenting the midpoint of a nominal 10% bucket.
+            // DualSense packs both capacity and charge state into status[0]: the low nibble is a
+            // 10-percent capacity bucket and the high nibble distinguishes discharging, charging,
+            // full, thermal/voltage lockout, and charge errors. status[1] is jack/mic detection;
+            // using its 0x08 bit as the charge flag made wired controllers appear to discharge.
             byte batteryByte = r[52 + o];
             byte powerStateByte = r[53 + o];
             int nextHeadphoneState = (powerStateByte & 0x03) != 0 ? 1 : 0;
@@ -770,19 +771,39 @@ namespace BetterJoyForCemu {
             }
             int batteryPercent;
             ControllerBatteryStatus batteryState;
-            DecodeBatteryStatus(batteryByte, powerStateByte, out batteryPercent, out batteryState);
+            DecodeBatteryStatus(batteryByte, out batteryPercent, out batteryState);
             SetBatteryStatus(batteryPercent, batteryState);
         }
 
-        internal static void DecodeBatteryStatus(byte batteryValue, byte powerStateValue, out int percent,
+        internal static void DecodeBatteryStatus(byte batteryValue, out int percent,
                                                  out ControllerBatteryStatus status) {
-            bool full = (batteryValue & 0x20) != 0;
-            bool charging = (powerStateValue & 0x08) != 0;
+            int capacityBucket = batteryValue & 0x0F;
+            int chargingState = (batteryValue >> 4) & 0x0F;
 
-            percent = full ? 100 : Math.Min((batteryValue & 0x0F) * 100 / 8, 100);
-            status = full ? ControllerBatteryStatus.Full :
-                     charging ? ControllerBatteryStatus.Charging :
-                     ControllerBatteryStatus.Discharging;
+            // Sony reports 0 as 0-9%, 1 as 10-19%, and so on. Use each bucket's midpoint just as
+            // the Linux hid-playstation driver and dualsensectl do, except that full has an exact
+            // state of its own. A lockout/error state must remain visible instead of masquerading
+            // as an ordinary discharge.
+            percent = Math.Min(capacityBucket * 10 + 5, 100);
+            switch (chargingState) {
+                case 0x0:
+                    status = ControllerBatteryStatus.Discharging;
+                    break;
+                case 0x1:
+                    status = ControllerBatteryStatus.Charging;
+                    break;
+                case 0x2:
+                    percent = 100;
+                    status = ControllerBatteryStatus.Full;
+                    break;
+                case 0xA: // voltage or temperature outside the charging range
+                case 0xB: // temperature error
+                    status = ControllerBatteryStatus.NotCharging;
+                    break;
+                default:  // includes 0xF, the controller's charging-error state
+                    status = ControllerBatteryStatus.Unknown;
+                    break;
+            }
         }
 
         // Gyro/accel byte offsets, cross-checked against three independent reference
