@@ -169,7 +169,9 @@ namespace BetterJoyForCemu {
         // Bluetooth microphone packets share report ID 0x31 with ordinary controller input, but
         // carry a distinct transport tag and a fixed 71-byte, 48 kHz mono Opus frame. Keep the
         // capture/decode worker off the HID poll thread; the controller file owns Sony's framing,
-        // while ViiperMicrophoneEndpoint owns only the generic virtual UAC delivery edge.
+        // while whichever IMicrophoneEndpoint MicrophoneEndpointFactory selects owns only the
+        // generic delivery edge (VIIPER's virtual UAC device, or a Virtual Audio Driver render
+        // endpoint).
         private readonly ConcurrentQueue<byte[]> bluetoothMicrophoneFrameQueue =
             new ConcurrentQueue<byte[]>();
         private readonly AutoResetEvent bluetoothMicrophoneSignal = new AutoResetEvent(false);
@@ -1067,9 +1069,9 @@ namespace BetterJoyForCemu {
             bool failureReported = false;
             try {
                 while (bluetoothMicrophoneRequested && state > state_.DROPPED) {
-                    ViiperMicrophoneEndpoint endpoint = null;
+                    IMicrophoneEndpoint endpoint = null;
                     try {
-                        endpoint = ViiperMicrophoneEndpoint.Open();
+                        endpoint = MicrophoneEndpointFactory.Open();
                         if (!bluetoothMicrophoneRequested)
                             return;
 
@@ -1144,7 +1146,7 @@ namespace BetterJoyForCemu {
         }
 
         private void CleanupBluetoothMicrophoneAttempt(
-            ViiperMicrophoneEndpoint endpoint) {
+            IMicrophoneEndpoint endpoint) {
             while (bluetoothMicrophoneFrameQueue.TryDequeue(out _)) { }
             endpoint?.Dispose();
             lock (bluetoothAudioStateLock) {

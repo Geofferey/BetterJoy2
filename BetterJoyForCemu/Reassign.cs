@@ -1290,25 +1290,38 @@ namespace BetterJoyForCemu {
                 "Enable motion server", 24, 579, "MotionServer"));
 
             page.Controls.Add(CreateDivider(24, 629));
-            AddSectionHeading(page, "Debug logging", 646,
+            AddSectionHeading(page, "Microphone backend", 646,
+                "Which Windows device the DualSense's built-in Bluetooth microphone is presented " +
+                "through. Both backends are bundled and installed by BetterJoy's own installer.");
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Use VIIPER for DualSense microphone", 24, 703,
+                "UseViiperForDualSenseMicrophone"));
+            tip_reassign.SetToolTip(globalOptionCheckBoxes["UseViiperForDualSenseMicrophone"],
+                "On: prefer VIIPER (emulates a real USB audio device). Off, or if VIIPER isn't " +
+                "available: fall back to Steam Streaming Microphone instead - the same virtual " +
+                "audio device Valve's own Steam Link/Remote Play voice chat uses, Microsoft " +
+                "attestation-signed, no test-signing mode required.");
+
+            page.Controls.Add(CreateDivider(24, 753));
+            AddSectionHeading(page, "Debug logging", 770,
                 "Diagnostic file logs can grow quickly; enable them only while troubleshooting.");
             page.Controls.Add(CreateGlobalCheckBox(
-                "Debug logging", 24, 703, "DebugLogging"));
+                "Debug logging", 24, 827, "DebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "DualSense debug logging", 24, 737, "DualSenseDebugLogging"));
+                "DualSense debug logging", 24, 861, "DualSenseDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "DualShock 4 debug logging", 315, 737, "DualShock4DebugLogging"));
+                "DualShock 4 debug logging", 315, 861, "DualShock4DebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Gyro mouse debug logging", 24, 771, "GyroMouseDebugLogging"));
+                "Gyro mouse debug logging", 24, 895, "GyroMouseDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Gyro stick debug logging", 315, 771, "GyroStickDebugLogging"));
+                "Gyro stick debug logging", 315, 895, "GyroStickDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Auto-calibration debug logging", 24, 805, "AutoCalDebugLogging"));
+                "Auto-calibration debug logging", 24, 929, "AutoCalDebugLogging"));
 
             page.Controls.Add(CreateLabel(
                 "Some changes, including HidHide and startup behavior, take effect after restart.",
-                24, 850, ProfileMuted, false, 8.5F));
-            page.AutoScrollMinSize = new Size(0, 892);
+                24, 974, ProfileMuted, false, 8.5F));
+            page.AutoScrollMinSize = new Size(0, 1016);
             return page;
         }
 

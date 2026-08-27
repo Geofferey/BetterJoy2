@@ -184,6 +184,9 @@
     <Compile Include="InputHelper.cs" />
     <Compile Include="InputIpcProtocol.cs" />
     <Compile Include="ViiperMicrophoneEndpoint.cs" />
+    <Compile Include="SteamMicrophoneEndpoint.cs" />
+    <Compile Include="IMicrophoneEndpoint.cs" />
+    <Compile Include="MicrophoneEndpointFactory.cs" />
     <Compile Include="InputState.cs" />
     <Compile Include="GyroMath.cs" />
     <Compile Include="GyroMouseOrientation.cs" />
@@ -250,6 +253,15 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Drivers\USBip-0.9.7.7-LICENSE.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\SteamStreamingMicrophone.sys">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\SteamStreamingMicrophone.inf">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Drivers\SteamStreamingMicrophone.cat">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <None Include="packages.config" />

@@ -11,7 +11,7 @@ namespace BetterJoyForCemu {
     // Presents decoded controller microphone PCM through VIIPER's audio-only DualSense USB
     // device. VIIPER and usbip-win2 remain separate, independently licensed programs; BetterJoy
     // speaks only the public localhost API and V5 framed stream documented by VIIPER.
-    internal sealed class ViiperMicrophoneEndpoint : IDisposable {
+    internal sealed class ViiperMicrophoneEndpoint : IMicrophoneEndpoint {
         private const string Host = "127.0.0.1";
         private const int ApiPort = 3242;
         private const byte StreamVersion = 0x05;

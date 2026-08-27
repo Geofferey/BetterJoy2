@@ -13,7 +13,7 @@ namespace BetterJoyForCemu {
                 "AutoAddControllers", "BlockAutoAddUSB", "AllowCalibration",
                 "UseHidHide", "UnhideOnExit", "AutoCalDebugLogging",
                 "DualSenseDebugLogging", "DualShock4DebugLogging", "DebugLogging", "GyroMouseDebugLogging",
-                "GyroStickDebugLogging",
+                "GyroStickDebugLogging", "UseViiperForDualSenseMicrophone",
             };
 
         public static bool IsGlobalOption(string key) {
