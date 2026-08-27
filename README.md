@@ -28,23 +28,25 @@ other compatible applications.
 ## Why BetterJoy2 exists
 
 Controller support should behave like a system utility, not like a licensed game. BetterJoy2 grew
-out of frustration with controller software that ties access to a storefront session, limits
-simultaneous use across a person's own computers, divides hardware support into additional paid
+out of frustration with controller software that requires user intervention, ties access to a storefront, 
+limits simultaneous use across a person's own devices, divides hardware support into additional paid
 tiers, or requires users to assemble fragile remapping and device-hiding workarounds merely to
-avoid double input.
+avoid double input. 
+
+People should be paid for great software BUT nickle and diming + subscription practice is DISGUSTING!
 
 BetterJoy2 takes the opposite approach:
 
-* **Your hardware remains yours** - no DRM, account activation, storefront launcher, machine
-  entitlement, concurrent-use restriction, or feature DLC.
+* **Works system-wide** - the controller service does not depend on a game launcher or the GUI
+  remaining open, and the optional virtual HID mouse reaches elevated applications and Windows
+  session boundaries. Controllers should "Just work" without clunky UIs, startup apps or any nonsense!
+* **The software remains yours** - no DRM, account activation, storefront launcher, machine
+  entitlement, concurrent-use restriction, or feature DLC. I paid for DSX on Steam and still feel ripped!
 * **Remapping is optional** - choose XInput or DualShock 4 output and play, or layer Steam Input or
   another remapper on top when its additional behavior is actually wanted.
 * **Double input is handled at the source** - when HidHide is installed, BetterJoy2 can manage the
   physical controller's visibility before creating its virtual output, recognizes and rejects its
   own virtual devices during discovery, and provides an explicit unhide-on-exit policy.
-* **It works system-wide** - the controller service does not depend on a game launcher or the GUI
-  remaining open, and the optional virtual HID mouse reaches elevated applications and Windows
-  session boundaries.
 * **The implementation is inspectable** - controller protocols, transforms, profiles, service
   behavior, and hardware integrations live in the open repository and can be audited, modified,
   or forked.
@@ -54,39 +56,39 @@ BetterJoy2 takes the opposite approach:
 This fork (BetterJoy2) builds heavily on the original BetterJoy - see
 [Acknowledgements](#acknowledgements) for the foundation it's built on. Major additions include:
 
-* **Nintendo and PlayStation controller support** - Joy-Con pairs or individual halves, Switch Pro,
+* **FIRST CLASS Nintendo and PlayStation controller support** - Joy-Con pairs or individual halves, Switch Pro,
   Switch SNES/N64, DualShock 4, and DualSense share one controller pipeline with XInput or
   DualShock 4 virtual output. Sony support includes buttons, sticks, analog triggers, battery state,
-  rumble, lightbars, touchpads, and calibrated gyro/accelerometer motion.
-* **Clean physical/virtual device ownership** - integrated HidHide management prevents games and
-  remappers from consuming both the physical controller and BetterJoy2's virtual output. BetterJoy2
-  excludes its own virtual devices from discovery and can restore hidden controllers on exit.
+  rumble, lightbars, touchpads, audio and calibrated gyro/accelerometer motion.
+* **Clean physical/virtual device ownership** - integrated and automated HidHide management prevents 
+  games and remappers from consuming both the physical controller and BetterJoy2's virtual output. 
+  BetterJoy2 excludes its own virtual devices from discovery and can restore hidden controllers on exit.
 * **Gravity-referenced filtered gyro mouse** - a full rework around "Player Space" motion math
   (adapted from GamepadMotionHelpers): yaw/pitch tracked relative to true gravity instead of the
-  controller's raw local axes, so aiming stays consistent no matter how the controller is tilted
+  controller's raw local axes, attempts to keep aiming consistent when the controller is tilted
   or rolled. Includes low-speed tightening, adaptive smoothing, stationary-bias drift correction,
   and orientation-aware grip recentering.
 * **Gyro-to-stick** - turn gyro rotation into virtual analog stick input, with three selectable
-  modes (Rate, Absolute tilt, Hybrid), per-stick axis source and invert, configurable deflection
+  modes (Rate, Absolute tilt, Hybrid), per-stick axes, inversion, configurable deflection
   limits, and a ratchet bind for repositioning your wrist mid-turn without it registering as
-  reverse input.
+  reverse input (wip).
 * **Touchpad mouse, gestures, and stick output** - DualShock 4 and DualSense touchpads can act as
   relative pointers or floating-origin virtual sticks. Profiles provide separate mouse/stick
-  sensitivity, per-axis deflection limits, tap-to-click-and-drag, assignable one- and two-finger
+  sensitivity, per-axis deflection limits, tap-to-click-and-drag, assignable one and two-finger
   taps, two-finger scrolling, click/scroll actions, activation chords, clenching, pressure lockout,
   and optional inhibition of conflicting controller actions.
 * **Silent auto-calibration** - gyro, accelerometer, and stick centers are recalibrated
   automatically in the background the moment a controller is detected sitting genuinely still, no
   wizard or user action required. A guided manual recalibration wizard is still available for
-  when it's needed.
-* **Runs as a Windows Service** - the core controller pipeline can run independent of the GUI,
-  surviving sign-out/sign-in and working from elevated windows and the Windows lock screen, with
+  when it's needed. Auto-calibration is still a WIP. 
+* **Runs as a Windows Service** - the core controller pipeline runs independent of the GUI,
+  surviving sign-out/sign-in. Works from elevated windows and the Windows lock screen, with
   crash recovery and a session-launched helper so keyboard/mouse actions still work across the
-  service boundary.
-* **Per-controller profiles** - multiple named profiles per physical controller cover virtual
+  all service boundaries.
+* **Per-controller profiles** - matching profiles per physical controller cover virtual
   output, motion, touch, device behavior, and optional mappings. Bindings support physical-only
   capture, button combinations, touch gestures, a mappable shake input, and reassignable virtual
-  Guide/PS output without mapped outputs contaminating subsequent bind capture.
+  Guide/PS output without mapped outputs or contaminating subsequent bind capture.
 * **Controller-owned hardware behavior** - profile-scoped rumble, arbitrary Sony lightbar colors,
   battery percentage/status, Bluetooth disconnect, headphone-jack detection and routing, gyro
   recentering, and controller-specific calibration remain attached to the physical device rather
@@ -97,7 +99,7 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   DualShock 4 controller, and remain composed with speaker, microphone, rumble, and lightbar state.
 * **PlayStation controller audio** - route Windows audio to DualShock 4 or DualSense speakers and
   connected headsets over USB or Bluetooth, with automatic jack switching and headphone-gated
-  startup. Bluetooth transport is experimental because timing and reliability vary across Windows
+  startup. Bluetooth audio transport is experimental because timing and reliability vary across Windows
   Bluetooth adapters and system load.
 * **Optional virtual HID mouse backend** (via FakerInput) - lets gyro mouse work across elevated
   windows, the Windows sign-in screen, and service/session boundaries where the standard approach
