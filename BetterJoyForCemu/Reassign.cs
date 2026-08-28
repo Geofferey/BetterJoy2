@@ -257,7 +257,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_toggle_haptics, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -297,6 +297,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_volume_down;
         private SplitButton btn_lt_haptics;
         private SplitButton btn_rt_haptics;
+        private SplitButton btn_toggle_haptics;
         private SplitButton btn_touchpad_click;
         private SplitButton btn_touchpad_tap;
         private SplitButton btn_touchpad_two_finger_tap;
@@ -400,6 +401,7 @@ namespace BetterJoyForCemu {
             btn_volume_down = new SplitButton { Name = "btn_volume_down" };
             btn_lt_haptics = new SplitButton { Name = "btn_lt_haptics" };
             btn_rt_haptics = new SplitButton { Name = "btn_rt_haptics" };
+            btn_toggle_haptics = new SplitButton { Name = "btn_toggle_haptics" };
             btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
             btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
             btn_touchpad_two_finger_tap = new SplitButton {
@@ -775,35 +777,36 @@ namespace BetterJoyForCemu {
             AddMappingRow(page, null, btn_guide, "Guide / PS output", 235, 24, 150, 430);
             AddMappingRow(page, null, btn_mic_mute, "Microphone button", 274, 24, 150, 430);
             AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 313, 24, 150, 430);
-            // No controller has a dedicated volume button, unlike the fixed-hardware-button
-            // remaps above - these bind an arbitrary combo instead (AdjustControllerAudioVolume,
-            // the same "any combo, one discrete step per press" model scroll_up/scroll_down use
-            // on the Gyro page), so the binding box itself works the same as every other row here
-            // even though nothing physical is being remapped. Only takes effect for DualSense/
-            // DualShock4 profiles, matching every other Controller audio setting.
-            AddMappingRow(page, null, btn_volume_up, "Controller vol +", 352, 24, 150, 430);
-            AddMappingRow(page, null, btn_volume_down, "Controller vol -", 391, 24, 150, 430);
-            // Same arbitrary-combo model as the volume bindings just above - no controller has a
-            // dedicated trigger-haptics button either. Each press cycles that trigger's Adaptive
-            // trigger mode (Adaptive triggers page) Off -> Resistance -> Weapon -> Vibration -> Off.
-            // DualSense-only (greyed out otherwise - see ApplySelectedController's
-            // hasAdaptiveTriggers), since no other controller has adaptive triggers at all.
-            AddMappingRow(page, null, btn_lt_haptics, "LT haptics", 430, 24, 150, 430);
-            AddMappingRow(page, null, btn_rt_haptics, "RT haptics", 469, 24, 150, 430);
-            // The actual mute toggle, as opposed to "Microphone button" above (which only remaps
-            // what pressing the physical mic-mute button outputs elsewhere, unrelated to
-            // BetterJoy's own mute state). Defaults to that same physical button alone
-            // (ControllerMappings.LegacyValue), so nothing changes unless this is reassigned to a
-            // different chord.
-            AddMappingRow(page, null, btn_toggle_built_in_mic, "Toggle Built-in mic", 508, 24, 150, 430);
 
-            page.Controls.Add(CreateDivider(24, 557));
-            AddSectionHeading(page, "Joy-Con rail buttons", 574,
+            page.Controls.Add(CreateDivider(24, 349));
+            AddSectionHeading(page, "Controller functions", 366,
+                "No controller has a dedicated button for these - bind any combo you like.");
+            // AdjustControllerAudioVolumeOnPress/CycleOptionModeOnPress (Controller.cs) - the same
+            // "any combo, one discrete step per press" model scroll_up/scroll_down (Gyro page) use,
+            // rather than remapping a fixed physical button the way the rows above do. Volume:
+            // DualSense/DualShock4 only. LT/RT haptics: DualSense only (greyed out otherwise - see
+            // ApplySelectedController's hasAdaptiveTriggers), cycling that trigger's own Adaptive
+            // trigger mode Off -> Resistance -> Weapon -> Vibration -> Off. Toggle haptics: every
+            // controller type, cycling the Rumble mode above Enable -> Disable -> Disable with
+            // gyro -> Enable. Toggle Built-in mic is the actual mute toggle, as opposed to
+            // "Microphone button" above (which only remaps what pressing the physical mic-mute
+            // button outputs elsewhere) - defaults to that same physical button alone
+            // (ControllerMappings.LegacyValue), so nothing changes unless reassigned.
+            AddMappingRow(page, null, btn_volume_up, "Controller vol +", 427, 24, 150, 430);
+            AddMappingRow(page, null, btn_volume_down, "Controller vol -", 466, 24, 150, 430);
+            AddMappingRow(page, null, btn_lt_haptics, "LT haptics", 505, 24, 150, 430);
+            AddMappingRow(page, null, btn_rt_haptics, "RT haptics", 544, 24, 150, 430);
+            AddMappingRow(page, null, btn_toggle_haptics, "Toggle haptics", 583, 24, 150, 430);
+            AddMappingRow(page, null, btn_toggle_built_in_mic, "Toggle Built-in mic", 622, 24, 150, 430);
+
+            page.Controls.Add(CreateDivider(24, 671));
+            AddSectionHeading(page, "Joy-Con rail buttons", 688,
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 635, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 635, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 676, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 676, 315, 440, 154);
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 749, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 749, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 790, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 790, 315, 440, 154);
+            page.AutoScrollMinSize = new Size(0, 851);
             return page;
         }
 
@@ -1021,9 +1024,8 @@ namespace BetterJoyForCemu {
             foreach (ProfileChoiceSelector selector in new[] {
                 adaptiveTriggerModeLeftSelector, adaptiveTriggerModeRightSelector,
             }) {
-                selector.Items.AddRange(new object[] {
-                    "Off", "Resistance", "Weapon", "Vibration",
-                });
+                foreach (var mode in ControllerMappings.AdaptiveTriggerModes)
+                    selector.Items.Add(mode.Label);
                 selector.SelectedIndexChanged += AdaptiveTriggerOptionChanged;
             }
 
@@ -1156,9 +1158,8 @@ namespace BetterJoyForCemu {
             rumbleModeLabel = CreateLabel("Rumble", 24, 638, ProfileText, false);
             page.Controls.Add(rumbleModeLabel);
             rumbleModeSelector = CreateProfileChoiceSelector(114, 632, 180);
-            rumbleModeSelector.Items.AddRange(new object[] {
-                "Enable", "Disable", "Disable with gyro",
-            });
+            foreach (var mode in ControllerMappings.RumbleModes)
+                rumbleModeSelector.Items.Add(mode.Label);
             rumbleModeSelector.SelectedIndexChanged += RumbleModeOptionChanged;
             page.Controls.Add(rumbleModeSelector);
             tip_reassign.SetToolTip(rumbleModeSelector,
@@ -1646,11 +1647,9 @@ namespace BetterJoyForCemu {
             if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
                 return;
 
-            string mode = rumbleModeSelector.SelectedIndex == 0
-                ? ControllerMappings.ModeEnable
-                : (rumbleModeSelector.SelectedIndex == 2
-                    ? ControllerMappings.RumbleModeDisableWithGyro
-                    : ControllerMappings.ModeDisable);
+            var modes = ControllerMappings.RumbleModes;
+            int index = rumbleModeSelector.SelectedIndex;
+            string mode = index >= 0 && index < modes.Length ? modes[index].Value : modes[0].Value;
             ControllerMappings.SetOptionValue(SelectedProfileId, "EnableRumble", mode);
         }
 
@@ -1691,23 +1690,18 @@ namespace BetterJoyForCemu {
         }
 
         private static string AdaptiveTriggerModeValue(ProfileChoiceSelector selector) {
-            switch (selector?.SelectedIndex ?? 0) {
-                case 1: return "resistance";
-                case 2: return "weapon";
-                case 3: return "vibration";
-                default: return "off";
-            }
+            int index = selector?.SelectedIndex ?? 0;
+            var modes = ControllerMappings.AdaptiveTriggerModes;
+            return index >= 0 && index < modes.Length ? modes[index].Value : modes[0].Value;
         }
 
         private static void LoadAdaptiveTriggerMode(ProfileChoiceSelector selector, string value) {
             if (selector == null)
                 return;
-            switch ((value ?? "off").Trim().ToLowerInvariant()) {
-                case "resistance": selector.SelectedIndex = 1; break;
-                case "weapon": selector.SelectedIndex = 2; break;
-                case "vibration": selector.SelectedIndex = 3; break;
-                default: selector.SelectedIndex = 0; break;
-            }
+            var modes = ControllerMappings.AdaptiveTriggerModes;
+            int index = Array.FindIndex(modes,
+                m => String.Equals(m.Value, (value ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+            selector.SelectedIndex = Math.Max(0, index);
         }
 
         private void UpdateAdaptiveTriggerControlState(bool hasProfile) {
@@ -2010,9 +2004,9 @@ namespace BetterJoyForCemu {
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
                 swapXyCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapXY");
                 string rumbleMode = ControllerMappings.RumbleMode(SelectedProfileId);
-                rumbleModeSelector.SelectedIndex =
-                    rumbleMode == ControllerMappings.ModeEnable ? 0 :
-                    (rumbleMode == ControllerMappings.RumbleModeDisableWithGyro ? 2 : 1);
+                int rumbleIndex = Array.FindIndex(ControllerMappings.RumbleModes,
+                    m => String.Equals(m.Value, rumbleMode, StringComparison.OrdinalIgnoreCase));
+                rumbleModeSelector.SelectedIndex = Math.Max(0, rumbleIndex);
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 UpdateLightColorButton(
                     ControllerMappings.OptionValue(SelectedProfileId, "LightColor"));

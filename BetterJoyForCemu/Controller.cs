@@ -2226,16 +2226,17 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(mappingProfileId, "ControllerAudioVolume", updated.ToString());
         }
 
-        // Off -> Resistance -> Weapon -> Vibration -> Off, matching Reassign.cs's own
-        // AdaptiveTriggerModeValue/LoadAdaptiveTriggerMode value strings exactly (that dropdown
-        // and this binding both just write the same AdaptiveTriggerMode{Left,Right} option, so
-        // whichever one the user touched last wins - no separate state to keep in sync). Same
-        // discrete-per-press model as AdjustControllerAudioVolumeOnPress above; DualSense only,
-        // checked by the caller since no other controller has adaptive triggers at all.
-        private static readonly string[] AdaptiveTriggerModeCycle =
-            { "off", "resistance", "weapon", "vibration" };
-
-        private void CycleAdaptiveTriggerModeOnPress(string configKey, string optionKey) {
+        // Advances optionKey to the next entry in modes (ControllerMappings.AdaptiveTriggerModes/
+        // RumbleModes - the same list its own dropdown populates .Items from, so a mode added
+        // there is automatically part of the cycle here too, nothing to keep in sync by hand).
+        // Same discrete-per-press model as AdjustControllerAudioVolumeOnPress above. The dropdown
+        // and this binding both just write the same option, so whichever one the user touched
+        // last wins - no separate state of its own to track. currentValue reads through whatever
+        // validating accessor the option already has (e.g. ControllerMappings.RumbleMode, which
+        // still needs to migrate old plain-bool EnableRumble values) rather than a raw OptionValue
+        // read, and is only called once an actual press is confirmed.
+        private void CycleOptionModeOnPress(string configKey, string optionKey,
+                Func<string, string> currentValue, (string Value, string Label)[] modes) {
             bool held = UpdateDesktopActionComboHeld(configKey, true, out bool wasHeld);
             if (!held || wasHeld)
                 return;
@@ -2243,10 +2244,7 @@ namespace BetterJoyForCemu {
             if (mappingProfileId == null)
                 mappingProfileId = ControllerMappings.ProfileIdFor(this);
 
-            string current = (ControllerMappings.OptionValue(mappingProfileId, optionKey) ?? "off")
-                .Trim().ToLowerInvariant();
-            int index = Array.IndexOf(AdaptiveTriggerModeCycle, current);
-            string next = AdaptiveTriggerModeCycle[(Math.Max(0, index) + 1) % AdaptiveTriggerModeCycle.Length];
+            string next = ControllerMappings.NextCycleValue(modes, currentValue(mappingProfileId));
             ControllerMappings.SetOptionValue(mappingProfileId, optionKey, next);
         }
 
@@ -2342,9 +2340,17 @@ namespace BetterJoyForCemu {
                 AdjustControllerAudioVolumeOnPress("volume_down", -10);
             }
             if (Kind == ControllerKind.DualSense) {
-                CycleAdaptiveTriggerModeOnPress("lt_haptics", "AdaptiveTriggerModeLeft");
-                CycleAdaptiveTriggerModeOnPress("rt_haptics", "AdaptiveTriggerModeRight");
+                CycleOptionModeOnPress("lt_haptics", "AdaptiveTriggerModeLeft",
+                    id => ControllerMappings.OptionValue(id, "AdaptiveTriggerModeLeft"),
+                    ControllerMappings.AdaptiveTriggerModes);
+                CycleOptionModeOnPress("rt_haptics", "AdaptiveTriggerModeRight",
+                    id => ControllerMappings.OptionValue(id, "AdaptiveTriggerModeRight"),
+                    ControllerMappings.AdaptiveTriggerModes);
             }
+            // Rumble applies to every controller type, unlike the DualSense/DualShock4-only
+            // bindings above.
+            CycleOptionModeOnPress("toggle_haptics", "EnableRumble",
+                ControllerMappings.RumbleMode, ControllerMappings.RumbleModes);
             DoDeviceSpecificButtonActions();
 
             if (HasTouchpad) {

@@ -45,10 +45,34 @@ namespace BetterJoyForCemu {
         public const string MicIndicatorModeEnabled = "enabled";
         public const string MicIndicatorModeEnabledWhileDisabled = "enabled_while_disabled";
 
+        // Single source of truth for every "cycle through the modes of a dropdown" binding
+        // (lt_haptics/rt_haptics/toggle_haptics) as well as the dropdowns themselves
+        // (Reassign.cs populates .Items from these instead of a separately hand-written list) -
+        // adding, removing, or reordering an entry here is the only place that needs to change
+        // for both the UI and the binding's cycle order to pick it up.
+        public static readonly (string Value, string Label)[] AdaptiveTriggerModes = {
+            ("off", "Off"), ("resistance", "Resistance"), ("weapon", "Weapon"),
+            ("vibration", "Vibration"),
+        };
+        public static readonly (string Value, string Label)[] RumbleModes = {
+            (ModeEnable, "Enable"), (ModeDisable, "Disable"),
+            (RumbleModeDisableWithGyro, "Disable with gyro"),
+        };
+
+        // Shared by every mode-cycling binding - advances from whichever entry matches current
+        // (case-insensitively) to the next, wrapping around; an unrecognized/unset current value
+        // is treated as if it were index 0, so the first press always lands on modes[1] rather
+        // than silently doing nothing.
+        public static string NextCycleValue((string Value, string Label)[] modes, string current) {
+            int index = Array.FindIndex(modes,
+                m => String.Equals(m.Value, current, StringComparison.OrdinalIgnoreCase));
+            return modes[(Math.Max(0, index) + 1) % modes.Length].Value;
+        }
+
         public static readonly string[] Keys = {
             "capture", "home", "guide", "mic_mute", "toggle_built_in_mic",
             "volume_up", "volume_down",
-            "lt_haptics", "rt_haptics",
+            "lt_haptics", "rt_haptics", "toggle_haptics",
             "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
