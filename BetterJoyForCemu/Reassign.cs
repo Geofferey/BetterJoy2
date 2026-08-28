@@ -257,7 +257,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_volume_up, btn_volume_down, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -294,6 +294,8 @@ namespace BetterJoyForCemu {
         private SplitButton btn_mic_mute;
         private SplitButton btn_volume_up;
         private SplitButton btn_volume_down;
+        private SplitButton btn_lt_haptics;
+        private SplitButton btn_rt_haptics;
         private SplitButton btn_touchpad_click;
         private SplitButton btn_touchpad_tap;
         private SplitButton btn_touchpad_two_finger_tap;
@@ -394,6 +396,8 @@ namespace BetterJoyForCemu {
             btn_mic_mute = new SplitButton { Name = "btn_mic_mute" };
             btn_volume_up = new SplitButton { Name = "btn_volume_up" };
             btn_volume_down = new SplitButton { Name = "btn_volume_down" };
+            btn_lt_haptics = new SplitButton { Name = "btn_lt_haptics" };
+            btn_rt_haptics = new SplitButton { Name = "btn_rt_haptics" };
             btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
             btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
             btn_touchpad_two_finger_tap = new SplitButton {
@@ -777,14 +781,21 @@ namespace BetterJoyForCemu {
             // DualShock4 profiles, matching every other Controller audio setting.
             AddMappingRow(page, null, btn_volume_up, "Controller vol +", 352, 24, 150, 430);
             AddMappingRow(page, null, btn_volume_down, "Controller vol -", 391, 24, 150, 430);
+            // Same arbitrary-combo model as the volume bindings just above - no controller has a
+            // dedicated trigger-haptics button either. Each press cycles that trigger's Adaptive
+            // trigger mode (Adaptive triggers page) Off -> Resistance -> Weapon -> Vibration -> Off.
+            // DualSense-only (greyed out otherwise - see ApplySelectedController's
+            // hasAdaptiveTriggers), since no other controller has adaptive triggers at all.
+            AddMappingRow(page, null, btn_lt_haptics, "LT haptics", 430, 24, 150, 430);
+            AddMappingRow(page, null, btn_rt_haptics, "RT haptics", 469, 24, 150, 430);
 
-            page.Controls.Add(CreateDivider(24, 440));
-            AddSectionHeading(page, "Joy-Con rail buttons", 457,
+            page.Controls.Add(CreateDivider(24, 518));
+            AddSectionHeading(page, "Joy-Con rail buttons", 535,
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 518, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 518, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 559, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 559, 315, 440, 154);
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 596, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 596, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 637, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 637, 315, 440, 154);
             return page;
         }
 
@@ -2285,6 +2296,10 @@ namespace BetterJoyForCemu {
                 button.Enabled = hasController;
                 GetPrettyName(button);
             }
+            // Overrides the blanket hasController pass just above - these two specifically also
+            // need DualSense's own adaptive-trigger capability, not just any connected controller.
+            btn_lt_haptics.Enabled = hasController && hasAdaptiveTriggers;
+            btn_rt_haptics.Enabled = hasController && hasAdaptiveTriggers;
             btn_apply.Enabled = hasController;
             gameControllersButton.Enabled = hasController;
             LoadProfileOptions(hasController);

@@ -2226,6 +2226,30 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(mappingProfileId, "ControllerAudioVolume", updated.ToString());
         }
 
+        // Off -> Resistance -> Weapon -> Vibration -> Off, matching Reassign.cs's own
+        // AdaptiveTriggerModeValue/LoadAdaptiveTriggerMode value strings exactly (that dropdown
+        // and this binding both just write the same AdaptiveTriggerMode{Left,Right} option, so
+        // whichever one the user touched last wins - no separate state to keep in sync). Same
+        // discrete-per-press model as AdjustControllerAudioVolumeOnPress above; DualSense only,
+        // checked by the caller since no other controller has adaptive triggers at all.
+        private static readonly string[] AdaptiveTriggerModeCycle =
+            { "off", "resistance", "weapon", "vibration" };
+
+        private void CycleAdaptiveTriggerModeOnPress(string configKey, string optionKey) {
+            bool held = UpdateDesktopActionComboHeld(configKey, true, out bool wasHeld);
+            if (!held || wasHeld)
+                return;
+
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+
+            string current = (ControllerMappings.OptionValue(mappingProfileId, optionKey) ?? "off")
+                .Trim().ToLowerInvariant();
+            int index = Array.IndexOf(AdaptiveTriggerModeCycle, current);
+            string next = AdaptiveTriggerModeCycle[(Math.Max(0, index) + 1) % AdaptiveTriggerModeCycle.Length];
+            ControllerMappings.SetOptionValue(mappingProfileId, optionKey, next);
+        }
+
         protected void DoThingsWithButtons() {
             // Checked first and returns early like the other button-driven side effects below -
             // a face button doubling as "confirm" only ever matters while a calibration prompt
@@ -2309,6 +2333,10 @@ namespace BetterJoyForCemu {
             if (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4) {
                 AdjustControllerAudioVolumeOnPress("volume_up", 10);
                 AdjustControllerAudioVolumeOnPress("volume_down", -10);
+            }
+            if (Kind == ControllerKind.DualSense) {
+                CycleAdaptiveTriggerModeOnPress("lt_haptics", "AdaptiveTriggerModeLeft");
+                CycleAdaptiveTriggerModeOnPress("rt_haptics", "AdaptiveTriggerModeRight");
             }
 
             if (HasTouchpad) {

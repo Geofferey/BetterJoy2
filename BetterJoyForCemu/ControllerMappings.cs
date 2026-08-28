@@ -47,6 +47,7 @@ namespace BetterJoyForCemu {
 
         public static readonly string[] Keys = {
             "capture", "home", "guide", "mic_mute", "volume_up", "volume_down",
+            "lt_haptics", "rt_haptics",
             "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
