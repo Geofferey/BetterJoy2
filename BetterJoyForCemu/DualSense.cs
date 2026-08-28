@@ -1644,12 +1644,7 @@ namespace BetterJoyForCemu {
             report[BtAudioStateOffset + 7] = bluetoothAudioRouteHeadphones
                 ? (byte)0x00
                 : (byte)0x09;
-            report[BtAudioStateOffset + 8] = microphoneMuted
-                ? (byte)0x01
-                : (byte)0x00;
-            report[BtAudioStateOffset + 9] = microphoneMuted
-                ? DualSensePowerSaveMicMute
-                : (byte)0x00;
+            WriteMicrophoneMuteState(report, BtAudioStateOffset, microphoneMuted);
             WriteAdaptiveTriggerState(report, BtAudioStateOffset,
                 bluetoothOutputStateDirty);
             report[BtAudioStateOffset + 37] = 0x0A;
@@ -1771,6 +1766,17 @@ namespace BetterJoyForCemu {
                 currentLeftTriggerEffect.Length);
         }
 
+        // Single source of truth for the mute LED and the real hardware mic-mute bit: both bytes
+        // only ever come from here, from the same muted bool, so no other code path can write one
+        // without the other and let the LED drift from what the mic hardware is actually doing.
+        // There's no hardware-readback status to double check this against instead (checked
+        // against Sony's own Linux driver source - it doesn't exist), so keeping these two writes
+        // structurally inseparable is the strongest guarantee the protocol allows.
+        private static void WriteMicrophoneMuteState(byte[] report, int offset, bool muted) {
+            report[offset + 8] = muted ? (byte)1 : (byte)0; // mute_button_led
+            report[offset + 9] = muted ? DualSensePowerSaveMicMute : (byte)0; // power_save_control
+        }
+
         private void WriteRetainedRumbleAndTriggerState(byte[] report, int commonOffset,
                                                         byte leftMotor, byte rightMotor) {
             // A rumble publication enables both compatibility-rumble bits and both trigger
@@ -1792,8 +1798,7 @@ namespace BetterJoyForCemu {
             report[commonOffset + 1] = 0x55 | DualSensePowerSaveControlEnable;
             report[commonOffset + 2] = rightMotor;
             report[commonOffset + 3] = leftMotor;
-            report[commonOffset + 8] = microphoneMuted ? (byte)1 : (byte)0; // mute_button_led
-            report[commonOffset + 9] = microphoneMuted ? DualSensePowerSaveMicMute : (byte)0; // power_save_control
+            WriteMicrophoneMuteState(report, commonOffset, microphoneMuted);
             WriteAdaptiveTriggerState(report, commonOffset, true);
             report[commonOffset + 44] = lightbarRed;
             report[commonOffset + 45] = lightbarGreen;
