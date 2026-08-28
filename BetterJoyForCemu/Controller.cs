@@ -2223,7 +2223,14 @@ namespace BetterJoyForCemu {
 
             long timestamp = Stopwatch.GetTimestamp();
             if (ProfileBoolOption("HomeLongPowerOff") && buttons[powerOffButton]) {
-                if ((timestamp - buttons_down_timestamp[powerOffButton]) / 10000 > 2000.0) {
+                // Configurable rather than a fixed 2 seconds - too short for a profile that also
+                // uses this same button as a modifier key, where any combo held a little long
+                // would otherwise power the controller off. DualSense/DualShock4 have their own
+                // ~5-second hardware timeout that powers them off regardless of this setting -
+                // not something BetterJoy can override, so values past that are effectively
+                // moot for those controllers specifically.
+                int holdSeconds = Math.Max(1, Math.Min(10, ProfileIntOption("HomeLongPowerOffHoldSeconds", 2)));
+                if ((timestamp - buttons_down_timestamp[powerOffButton]) / 10000 > holdSeconds * 1000.0) {
                     if (other != null)
                         other.PowerOff();
 

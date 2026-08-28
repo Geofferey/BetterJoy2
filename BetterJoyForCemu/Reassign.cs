@@ -71,6 +71,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
+        private TextBox homeLongPowerOffHoldInput;
         private ProfileChoiceSelector rumbleModeSelector;
         private Label rumbleModeLabel;
         private CheckBox dragToggleCheckBox;
@@ -1059,16 +1060,23 @@ namespace BetterJoyForCemu {
                 "Hold Home / Capture to power off", 315, 153, "HomeLongPowerOff");
             page.Controls.Add(autoPowerOffCheckBox);
             page.Controls.Add(homeLongPowerOffCheckBox);
-            page.Controls.Add(CreateLabel("After inactivity", 24, 198, ProfileText, false));
-            inactivitySelector = CreateProfileChoiceSelector(145, 192, 180);
+            page.Controls.Add(CreateLabel("for", 315, 179, ProfileText, false));
+            homeLongPowerOffHoldInput = CreateProfileSecondsInput(page, 340, 173, "HomeLongPowerOffHoldSeconds");
+            page.Controls.Add(CreateLabel("seconds", 396, 179, ProfileText, false));
+            tip_reassign.SetToolTip(homeLongPowerOffHoldInput,
+                "DualSense and DualShock4 controllers have their own built-in ~5 second hold " +
+                "timeout that powers them off regardless of this setting - BetterJoy can't " +
+                "override that, so a value past 5s won't do anything for those specifically.");
+            page.Controls.Add(CreateLabel("After inactivity", 24, 224, ProfileText, false));
+            inactivitySelector = CreateProfileChoiceSelector(145, 218, 180);
             inactivitySelector.Items.AddRange(new object[] {
                 "Never", "1 minute", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes",
             });
             inactivitySelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(inactivitySelector);
 
-            page.Controls.Add(CreateDivider(24, 244));
-            AddSectionHeading(page, "Input behavior", 261,
+            page.Controls.Add(CreateDivider(24, 270));
+            AddSectionHeading(page, "Input behavior", 287,
                 "Customize face buttons, mouse dragging, and gyro activation for this profile.");
             swapAbCheckBox = CreateProfileCheckBox("Swap A / B", 24, 318, "SwapAB");
             swapXyCheckBox = CreateProfileCheckBox("Swap X / Y", 190, 318, "SwapXY");
@@ -1479,7 +1487,42 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(SelectedProfileId, (string)input.Tag, value.ToString());
         }
 
-        private bool IsProfilePercentInput(Control control) {
+        // Same shape as CreateProfilePercentInput/ProfilePercentInput_Leave above, just with a
+        // 1-10 range instead of 0-100 - a separate clamp range doesn't fit that one cleanly.
+        private TextBox CreateProfileSecondsInput(Panel page, int left, int top, string optionKey) {
+            TextBox input = new TextBox {
+                Location = new Point(left, top),
+                Size = new Size(40, 25),
+                TextAlign = HorizontalAlignment.Center,
+                BackColor = ProfileSurface,
+                ForeColor = ProfileText,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 9F),
+                Tag = optionKey,
+            };
+            input.KeyPress += (sender, e) => {
+                if (!Char.IsDigit(e.KeyChar) && !Char.IsControl(e.KeyChar))
+                    e.Handled = true;
+            };
+            input.Leave += ProfileSecondsInput_Leave;
+            page.Controls.Add(input);
+            return input;
+        }
+
+        private void ProfileSecondsInput_Leave(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            TextBox input = (TextBox)sender;
+            int value;
+            if (!Int32.TryParse(input.Text, out value))
+                value = 2;
+            value = Math.Max(1, Math.Min(10, value));
+            input.Text = value.ToString();
+            ControllerMappings.SetOptionValue(SelectedProfileId, (string)input.Tag, value.ToString());
+        }
+
+        private bool IsDeferredCommitProfileInput(Control control) {
             return control != null && (
                 control == maxDeflectionXLeftInput || control == maxDeflectionYLeftInput ||
                 control == maxDeflectionXRightInput || control == maxDeflectionYRightInput ||
@@ -1490,7 +1533,8 @@ namespace BetterJoyForCemu {
                 control == adaptiveTriggerStrengthLeftInput ||
                 control == adaptiveTriggerStartRightInput ||
                 control == adaptiveTriggerSecondaryRightInput ||
-                control == adaptiveTriggerStrengthRightInput);
+                control == adaptiveTriggerStrengthRightInput ||
+                control == homeLongPowerOffHoldInput);
         }
 
         private void ProfileOptionControlChanged(object sender, EventArgs e) {
@@ -1781,7 +1825,7 @@ namespace BetterJoyForCemu {
             // including mid-calibration or any other dialog/input in progress, which is exactly
             // the kind of thing that looks like the app "quit" partway through. Only force a
             // commit when one of the deferred percentage TextBoxes specifically is focused.
-            if (IsProfilePercentInput(ActiveControl))
+            if (IsDeferredCommitProfileInput(ActiveControl))
                 this.ActiveControl = null;
 
             Control[] controls = {
@@ -1838,6 +1882,8 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "AutoPowerOff");
                 homeLongPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "HomeLongPowerOff");
+                homeLongPowerOffHoldInput.Text = ControllerMappings.IntOption(
+                    SelectedProfileId, "HomeLongPowerOffHoldSeconds", 2).ToString();
                 dragToggleCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
@@ -2796,7 +2842,7 @@ namespace BetterJoyForCemu {
         private void Reassign_FormClosing(object sender, FormClosingEventArgs e) {
             // Commit any uncommitted percentage-input edit (its Leave handler is the only thing
             // that saves it) rather than relying on implicit WinForms focus teardown order.
-            if (IsProfilePercentInput(ActiveControl))
+            if (IsDeferredCommitProfileInput(ActiveControl))
                 this.ActiveControl = null;
 
             keyboard?.Dispose();

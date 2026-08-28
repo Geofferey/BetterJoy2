@@ -63,6 +63,7 @@ namespace BetterJoyForCemu {
         // persisted beside bindings once a profile is edited.
         public static readonly string[] OptionKeys = {
             "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
+            "HomeLongPowerOffHoldSeconds",
             "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "ControllerAudioUsbLoopback",
