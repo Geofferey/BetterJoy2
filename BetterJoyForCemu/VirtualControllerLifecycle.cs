@@ -293,9 +293,14 @@ namespace BetterJoyForCemu {
             string useAs = ControllerMappings.OptionValue(
                 ControllerMappings.ProfileIdFor(jc), "UseAs");
             bool useXbox = useAs == ControllerMappings.UseAsXbox360;
+            bool useXboxViiper = useAs == ControllerMappings.UseAsXbox360Viiper;
             bool useDs4 = useAs == ControllerMappings.UseAsDualShock4;
 
-            if (!useXbox && jc.out_xbox != null) {
+            // A profile switching between the two Xbox 360 backends (or off) always tears down
+            // whatever's currently there first - out_xbox is one field shared by both backends
+            // (see IOutputControllerXbox360), so this check alone already covers both without
+            // needing to know which one is actually live.
+            if (!useXbox && !useXboxViiper && jc.out_xbox != null) {
                 try { jc.out_xbox.Disconnect(); } catch { }
                 jc.out_xbox = null;
             }
@@ -306,9 +311,16 @@ namespace BetterJoyForCemu {
 
             if ((useXbox || useDs4) && !Program.EnsureVigemClient())
                 return;
+            if (useXboxViiper && !Program.EnsureViiperServer())
+                return;
 
             if (useXbox && jc.out_xbox == null) {
                 jc.out_xbox = new VirtualOutput.OutputControllerXbox360();
+                jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
+                jc.out_xbox.Connect();
+            }
+            if (useXboxViiper && jc.out_xbox == null) {
+                jc.out_xbox = new VirtualOutput.OutputControllerXbox360Viiper();
                 jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
                 jc.out_xbox.Connect();
             }

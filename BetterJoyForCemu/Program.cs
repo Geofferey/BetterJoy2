@@ -837,6 +837,43 @@ namespace BetterJoyForCemu {
         public static ViGEmClient emClient;
         private static readonly object emClientLock = new object();
 
+        // One libVIIPER USB server for the whole process, mirroring emClient above - every
+        // VIIPER-backed virtual controller (regardless of profile) shares this single server and
+        // gets its own bus/device on it via OutputControllerXbox360Viiper. UIntPtr.Zero is never a
+        // real handle (libVIIPER's cgo.Handle values start at 1), so it doubles as "not created".
+        public static UIntPtr viiperServerHandle = UIntPtr.Zero;
+        private static readonly object viiperServerLock = new object();
+        private static readonly VirtualOutput.LibViiper.LogCallback viiperLogCallback = ViiperLog;
+
+        private static void ViiperLog(VirtualOutput.LibViiper.LogLevel level, string message) {
+            if (level >= VirtualOutput.LibViiper.LogLevel.Warn)
+                form?.AppendTextBox("VIIPER: " + message + "\r\n");
+        }
+
+        public static bool EnsureViiperServer() {
+            if (viiperServerHandle != UIntPtr.Zero)
+                return true;
+            lock (viiperServerLock) {
+                if (viiperServerHandle != UIntPtr.Zero)
+                    return true;
+                try {
+                    var config = new VirtualOutput.LibViiper.ServerConfig { Addr = "localhost:0" };
+                    if (VirtualOutput.LibViiper.NewUSBServer(
+                            ref config, out UIntPtr handle, viiperLogCallback)) {
+                        viiperServerHandle = handle;
+                        return true;
+                    }
+                } catch (DllNotFoundException) {
+                    // libVIIPER.dll missing or usbip-win2 not installed - same "tell the user,
+                    // don't crash" handling as EnsureVigemClient's VigemBusNotFoundException.
+                }
+                form?.AppendTextBox(
+                    "Could not start the VIIPER virtual USB server. Make sure the VIIPER/" +
+                    "usbip-win2 drivers are installed correctly.\r\n");
+                return false;
+            }
+        }
+
         private static readonly HttpClient client = new HttpClient();
 
         public static JoyconManager mgr;

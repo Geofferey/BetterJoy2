@@ -1299,10 +1299,17 @@ namespace BetterJoyForCemu {
             page.Controls.Add(CreateLabel("Use as", 24, 163, ProfileText, false));
             useAsSelector = CreateProfileChoiceSelector(115, 157, 300);
             useAsSelector.Items.AddRange(new object[] {
-                "Xbox 360 controller", "DualShock 4 controller", "Disabled",
+                "Xbox 360 controller", "Xbox 360 controller (VIIPER)", "DualShock 4 controller",
+                "Disabled",
             });
             useAsSelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(useAsSelector);
+            tip_reassign.SetToolTip(useAsSelector,
+                "Xbox 360 controller uses ViGEmBus, the standard virtual-controller driver most " +
+                "setups already have. Xbox 360 controller (VIIPER) is an alternative backend " +
+                "(experimental) using VIIPER/usbip-win2 instead - the same optional drivers " +
+                "bundled for the DualSense Bluetooth microphone - useful if you'd rather not " +
+                "install ViGEmBus, or want to compare the two.");
 
             Panel deviceCard = new Panel {
                 Location = new Point(24, 210),
@@ -1648,11 +1655,13 @@ namespace BetterJoyForCemu {
                 ControllerMappings.SetOptionValue(
                     SelectedProfileId, (string)checkBox.Tag, checkBox.Checked.ToString().ToLowerInvariant());
             } else if (sender == useAsSelector) {
-                string value = useAsSelector.SelectedIndex == 0
-                    ? ControllerMappings.UseAsXbox360
-                    : (useAsSelector.SelectedIndex == 1
-                        ? ControllerMappings.UseAsDualShock4
-                        : ControllerMappings.UseAsNone);
+                string value;
+                switch (useAsSelector.SelectedIndex) {
+                    case 0: value = ControllerMappings.UseAsXbox360; break;
+                    case 1: value = ControllerMappings.UseAsXbox360Viiper; break;
+                    case 2: value = ControllerMappings.UseAsDualShock4; break;
+                    default: value = ControllerMappings.UseAsNone; break;
+                }
                 ControllerMappings.SetOptionValue(SelectedProfileId, "UseAs", value);
                 UpdateProfilePresentation(SelectedProfile);
             } else if (sender == gyroActivationModeSelector) {
@@ -2017,9 +2026,14 @@ namespace BetterJoyForCemu {
                     return;
 
                 string useAs = ControllerMappings.OptionValue(SelectedProfileId, "UseAs");
-                useAsSelector.SelectedIndex = useAs == ControllerMappings.UseAsXbox360
-                    ? 0
-                    : (useAs == ControllerMappings.UseAsDualShock4 ? 1 : 2);
+                if (useAs == ControllerMappings.UseAsXbox360)
+                    useAsSelector.SelectedIndex = 0;
+                else if (useAs == ControllerMappings.UseAsXbox360Viiper)
+                    useAsSelector.SelectedIndex = 1;
+                else if (useAs == ControllerMappings.UseAsDualShock4)
+                    useAsSelector.SelectedIndex = 2;
+                else
+                    useAsSelector.SelectedIndex = 3;
                 autoPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "AutoPowerOff");
                 homeLongPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
@@ -2448,6 +2462,8 @@ namespace BetterJoyForCemu {
             string useAs = ControllerMappings.OptionValue(profileId, "UseAs");
             if (useAs == ControllerMappings.UseAsXbox360)
                 return "Xbox 360 virtual controller";
+            if (useAs == ControllerMappings.UseAsXbox360Viiper)
+                return "Xbox 360 virtual controller (VIIPER)";
             if (useAs == ControllerMappings.UseAsDualShock4)
                 return "DualShock 4 virtual controller";
             return "Virtual controller output disabled";
@@ -2502,9 +2518,11 @@ namespace BetterJoyForCemu {
             if (useAs == ControllerMappings.UseAsNone)
                 return false;
 
-            VirtualGameControllerType controllerType = useAs == ControllerMappings.UseAsXbox360
-                ? VirtualGameControllerType.Xbox360
-                : VirtualGameControllerType.DualShock4;
+            VirtualGameControllerType controllerType =
+                useAs == ControllerMappings.UseAsXbox360 ||
+                useAs == ControllerMappings.UseAsXbox360Viiper
+                    ? VirtualGameControllerType.Xbox360
+                    : VirtualGameControllerType.DualShock4;
             int ordinal = remoteProfiles
                 .Where(profile => ControllerMappings.OptionValue(
                     profile.ProfileId, "UseAs") == useAs)

@@ -149,6 +149,7 @@ namespace BetterJoyForCemu {
         public const string OrientationVertical = "vertical";
 
         public const string UseAsXbox360 = "xbox360";
+        public const string UseAsXbox360Viiper = "xbox360_viiper";
         public const string UseAsDualShock4 = "dualshock4";
         public const string UseAsNone = "none";
 

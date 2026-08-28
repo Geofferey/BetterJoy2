@@ -67,7 +67,7 @@ namespace BetterJoyForCemu.VirtualOutput {
 		}
 	}
 
-	public class OutputControllerXbox360 {
+	public class OutputControllerXbox360 : IOutputControllerXbox360 {
 		private IXbox360Controller xbox_controller;
 		private OutputControllerXbox360InputState current_state;
 

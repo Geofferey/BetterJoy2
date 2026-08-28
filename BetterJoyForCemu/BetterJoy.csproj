@@ -169,8 +169,11 @@
     <Compile Include="DebugLog.cs" />
     <Compile Include="DualSense.cs" />
     <Compile Include="DualShock4.cs" />
+    <Compile Include="VirtualOutput\IOutputControllerXbox360.cs" />
+    <Compile Include="VirtualOutput\LibViiper.cs" />
     <Compile Include="VirtualOutput\OutputControllerDualShock4.cs" />
     <Compile Include="VirtualOutput\OutputControllerXbox360.cs" />
+    <Compile Include="VirtualOutput\OutputControllerXbox360Viiper.cs" />
     <Compile Include="DesktopInputBackend.cs" />
     <Compile Include="EntryPoint.cs" />
     <Compile Include="HeadlessJoyconHost.cs" />
@@ -292,6 +295,11 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="x64\samplerate.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <!-- libVIIPER only ships amd64/arm64 Windows builds, no x86 - the VIIPER Xbox 360 output
+         backend is simply unavailable when running as an x86 process. -->
+    <Content Include="x64\libVIIPER.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Icons\cross.png" />

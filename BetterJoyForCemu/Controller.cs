@@ -456,7 +456,7 @@ namespace BetterJoyForCemu {
             return acc_g;
         }
 
-        public OutputControllerXbox360 out_xbox;
+        public IOutputControllerXbox360 out_xbox;
         public OutputControllerDualShock4 out_ds4;
 
         // Raw HID handle every subclass's Attach/Poll/Detach/report-parsing code reads/writes -
