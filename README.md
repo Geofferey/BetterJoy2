@@ -89,18 +89,34 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   output, motion, touch, device behavior, and optional mappings. Bindings support physical-only
   capture, button combinations, touch gestures, a mappable shake input, and reassignable virtual
   Guide/PS output without mapped outputs or contaminating subsequent bind capture.
-* **Controller-owned hardware behavior** - profile-scoped rumble, arbitrary Sony lightbar colors,
-  battery percentage/status, Bluetooth disconnect, headphone-jack detection and routing, gyro
-  recentering, and controller-specific calibration remain attached to the physical device rather
-  than being reduced to generic remapping concepts.
+* **Controller-owned hardware behavior** - profile-scoped rumble, lightbar colors (a fixed color
+  or an automatic Battery mode that shows charge as green/yellow/red bands instead), battery
+  percentage/status, Bluetooth disconnect with a configurable hold-to-power-off duration,
+  headphone-jack detection and routing, gyro recentering, and controller-specific calibration
+  remain attached to the physical device rather than being reduced to generic remapping concepts.
 * **DualSense adaptive triggers** - assign independent, profile-scoped L2 and R2 resistance,
-  weapon-wall, or vibration effects with percentage controls for start, strength, wall, and
-  frequency. Effects work over USB or Bluetooth even when the game sees a virtual XInput or
-  DualShock 4 controller, and remain composed with speaker, microphone, rumble, and lightbar state.
+  weapon-wall, or vibration effects, each with its own separate start/secondary/strength values so
+  switching effects never overwrites another effect's tuning. Effects work over USB or Bluetooth
+  even when the game sees a virtual XInput or DualShock 4 controller, and remain composed with
+  speaker, microphone, rumble, and lightbar state. Optional LT/RT haptics bindings cycle through
+  effect modes on demand.
+* **Expanded controller function bindings** - assign chords or buttons to adjust controller
+  volume, cycle DualSense adaptive trigger effects, cycle rumble modes, toggle the built-in
+  microphone, and toggle lightbar output on/off, alongside the existing physical remaps. Bindings
+  that cycle through modes share the same underlying list as their matching dropdown, so adding a
+  mode in one place updates both automatically.
 * **PlayStation controller audio** - route Windows audio to DualShock 4 or DualSense speakers and
   connected headsets over USB or Bluetooth, with automatic jack switching and headphone-gated
-  startup. Bluetooth audio transport is experimental because timing and reliability vary across Windows
-  Bluetooth adapters and system load.
+  startup. Multiple audio-capable controllers can stream over Bluetooth at once, each with its own
+  independent capture pipeline - a DualShock 4 and a DualSense can play simultaneously without
+  interfering with each other. Bluetooth audio transport is experimental because timing and
+  reliability vary across Windows Bluetooth adapters and system load.
+* **DualSense microphone control** - a genuine hardware-level mute (the controller's own
+  power-save bit, not just an LED) over USB and Bluetooth, an assignable mute-toggle binding, and
+  a configurable mute-LED indicator (matches Sony's own behavior, inverted, always off, or only
+  lit while the mic is disabled). The Bluetooth microphone is exposed as a real Windows recording
+  device via VIIPER by default, with an optional fallback to Valve's Steam Streaming Microphone
+  driver for machines that would rather avoid VIIPER's dependencies.
 * **Optional virtual HID mouse backend** (via FakerInput) - lets gyro mouse work across elevated
   windows, the Windows sign-in screen, and service/session boundaries where the standard approach
   can't reach.
@@ -157,7 +173,7 @@ not receive both physical and virtual input.
 ## Bluetooth Mode
  * Hold down the small button (sync) on the top of the controller for 5 seconds - this puts the controller into broadcasting mode.
  * Search for it in your bluetooth settings and pair normally.
- * To disconnect the controller - hold the home button (or capture button) down for 2 seconds (or press the sync button). To reconnect - press any button on your controller.
+ * To disconnect the controller - hold the home button (or capture button) down for 2 seconds by default (or press the sync button). To reconnect - press any button on your controller. This hold duration is configurable per profile, up to 10 seconds - useful if you're also using that button as a chord modifier for other bindings.
  * **Joy-Con lag/stutter over Bluetooth:** this is a Windows Bluetooth stack quirk specific to Joy-Cons (Pro Controller is unaffected), not something BetterJoy's code can fix directly. The workaround: rename your PC's Bluetooth *adapter* (not the controller) to `Nintendo` in Windows' Bluetooth settings. This has been confirmed to eliminate the lag/stutter entirely.
 
 ## USB Mode
@@ -313,13 +329,19 @@ this repository:
   controller-specific clock conversion before SBC or Opus encoding.
 * DualSense Bluetooth microphone transport uses the public 71-byte mono Opus input-report format
   documented and exercised by [hbashton/DS4Windows](https://github.com/hbashton/DS4Windows), then
-  decodes it independently in BetterJoy with Concentus. The optional Windows recording endpoint is
+  decodes it independently in BetterJoy with Concentus. The default Windows recording endpoint is
   provided by [VIIPER](https://github.com/Alia5/VIIPER) (GPL-3.0 standalone server) over its public
   V5 localhost framing API, with the signed virtual USB host controller from
   [usbip-win2](https://github.com/vadimgrn/usbip-win2). BetterJoy does not link against either
   project: it launches the separately licensed VIIPER process on demand and exchanges framed PCM
-  over TCP. The physical mic button controls hardware/software mute while remaining available to
-  the ordinary binding system.
+  over TCP. An optional alternative backend instead uses
+  [Valve](https://store.steampowered.com/)'s Steam Streaming Microphone driver, already
+  Microsoft-attestation-signed and requiring no test-signing mode. The bundled `.inf`/`.cat`/`.sys`
+  files under `Drivers/` are byte-for-byte copies of Valve's own signed driver - modifying them
+  would break the CAT's signature and Windows would refuse to load it - installed under Steam's own
+  hardware ID via the same SetupAPI device-creation sequence Steam's own installer uses, so it's a
+  no-op if Steam already created the device itself. The physical mic button controls
+  hardware/software mute while remaining available to the ordinary binding system.
 * DualSense adaptive-trigger effect packing is adapted from John “Nielk1” Klein's
   [MIT-licensed TriggerEffectGenerator](https://gist.github.com/Nielk1/6d54cc2c00d2201ccb8c2720ad7538db),
   copyright 2021–2022. USB report offsets were cross-checked against Microsoft's
