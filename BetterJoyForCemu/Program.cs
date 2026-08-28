@@ -412,6 +412,41 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // See this method's call site for why VID/PID alone can't identify VIIPER's own virtual
+        // DualSense output. Walks the same PnP parent chain GetControllerTransport does, looking
+        // for usbip-win2's virtual host controller hardware ID instead of a real USB/Bluetooth
+        // bus - present on every device VIIPER creates, never on a real physical controller.
+        private const string ViiperVirtualBusHardwareId = "ROOT\\USBIP_WIN2\\UDE";
+
+        private static bool IsUnderViiperVirtualBus(string hidPath) {
+            // Same retry-with-short-delay shape as TryHideController just above, and for the same
+            // reason: a device this fresh (this runs on the very first scan pass after VIIPER
+            // creates it) can have a PnP instance/parent chain that isn't fully populated yet.
+            // Without retrying here, that first-pass failure fell through to the real-controller
+            // path and got it HidHidden before a later, successful pass ever got a chance to
+            // exclude it - confirmed on real hardware: hidden exactly once, only on first
+            // creation, never again after a manual unhide.
+            for (int attempt = 0; attempt < 5; attempt++) {
+                if (attempt > 0)
+                    Thread.Sleep(50);
+
+                try {
+                    IPnPDevice device = PnPDevice.GetDeviceByInterfaceId(hidPath, DeviceLocationFlags.Normal);
+                    for (int depth = 0; device != null && depth < 8; depth++) {
+                        if (device.HardwareIds != null && device.HardwareIds.Any(id =>
+                                String.Equals(id, ViiperVirtualBusHardwareId, StringComparison.OrdinalIgnoreCase)))
+                            return true;
+                        device = device.Parent;
+                    }
+                    return false;
+                } catch {
+                    // Not settled yet - fall through and retry rather than treating this as a
+                    // real controller on the strength of one failed attempt.
+                }
+            }
+            return false;
+        }
+
         private ushort TypeToProdId(byte type) {
             switch (type) {
                 case 1:
@@ -448,6 +483,21 @@ namespace BetterJoyForCemu {
                 // normal Xbox360/DS4 controller, that's the entire point of it existing.
                 if ((enumerate.vendor_id == vigemXbox360VendorId && enumerate.product_id == vigemXbox360ProductId) ||
                     (enumerate.vendor_id == vigemDs4VendorId && enumerate.product_id == vigemDs4ProductId)) {
+                    ptr = enumerate.next;
+                    continue;
+                }
+
+                // Same idea, for OutputControllerDualSenseViiper's own virtual output: unlike
+                // ViGEmBus's Xbox360/DS4 targets above, VIIPER's DualSense device has no separate
+                // "this is obviously virtual" VID/PID to check - it deliberately reports Sony's
+                // real DualSense VID/PID (0x054C/0x0CE6), the same ones a genuine physical
+                // DualSense uses, since that's what makes games/Windows actually recognize it as
+                // one. VID/PID alone can't tell the two apart, so this checks where the device
+                // actually lives instead: usbip-win2's virtual USB host controller registers with
+                // hardware ID ROOT\USBIP_WIN2\UDE (confirmed via Get-PnpDeviceProperty on the live
+                // driver), which a real physical controller - USB or Bluetooth - never sits under.
+                if (enumerate.vendor_id == vendor_sony && enumerate.product_id == product_dualsense &&
+                        IsUnderViiperVirtualBus(enumerate.path)) {
                     ptr = enumerate.next;
                     continue;
                 }
@@ -822,6 +872,10 @@ namespace BetterJoyForCemu {
 
                 if (v.out_ds4 != null) {
                     try { v.out_ds4.Disconnect(); } catch { }
+                }
+
+                if (v.out_dualsense != null) {
+                    try { v.out_dualsense.Disconnect(); } catch { }
                 }
             }
 

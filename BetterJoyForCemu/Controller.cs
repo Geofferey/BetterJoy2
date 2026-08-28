@@ -458,6 +458,7 @@ namespace BetterJoyForCemu {
 
         public IOutputControllerXbox360 out_xbox;
         public OutputControllerDualShock4 out_ds4;
+        public OutputControllerDualSenseViiper out_dualsense;
 
         // Raw HID handle every subclass's Attach/Poll/Detach/report-parsing code reads/writes -
         // device-agnostic (every controller type talks over one), even though what gets written
@@ -816,6 +817,10 @@ namespace BetterJoyForCemu {
 
             if (out_ds4 != null) {
                 out_ds4.Disconnect();
+            }
+
+            if (out_dualsense != null) {
+                out_dualsense.Disconnect();
             }
 
             if (state > state_.NO_JOYCONS) {

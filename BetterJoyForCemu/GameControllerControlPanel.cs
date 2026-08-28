@@ -9,6 +9,7 @@ namespace BetterJoyForCemu {
     internal enum VirtualGameControllerType {
         Xbox360,
         DualShock4,
+        DualSense,
     }
 
     // Opens the legacy Game Controllers UI and, for a live selected profile, advances into that
@@ -205,6 +206,14 @@ namespace BetterJoyForCemu {
             if (controllerType == VirtualGameControllerType.Xbox360) {
                 return (vendorId == 0x045e && productId == 0x028e) ||
                     Contains(candidate.ProductName, "XBOX 360");
+            }
+
+            if (controllerType == VirtualGameControllerType.DualSense) {
+                // DualSense's real PID (0x0CE6) - libVIIPER's default when no idProduct override
+                // is passed. Distinct from DualShock4's PIDs below, but both commonly report the
+                // same generic "Wireless Controller" ProductName, so the PID check has to come
+                // first and be exact rather than falling back to name matching here too.
+                return vendorId == 0x054c && productId == 0x0ce6;
             }
 
             return (vendorId == 0x054c && (productId == 0x05c4 || productId == 0x09cc)) ||

@@ -284,6 +284,10 @@ namespace BetterJoyForCemu {
                 try { jc.out_ds4.Disconnect(); } catch { }
                 jc.out_ds4 = null;
             }
+            if (jc.out_dualsense != null) {
+                try { jc.out_dualsense.Disconnect(); } catch { }
+                jc.out_dualsense = null;
+            }
         }
 
         // Shared by attach, profile changes, AssignPadId, and survivor restoration. Reconciles
@@ -295,6 +299,7 @@ namespace BetterJoyForCemu {
             bool useXbox = useAs == ControllerMappings.UseAsXbox360;
             bool useXboxViiper = useAs == ControllerMappings.UseAsXbox360Viiper;
             bool useDs4 = useAs == ControllerMappings.UseAsDualShock4;
+            bool useDualSenseViiper = useAs == ControllerMappings.UseAsDualSenseViiper;
 
             // A profile switching between the two Xbox 360 backends (or off) always tears down
             // whatever's currently there first - out_xbox is one field shared by both backends
@@ -308,10 +313,14 @@ namespace BetterJoyForCemu {
                 try { jc.out_ds4.Disconnect(); } catch { }
                 jc.out_ds4 = null;
             }
+            if (!useDualSenseViiper && jc.out_dualsense != null) {
+                try { jc.out_dualsense.Disconnect(); } catch { }
+                jc.out_dualsense = null;
+            }
 
             if ((useXbox || useDs4) && !Program.EnsureVigemClient())
                 return;
-            if (useXboxViiper && !Program.EnsureViiperServer())
+            if ((useXboxViiper || useDualSenseViiper) && !Program.EnsureViiperServer())
                 return;
 
             if (useXbox && jc.out_xbox == null) {
@@ -328,6 +337,11 @@ namespace BetterJoyForCemu {
                 jc.out_ds4 = new VirtualOutput.OutputControllerDualShock4();
                 jc.out_ds4.FeedbackReceived += jc.Ds4_FeedbackReceived;
                 jc.out_ds4.Connect();
+            }
+            if (useDualSenseViiper && jc.out_dualsense == null) {
+                jc.out_dualsense = new VirtualOutput.OutputControllerDualSenseViiper();
+                jc.out_dualsense.FeedbackReceived += jc.Ds4_FeedbackReceived;
+                jc.out_dualsense.Connect();
             }
 
             if (!jc.RumbleEnabled) {

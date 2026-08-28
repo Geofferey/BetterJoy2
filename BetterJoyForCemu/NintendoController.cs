@@ -367,11 +367,21 @@ namespace BetterJoyForCemu {
                     if (Program.server != null)
                         Program.server.NewReportIncoming(this);
 
-                    if (out_ds4 != null) {
-                        try {
-                            out_ds4.UpdateInput(MapToDualShock4Input(this));
-                        } catch (Exception) {
-                            // ignore /shrug
+                    if (out_ds4 != null || out_dualsense != null) {
+                        var ds4State = MapToDualShock4Input(this);
+                        if (out_ds4 != null) {
+                            try {
+                                out_ds4.UpdateInput(ds4State);
+                            } catch (Exception) {
+                                // ignore /shrug
+                            }
+                        }
+                        if (out_dualsense != null) {
+                            try {
+                                out_dualsense.UpdateInput(ds4State);
+                            } catch (Exception) {
+                                // ignore /shrug
+                            }
                         }
                     }
                 }

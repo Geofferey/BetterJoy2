@@ -151,6 +151,7 @@ namespace BetterJoyForCemu {
         public const string UseAsXbox360 = "xbox360";
         public const string UseAsXbox360Viiper = "xbox360_viiper";
         public const string UseAsDualShock4 = "dualshock4";
+        public const string UseAsDualSenseViiper = "dualsense_viiper";
         public const string UseAsNone = "none";
 
         private static readonly HashSet<string> AppConfigBackedKeys = new HashSet<string>(StringComparer.Ordinal) {

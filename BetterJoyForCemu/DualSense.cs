@@ -642,6 +642,18 @@ namespace BetterJoyForCemu {
                 if (out_xbox != null) {
                     try { out_xbox.UpdateInput(MapToXbox360Input(this)); } catch (Exception) { }
                 }
+                // Previously never fed for a physical DualSense/DualShock4 (see DualShock4.cs's
+                // identical block) - the "DualShock 4 controller"/new DualSense output options
+                // silently did nothing for a PlayStation-family physical controller until now.
+                if (out_ds4 != null || out_dualsense != null) {
+                    var ds4State = MapToDualShock4Input(this);
+                    if (out_ds4 != null) {
+                        try { out_ds4.UpdateInput(ds4State); } catch (Exception) { }
+                    }
+                    if (out_dualsense != null) {
+                        try { out_dualsense.UpdateInput(ds4State); } catch (Exception) { }
+                    }
+                }
                 return dsRet;
             }
 
