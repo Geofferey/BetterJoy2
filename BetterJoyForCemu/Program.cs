@@ -265,6 +265,13 @@ namespace BetterJoyForCemu {
         private static void ApplyControllerProfileLighting(Controller controller,
                                                             string profileId) {
             controller.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
+            // LightingOff (toggle_lighting binding) never touches the user's actual LightColor
+            // setting - it's a separate flag applied on top, so the real chosen color is always
+            // still there to go back to the instant it's toggled back on, nothing to save/restore.
+            if (ControllerMappings.BoolOption(profileId, "LightingOff")) {
+                controller.SetLightColor(0, 0, 0);
+                return;
+            }
             byte red, green, blue;
             ControllerMappings.GetLightColor(profileId, out red, out green, out blue);
             controller.SetLightColor(red, green, blue);

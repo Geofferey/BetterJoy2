@@ -2248,6 +2248,21 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(mappingProfileId, optionKey, next);
         }
 
+        // Plain on/off flip, for bindings that toggle a bool option rather than cycle through a
+        // list of modes - same discrete-per-press model as the two above.
+        private void ToggleBoolOptionOnPress(string configKey, string optionKey) {
+            bool held = UpdateDesktopActionComboHeld(configKey, true, out bool wasHeld);
+            if (!held || wasHeld)
+                return;
+
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+
+            bool current = ControllerMappings.BoolOption(mappingProfileId, optionKey);
+            ControllerMappings.SetOptionValue(mappingProfileId, optionKey,
+                (!current).ToString().ToLowerInvariant());
+        }
+
         // Hook for a subclass's own binding-driven button actions that need a private/internal
         // member only that subclass has (DualSenseController's built-in-mic mute toggle needs
         // SetMicrophoneMuted, which nothing outside that class should call directly) - the
@@ -2351,6 +2366,12 @@ namespace BetterJoyForCemu {
             // bindings above.
             CycleOptionModeOnPress("toggle_haptics", "EnableRumble",
                 ControllerMappings.RumbleMode, ControllerMappings.RumbleModes);
+            // RGB lightbar - DualSense/DualShock4 only, matching Reassign.cs's own
+            // hasConfigurableLight check. LightingOff never touches the user's actual LightColor
+            // setting (see ApplyControllerProfileLighting) - just a flag applied on top, so
+            // there's nothing to save/restore, only to flip.
+            if (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4)
+                ToggleBoolOptionOnPress("toggle_lighting", "LightingOff");
             DoDeviceSpecificButtonActions();
 
             if (HasTouchpad) {

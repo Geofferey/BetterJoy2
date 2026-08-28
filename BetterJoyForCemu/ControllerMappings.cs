@@ -72,7 +72,7 @@ namespace BetterJoyForCemu {
         public static readonly string[] Keys = {
             "capture", "home", "guide", "mic_mute", "toggle_built_in_mic",
             "volume_up", "volume_down",
-            "lt_haptics", "rt_haptics", "toggle_haptics",
+            "lt_haptics", "rt_haptics", "toggle_haptics", "toggle_lighting",
             "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
@@ -105,7 +105,7 @@ namespace BetterJoyForCemu {
             "TouchpadHorizontalScale", "TouchpadVerticalScale",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
-            "SwapAB", "SwapXY", "HomeLEDOn", "LightColor",
+            "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "LightingOff",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
             "GyroStickAxisXLeft", "GyroStickAxisXRight",
