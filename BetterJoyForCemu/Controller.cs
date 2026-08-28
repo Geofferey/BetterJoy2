@@ -1634,18 +1634,49 @@ namespace BetterJoyForCemu {
         }
 
         // A bind is one or more "joy_N"/"key_N"/"mse_N" parts joined with "+" (a single part is
-        // just a combo of one) - true only when every part is currently held at once. Controller
-        // parts check this Joycon's own buttons (and its pair partner's, if joined, matching how
-        // every other joy_ bind here already treats a pair as one logical controller);
-        // keyboard/mouse parts check InputState, fed from Program.OnKeyDown/OnKeyUp/
+        // just a combo of one) - true only when every part is currently held, in the same
+        // left-to-right press order they're written in for the joy_ parts, AND no other
+        // controller button beyond those parts is also held.
+        //
+        // The exact-match half matters: without it, a two-button chord like SHOULDER2_1+HOME
+        // reads as "held" even while the user is actually holding the three-button
+        // HOME+SHOULDER_1+SHOULDER2_1 (a real superset) meant for a completely different binding,
+        // since every part of the shorter combo is technically still down too.
+        //
+        // The order half matters too: HOME+A and A+HOME are meant to be different bindings, not
+        // the same combo written twice. Order is derived from buttons_down_timestamp (already
+        // tracked per button for the long-press/power-off logic above) rather than a separately
+        // maintained press-order list - simultaneous presses (equal timestamps) are treated as
+        // satisfying either order, rather than rejected outright.
+        //
+        // Controller parts check this Joycon's own buttons (and its pair partner's, if joined,
+        // matching how every other joy_ bind here already treats a pair as one logical
+        // controller); keyboard/mouse parts check InputState, fed from Program.OnKeyDown/OnKeyUp/
         // OnMouseButtonDown/OnMouseButtonUp - the same unified entry points that already work in
-        // both GUI and service mode.
+        // both GUI and service mode. Both the exact-match and ordering requirements are scoped to
+        // controller buttons only (ButtonCount comfortably fits a ulong bitmask, so this costs
+        // nothing extra per poll) - held keyboard/mouse input alongside a controller chord
+        // doesn't disqualify it or need to slot into the same order, since those are a different
+        // input domain with no equivalent per-key press-order tracking here.
         protected bool IsComboHeld(string combo) {
+            ulong comboButtonMask = 0;
+            long previousDownTimestamp = long.MinValue;
             foreach (string part in combo.Split('+')) {
                 if (part.StartsWith("joy_")) {
                     int i = Int32.Parse(part.Substring(4));
-                    if (!(buttons[i] || (other != null && other != this && other.buttons[i])))
+                    bool heldHere = buttons[i];
+                    bool heldByPartner = other != null && other != this && other.buttons[i];
+                    if (!(heldHere || heldByPartner))
                         return false;
+
+                    long downTimestamp = heldHere
+                        ? buttons_down_timestamp[i]
+                        : other.buttons_down_timestamp[i];
+                    if (downTimestamp < previousDownTimestamp)
+                        return false;
+                    previousDownTimestamp = downTimestamp;
+
+                    comboButtonMask |= 1UL << i;
                 } else if (part.StartsWith("key_")) {
                     if (!InputState.IsKeyHeld(Int32.Parse(part.Substring(4))))
                         return false;
@@ -1655,6 +1686,68 @@ namespace BetterJoyForCemu {
                 } else {
                     return false; // malformed/unknown part - fail closed rather than ignore it
                 }
+            }
+
+            for (int i = 0; i < ButtonCount; i++) {
+                bool heldHere = buttons[i] || (other != null && other != this && other.buttons[i]);
+                if (heldHere && (comboButtonMask & (1UL << i)) == 0)
+                    return false;
+            }
+            return true;
+        }
+
+        // "Modifier" binding (Reassign.cs's Controller functions section) - held to use this
+        // button/combo purely as a chord for other bindings without also leaking button/stick
+        // state to the virtual controller or moving the gyro mouse cursor while it's down. See
+        // MapToXbox360Input/MapToDualShock4Input and MoveGyroMouseBy for where this is actually
+        // enforced. Unbound ("0") by default, matching every other new Keys entry with no
+        // LegacyValue migration.
+        //
+        // Deliberately NOT IsComboHeld(MappingValue("modifier")) - that now requires an exact
+        // match (nothing else held), which is backwards for a modifier: the entire point is
+        // staying "held" while other buttons join it for their own chords, so an exact-match
+        // check would stop counting it as held the instant it's actually being used as one. What
+        // it needs instead is a subset check (every modifier button down, extras allowed) plus
+        // one extra rule the user asked for explicitly: it only counts if the modifier's own
+        // buttons were ALL already down before anything else currently held - joining an
+        // in-progress press doesn't retroactively turn it into "the modifier led this chord".
+        // Reuses buttons_down_timestamp the same way IsComboHeld's own ordering does.
+        protected bool IsModifierHeld() {
+            string combo = MappingValue("modifier");
+            if (String.IsNullOrEmpty(combo) || combo == "0")
+                return false;
+
+            ulong comboButtonMask = 0;
+            long latestModifierDownTimestamp = long.MinValue;
+            foreach (string part in combo.Split('+')) {
+                if (!part.StartsWith("joy_"))
+                    return false; // Modifier is controller-button-only - see Reassign.cs's menu.
+                int i = Int32.Parse(part.Substring(4));
+                bool heldHere = buttons[i];
+                bool heldByPartner = other != null && other != this && other.buttons[i];
+                if (!(heldHere || heldByPartner))
+                    return false;
+
+                long downTimestamp = heldHere ? buttons_down_timestamp[i] : other.buttons_down_timestamp[i];
+                if (downTimestamp > latestModifierDownTimestamp)
+                    latestModifierDownTimestamp = downTimestamp;
+                comboButtonMask |= 1UL << i;
+            }
+
+            for (int i = 0; i < ButtonCount; i++) {
+                if ((comboButtonMask & (1UL << i)) != 0)
+                    continue; // one of the modifier's own buttons, not "something else"
+
+                bool otherHeldHere = buttons[i];
+                bool otherHeldByPartner = other != null && other != this && other.buttons[i];
+                if (!(otherHeldHere || otherHeldByPartner))
+                    continue;
+
+                long otherDownTimestamp = otherHeldHere
+                    ? buttons_down_timestamp[i]
+                    : other.buttons_down_timestamp[i];
+                if (otherDownTimestamp < latestModifierDownTimestamp)
+                    return false; // this button was already down before the modifier finished
             }
             return true;
         }
@@ -2610,6 +2703,12 @@ namespace BetterJoyForCemu {
         protected virtual byte[] TriggerVal => new byte[] { 0, 0 };
 
         protected static OutputControllerXbox360InputState MapToXbox360Input(Controller input) {
+            // A default struct is already the neutral/centered state here - every axis is a
+            // signed short (0 = centered), every trigger/button already false/zero. See
+            // IsModifierHeld's own comment.
+            if (input.IsModifierHeld())
+                return new OutputControllerXbox360InputState();
+
             var output = new OutputControllerXbox360InputState();
 
 
@@ -2754,6 +2853,20 @@ namespace BetterJoyForCemu {
         }
 
         public static OutputControllerDualShock4InputState MapToDualShock4Input(Controller input) {
+            // Unlike Xbox360's signed-short axes, DualShock4's are unsigned bytes centered at 128
+            // - a bare default struct would report every stick fully deflected toward 0, not
+            // centered, so the neutral state needs to say so explicitly. See IsModifierHeld's own
+            // comment.
+            if (input.IsModifierHeld()) {
+                return new OutputControllerDualShock4InputState {
+                    thumb_left_x = 128,
+                    thumb_left_y = 128,
+                    thumb_right_x = 128,
+                    thumb_right_y = 128,
+                    dPad = DpadDirection.None,
+                };
+            }
+
             var output = new OutputControllerDualShock4InputState();
 
             var swapAB = input.swapAB;

@@ -1431,6 +1431,10 @@ namespace BetterJoyForCemu {
         }
 
         protected void MoveGyroMouseBy(int dx, int dy) {
+            // See IsModifierHeld's own comment - the "Modifier" binding's virtual-mouse half.
+            if (IsModifierHeld())
+                return;
+
             if (!GyroMouseDirectCursor) {
                 form.SimulateMoveBy(dx, dy);
             } else if (GyroMouseScreenWrap) {

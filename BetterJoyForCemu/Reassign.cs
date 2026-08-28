@@ -122,8 +122,11 @@ namespace BetterJoyForCemu {
         // Combo capture: hold down everything you want in the combo, then let go of all of it -
         // whatever got pressed while at least one member was held becomes the saved bind, joined
         // with "+" (see Joycon.IsComboHeld). comboMembers/comboHeldNow being non-null IS the
-        // "currently combo-capturing" flag.
-        private HashSet<string> comboMembers;
+        // "currently combo-capturing" flag. comboMembers is a List, not a HashSet, specifically to
+        // preserve press order - IsComboHeld now matches HOME+A and A+HOME as different bindings,
+        // so the order captured here has to be the real order the user pressed them in, not an
+        // arbitrary/alphabetical one.
+        private List<string> comboMembers;
         private HashSet<string> comboHeldNow;
         private Timer comboTimeout;
 
@@ -259,7 +262,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_toggle_haptics, btn_toggle_lighting, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_toggle_haptics, btn_toggle_lighting, btn_modifier, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -301,6 +304,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_rt_haptics;
         private SplitButton btn_toggle_haptics;
         private SplitButton btn_toggle_lighting;
+        private SplitButton btn_modifier;
         private SplitButton btn_touchpad_click;
         private SplitButton btn_touchpad_tap;
         private SplitButton btn_touchpad_two_finger_tap;
@@ -406,6 +410,7 @@ namespace BetterJoyForCemu {
             btn_rt_haptics = new SplitButton { Name = "btn_rt_haptics" };
             btn_toggle_haptics = new SplitButton { Name = "btn_toggle_haptics" };
             btn_toggle_lighting = new SplitButton { Name = "btn_toggle_lighting" };
+            btn_modifier = new SplitButton { Name = "btn_modifier" };
             btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
             btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
             btn_touchpad_two_finger_tap = new SplitButton {
@@ -807,15 +812,23 @@ namespace BetterJoyForCemu {
             // nothing to save/restore, only to flip. DualSense/DualShock4 only, matching
             // ApplySelectedController's hasConfigurableLight.
             AddMappingRow(page, null, btn_toggle_lighting, "Toggle lighting", 661, 24, 150, 430);
+            // While held, suppresses this controller's virtual controller output (XInput/DS4/
+            // DualSense - see Controller.MapToXbox360Input/MapToDualShock4Input) and gyro mouse
+            // cursor movement (MoveGyroMouseBy) entirely, so it can be used purely as a chord
+            // modifier for other bindings without leaking button/stick state or mouse movement to
+            // the game/desktop while it's down. Raw button state (IsComboHeld) is untouched, so
+            // this button still participates normally in any other binding's own combo. Disabled
+            // (unbound) by default - see ControllerMappings' "0" default for a new Keys entry.
+            AddMappingRow(page, null, btn_modifier, "Modifier", 700, 24, 150, 430);
 
-            page.Controls.Add(CreateDivider(24, 710));
-            AddSectionHeading(page, "Joy-Con rail buttons", 727,
+            page.Controls.Add(CreateDivider(24, 749));
+            AddSectionHeading(page, "Joy-Con rail buttons", 766,
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 788, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 788, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 829, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 829, 315, 440, 154);
-            page.AutoScrollMinSize = new Size(0, 890);
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 827, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 827, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 868, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 868, 315, 440, 154);
+            page.AutoScrollMinSize = new Size(0, 929);
             return page;
         }
 
@@ -2807,7 +2820,7 @@ namespace BetterJoyForCemu {
 
         private void StartComboCapture(SplitButton c) {
             BeginBindingCaptureSuppression();
-            comboMembers = new HashSet<string>();
+            comboMembers = new List<string>();
             comboHeldNow = new HashSet<string>();
             c.Text = "Press combo...";
 
@@ -2870,7 +2883,11 @@ namespace BetterJoyForCemu {
                 return; // capture was cancelled/finished between the event firing and this running
 
             if (downPart != null) {
-                comboMembers.Add(downPart);
+                // A re-press of something already released earlier this same capture (rare, but
+                // possible on a long hold) keeps its original position rather than moving to the
+                // end - the first press is what establishes its place in the order.
+                if (!comboMembers.Contains(downPart))
+                    comboMembers.Add(downPart);
                 comboHeldNow.Add(downPart);
                 curAssignment.Text = "Press combo... (" + comboMembers.Count + ")";
             }
@@ -2887,7 +2904,9 @@ namespace BetterJoyForCemu {
             comboTimeout?.Dispose();
             comboTimeout = null;
 
-            string combo = String.Join("+", comboMembers.OrderBy(s => s, StringComparer.Ordinal));
+            // Real press order now, not an alphabetical/canonical one - see comboMembers' own
+            // comment for why that distinction actually matters at match time.
+            string combo = String.Join("+", comboMembers);
             SetBindValue((string)curAssignment.Tag, combo);
             GetPrettyName(curAssignment);
 
