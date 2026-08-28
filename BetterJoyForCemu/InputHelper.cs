@@ -84,8 +84,18 @@ namespace BetterJoyForCemu {
                                 audioCapturePadId = msg.A;
                                 break;
                             case InputMessageType.StopAudioCapture:
-                                audioCapture.Stop();
-                                audioCapturePadId = -1;
+                                // Only the pad that actually owns the capture right now may stop
+                                // it. The service picks a single owner per reconciliation pass
+                                // (see JoyconManager's bluetoothAudioCaptureOwner), but a demoted
+                                // controller's own Stop message can still be sent in the same pass
+                                // as the new owner's Start - if it happened to arrive here second,
+                                // an unconditional Stop would kill the new owner's stream it never
+                                // asked to touch. A Stop for a pad that isn't (or is no longer)
+                                // the active one is simply stale and ignored.
+                                if (msg.A == audioCapturePadId) {
+                                    audioCapture.Stop();
+                                    audioCapturePadId = -1;
+                                }
                                 break;
                             case InputMessageType.StartUsbAudioLoopback: {
                                 string sourceEndpointId = reader.ReadString();

@@ -81,6 +81,13 @@ namespace BetterJoyForCemu {
         // exits without doing any scan work, instead of racing full teardown.
         volatile bool scanningStopped = false;
 
+        // InputHelper's WASAPI capture is one global slot - only one controller's live Bluetooth
+        // audio stream can be active system-wide at a time (see BluetoothAudioCapture.cs). Only
+        // ever read/written from inside ApplyControllerProfileOptions, which RunExclusiveOfScanning
+        // already serializes against itself and every other reconciliation pass, so no separate
+        // lock is needed here.
+        private Controller bluetoothAudioCaptureOwner;
+
         public static JoyconManager Instance {
             get { return instance; }
         }
@@ -121,6 +128,48 @@ namespace BetterJoyForCemu {
 
         public void ApplyControllerProfileOptions() {
             RunExclusiveOfScanning(() => {
+                // Decide who owns the single shared Bluetooth audio capture slot before anything
+                // below tries to claim it. Without this, two simultaneously-eligible controllers
+                // (e.g. a DualShock4 and a DualSense both connected, both "Require headphones" and
+                // both plugged in) would each call their own StartBluetoothAudioStream, and
+                // whichever's message InputHelper processes last silently steals the capture out
+                // from under the other - which never finds out, so its own bluetoothAudioStreaming
+                // flag stays stuck true and it never asks to reclaim the slot again until some
+                // unrelated settings change forces a real restart. Symptom on real hardware: audio
+                // plays for a few seconds then silently goes dead, only reproducible with two or
+                // more audio-capable controllers connected at once - a single controller alone
+                // never contends for the slot with anyone. Prefers keeping whoever already owns
+                // the slot so an already-flowing stream isn't handed off for no reason on every
+                // single pass.
+                Controller eligibleBluetoothAudioOwner = null;
+                foreach (Controller candidate in j) {
+                    if (candidate.state == Controller.state_.DROPPED || candidate.isUSB)
+                        continue;
+                    if (!(candidate is DualShock4Controller || candidate is DualSenseController))
+                        continue;
+
+                    string candidateProfileId = ControllerMappings.ProfileIdFor(candidate);
+                    string candidateAudioMode =
+                        ControllerMappings.ControllerAudioMode(candidateProfileId);
+                    if (candidateAudioMode == ControllerMappings.ModeDisable)
+                        continue;
+                    bool candidateRequireHeadphones =
+                        candidateAudioMode == ControllerMappings.AudioModeRequireHeadphones;
+                    bool candidateHeadphonesOk = !candidateRequireHeadphones ||
+                        (candidate is DualShock4Controller candidateDs4 &&
+                            candidateDs4.HeadphonesConnected) ||
+                        (candidate is DualSenseController candidateDualSense &&
+                            candidateDualSense.HeadphonesConnected);
+                    if (!candidateHeadphonesOk)
+                        continue;
+
+                    if (eligibleBluetoothAudioOwner == null)
+                        eligibleBluetoothAudioOwner = candidate;
+                    if (candidate == bluetoothAudioCaptureOwner)
+                        eligibleBluetoothAudioOwner = candidate;
+                }
+                bluetoothAudioCaptureOwner = eligibleBluetoothAudioOwner;
+
                 var handledProfiles = new HashSet<string>(StringComparer.Ordinal);
                 foreach (Controller jc in j) {
                     if (jc.state == Controller.state_.DROPPED)
@@ -185,7 +234,11 @@ namespace BetterJoyForCemu {
                     if (!jc.isUSB && jc is DualShock4Controller ds4) {
                         // The physical jack always selects speaker vs. headset output. This option
                         // only controls whether speaker fallback is allowed while the jack is empty.
-                        if (audioEnabled && (!requireHeadphones || ds4.HeadphonesConnected))
+                        // jc == bluetoothAudioCaptureOwner: see that field's own comment above -
+                        // only the chosen owner may actually claim the shared capture slot, even if
+                        // this controller would otherwise be eligible on its own.
+                        if (audioEnabled && (!requireHeadphones || ds4.HeadphonesConnected) &&
+                                jc == bluetoothAudioCaptureOwner)
                             ds4.StartBluetoothAudioStream(audioVolume,
                                 ControllerMappings.OptionValue(profileId, "ControllerAudioEndpointId"),
                                 ds4.HeadphonesConnected);
@@ -225,8 +278,12 @@ namespace BetterJoyForCemu {
                         if (jc.isUSB)
                             dualSense.ApplyUsbMicrophoneMuteDefault(
                                 microphoneMode != ControllerMappings.ModeEnable);
+                        // jc == bluetoothAudioCaptureOwner: see that field's own comment above -
+                        // only the chosen owner may actually claim the shared capture slot, even
+                        // if this controller would otherwise be eligible on its own.
                         if (!jc.isUSB && audioEnabled &&
-                            (!requireHeadphones || dualSense.HeadphonesConnected))
+                            (!requireHeadphones || dualSense.HeadphonesConnected) &&
+                            jc == bluetoothAudioCaptureOwner)
                             dualSense.StartBluetoothAudioStream(audioVolume,
                                 ControllerMappings.OptionValue(profileId,
                                     "ControllerAudioEndpointId"),
