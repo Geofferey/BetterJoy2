@@ -16,20 +16,30 @@ namespace BetterJoyForCemu {
         static void Main(string[] args) {
             // The input helper (see InputHelper/SessionLauncher) is a session-launched instance
             // of this same exe, originally just forwarding keyboard/mouse events over a pipe to a
-            // running service - it still deliberately never touches Program (SetupDlls's DLL
-            // search path setup would trigger Program's static useHidHide field initializer,
-            // reading config before it's redirected below - see this class's top comment), so it
-            // still branches out before that. It DOES now need AppPaths.DataDir and the
-            // redirected config, though: BluetoothAudioCapture's debug logging silently read the
-            // bundled Program Files config (always DualShock4DebugLogging=false) instead of the
-            // user's real one when this ran before the redirect, and AppPaths.DataDir throws if
-            // touched before Initialize. isServiceProcess=true even though the interactive
-            // session it runs in isn't the service - InputHelper is only ever launched by the
-            // service (see SessionLauncher), so it shares the service's shared/ProgramData
-            // location rather than resolving a separate per-user one.
+            // running service - it still deliberately never touches Program (Program has its own
+            // static field initializers, e.g. useHidHide, that read config too early - see
+            // SetupDlls's own comment below for why that matters here), so it still branches out
+            // before that. It DOES now need AppPaths.DataDir and the redirected config, though:
+            // BluetoothAudioCapture's debug logging silently read the bundled Program Files
+            // config (always DualShock4DebugLogging=false) instead of the user's real one when
+            // this ran before the redirect, and AppPaths.DataDir throws if touched before
+            // Initialize. isServiceProcess=true even though the interactive session it runs in
+            // isn't the service - InputHelper is only ever launched by the service (see
+            // SessionLauncher), so it shares the service's shared/ProgramData location rather
+            // than resolving a separate per-user one.
             if (args.Length >= 2 && args[0].Equals("-inputhelper", StringComparison.OrdinalIgnoreCase)) {
                 AppPaths.Initialize(true);
                 RedirectConfigToAppData();
+                // Also needed here, not just below: BluetoothAudioCapture's native libsbc.dll
+                // (DualShock 4's Bluetooth audio codec, in x64\/x86\ next to the exe) lives in
+                // this same process. This call used to be skipped entirely for the helper branch,
+                // back when the helper had no native P/Invoke dependencies of its own - once
+                // BluetoothAudioCapture gained one, that skip silently took the DS4 audio codec
+                // down with it. DualSense's own codec (Opus, via the managed Concentus package)
+                // needs no DLL search path setup, which is why only DS4's stream ever went dead:
+                // SbcEncoder's constructor threw DllNotFoundException, caught and swallowed by
+                // BluetoothAudioCapture.Start's own catch block, with no log trace at all.
+                SetupDlls();
                 InputHelper.Run(args[1]);
                 return;
             }
@@ -52,7 +62,7 @@ namespace BetterJoyForCemu {
             // search path (crashing immediately on the first P/Invoke into it) or the culture
             // set for correct float parsing. Doing both here covers every mode.
             CultureInfo.CurrentCulture = new CultureInfo("en-US", false);
-            Program.SetupDlls();
+            SetupDlls();
 
             // "-service" is how the SCM launches BetterJoyForCemu.exe as a Windows Service (see
             // Installer/BetterJoy.iss's sc.exe create binPath) - runs the same core pipeline
@@ -71,6 +81,20 @@ namespace BetterJoyForCemu {
             } else {
                 Program.Main(args);
             }
+        }
+
+        // Deliberately does not live on Program: Program has static field initializers (e.g.
+        // useHidHide) that read ConfigurationManager.AppSettings, and merely referencing any
+        // static member of that class forces the CLR to run them immediately - before
+        // RedirectConfigToAppData has pointed config at the user's real file. That's exactly why
+        // the input-helper branch above used to skip this entirely (see its own comment) even
+        // though the helper needs its native DLLs found too - keeping this here lets both
+        // branches call it without ever touching Program early.
+        private static void SetupDlls() {
+            string archPath = $"{AppDomain.CurrentDomain.BaseDirectory}{(Environment.Is64BitProcess ? "x64" : "x86")}\\";
+            string pathVariable = Environment.GetEnvironmentVariable("PATH");
+            pathVariable = $"{archPath};{pathVariable}";
+            Environment.SetEnvironmentVariable("PATH", pathVariable);
         }
 
         private static void RedirectConfigToAppData() {

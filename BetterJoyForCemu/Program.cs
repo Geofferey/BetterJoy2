@@ -280,16 +280,16 @@ namespace BetterJoyForCemu {
                 ControllerMappings.GetLightColor(profileId, out red, out green, out blue);
             }
 
-            // Skips the HID write entirely when nothing actually changed since the last time this
-            // ran - see the field comment on lastAppliedLightColor. The desired (red,green,blue)
-            // is still recomputed fresh above on every call regardless (cheap - no I/O), so a
-            // toggle_lighting binding press back to on in Battery mode always reflects whatever
-            // the charge actually is right then, not a stale value from before it was switched off.
-            string state = red + "," + green + "," + blue;
-            if (controller.lastAppliedLightColor == state)
-                return;
-
-            controller.lastAppliedLightColor = state;
+            // Deliberately unconditional, not deduped up here - both DualSenseController and
+            // DualShock4Controller's own SetLightColor already dedupe identical colors
+            // internally, but specifically only once their transport is known and no update is
+            // still pending, precisely so a stale/pre-transport call doesn't suppress the retry
+            // that's needed once it becomes known (DualShock4's own comment calls this the
+            // "ordered audio-lane barrier" while audio is active). An earlier version of this
+            // method added a second, transport-unaware cache here that looked redundant but
+            // wasn't - it could permanently prevent that retry from ever being reached, which
+            // broke DualShock4 Bluetooth audio outright. Let each controller's own SetLightColor
+            // decide when a resend is actually redundant.
             controller.SetLightColor(red, green, blue);
         }
 
@@ -1013,23 +1013,5 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Called from EntryPoint.Main() before branching into GUI/service/input-helper mode, so
-        // every mode gets it - previously lived here and only ran for GUI mode, which meant a
-        // Windows Service (launched via EntryPoint straight into ServiceBase.Run, bypassing this
-        // Main entirely) never got hidapi.dll's directory added to the DLL search path at all,
-        // crashing immediately on the first P/Invoke into it (DllNotFoundException).
-        public static void SetupDlls() {
-            string archPath = $"{AppDomain.CurrentDomain.BaseDirectory}{(Environment.Is64BitProcess ? "x64" : "x86")}\\";
-            string pathVariable = Environment.GetEnvironmentVariable("PATH");
-            pathVariable = $"{archPath};{pathVariable}";
-            Environment.SetEnvironmentVariable("PATH", pathVariable);
-        }
-
-        // Helper funtions to set the hidapi dll location acording to the system instruction set.
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool SetDefaultDllDirectories(int directoryFlags);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        static extern void AddDllDirectory(string lpPathName);
     }
 }
