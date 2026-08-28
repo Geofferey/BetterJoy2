@@ -2207,6 +2207,25 @@ namespace BetterJoyForCemu {
             return buttons_down[(int)Button.DPAD_UP] || buttons_down[(int)Button.DPAD_DOWN] || buttons_down[(int)Button.DPAD_LEFT] || buttons_down[(int)Button.DPAD_RIGHT];
         }
 
+        // Discrete per-press step, matching SimulateMouseActionScroll's own "one tick per press"
+        // model (GyroMath.cs) - a rising edge on the assigned combo nudges the profile's saved
+        // Controller audio volume by deltaPercent, clamped to 0-100. Program.cs's existing ~2s
+        // reconciliation loop is what actually applies the new value to the live audio stream,
+        // the same as every other way of changing this same setting (the Volume dropdown, editing
+        // another profile's copy of it, etc.) - no separate live-apply path needed here.
+        private void AdjustControllerAudioVolumeOnPress(string configKey, int deltaPercent) {
+            bool held = UpdateDesktopActionComboHeld(configKey, true, out bool wasHeld);
+            if (!held || wasHeld)
+                return;
+
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+
+            int current = ControllerMappings.IntOption(mappingProfileId, "ControllerAudioVolume", 75);
+            int updated = Math.Max(0, Math.Min(100, current + deltaPercent));
+            ControllerMappings.SetOptionValue(mappingProfileId, "ControllerAudioVolume", updated.ToString());
+        }
+
         protected void DoThingsWithButtons() {
             // Checked first and returns early like the other button-driven side effects below -
             // a face button doubling as "confirm" only ever matters while a calibration prompt
@@ -2283,6 +2302,15 @@ namespace BetterJoyForCemu {
             SimulateContinous((int)Button.CAPTURE, MappingValue("capture"));
             SimulateContinous((int)Button.HOME, MappingValue("home"));
             SimulateContinous((int)Button.MIC_MUTE, MappingValue("mic_mute"));
+
+            // No controller has a dedicated volume button - these bind an arbitrary combo instead
+            // of remapping a fixed one, the same "any combo, one discrete step per press" model
+            // GyroMath.cs's SimulateMouseActionScroll uses for scroll_up/scroll_down.
+            if (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4) {
+                AdjustControllerAudioVolumeOnPress("volume_up", 10);
+                AdjustControllerAudioVolumeOnPress("volume_down", -10);
+            }
+
             if (HasTouchpad) {
                 if (buttons_down[(int)Button.TOUCHPAD])
                     Simulate(MappingValue("touchpad_click"), false, false);

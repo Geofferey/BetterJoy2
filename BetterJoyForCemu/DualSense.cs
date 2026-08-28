@@ -194,6 +194,12 @@ namespace BetterJoyForCemu {
         // at all - so ApplyUsbMicrophoneMuteDefault needs its own one-shot latch instead, reset
         // on every fresh Attach so a later reconnect re-applies the Muted default again.
         private volatile bool usbMicrophoneMuteDefaultApplied;
+        // Bluetooth's own equivalent latch - StartBluetoothMicrophone only ever runs (and so only
+        // ever pushes a mute default) when the Built-in mic mode is Enable or Muted; Disabled
+        // never calls it at all, so without this the mute LED/power-save state is never actively
+        // pushed to the controller in that mode, leaving whatever state a previous session left it
+        // in rather than the Disabled default the UI claims.
+        private volatile bool bluetoothMicrophoneMuteDefaultApplied;
         private volatile bool bluetoothMicrophoneDisablePending;
         private volatile bool bluetoothMicrophoneControlPending;
         private Thread bluetoothMicrophoneThread;
@@ -312,6 +318,7 @@ namespace BetterJoyForCemu {
             ReadGyroCalibration();
 
             usbMicrophoneMuteDefaultApplied = false;
+            bluetoothMicrophoneMuteDefaultApplied = false;
 
             form.AppendTextBox("DualSense attached (baseline mode).\r\n");
             return 0;
@@ -1019,11 +1026,13 @@ namespace BetterJoyForCemu {
             bluetoothMicrophoneSignal.Set();
         }
 
-        // startMuted applies microphoneMuted=true only on a genuine fresh start (the worker
-        // thread wasn't already running) - Program.cs's reconciliation loop calls this every
-        // ~2 seconds regardless of whether anything changed, and forcing muted on every one of
-        // those calls would make the physical unmute button unusable, re-muting moments after
-        // every press.
+        // startMuted applies microphoneMuted only on a genuine fresh start (the worker thread
+        // wasn't already running) - Program.cs's reconciliation loop calls this every ~2 seconds
+        // regardless of whether anything changed, and forcing this on every one of those calls
+        // would make the physical unmute button unusable, re-muting moments after every press.
+        // Always calls SetMicrophoneMuted explicitly, even to unmute - the real hardware mute
+        // state can otherwise be left muted from an earlier Disabled/Muted session (or the
+        // ApplyBluetoothMicrophoneMuteDefault path below) with nothing to correct it here.
         public void StartBluetoothMicrophone(bool startMuted) {
             if (isUSB || state <= state_.DROPPED)
                 return;
@@ -1033,8 +1042,7 @@ namespace BetterJoyForCemu {
             if (worker != null && worker.IsAlive)
                 return;
 
-            if (startMuted)
-                SetMicrophoneMuted(true);
+            SetMicrophoneMuted(startMuted);
 
             bluetoothMicrophoneThread = new Thread(BluetoothMicrophoneWorker) {
                 IsBackground = true,
@@ -1060,6 +1068,21 @@ namespace BetterJoyForCemu {
 
             usbMicrophoneMuteDefaultApplied = true;
             SetMicrophoneMuted(startMuted);
+        }
+
+        // Bluetooth's equivalent of the above, for the specific case where StartBluetoothMicrophone
+        // never runs at all - Built-in mic: Disabled (or Controller audio itself off) never starts
+        // the worker, so without this the mute LED/power-save hardware mute is never actively
+        // pushed to the controller in that case, leaving whatever state a previous session left it
+        // in rather than the Disabled default the UI claims. Program.cs only calls this from the
+        // branch where StartBluetoothMicrophone is NOT also being called, so the two never race to
+        // set different values on the same connection.
+        public void ApplyBluetoothMicrophoneMuteDefault() {
+            if (isUSB || bluetoothMicrophoneMuteDefaultApplied)
+                return;
+
+            bluetoothMicrophoneMuteDefaultApplied = true;
+            SetMicrophoneMuted(true);
         }
 
         public void StopBluetoothMicrophone() {
@@ -1771,10 +1794,36 @@ namespace BetterJoyForCemu {
         // without the other and let the LED drift from what the mic hardware is actually doing.
         // There's no hardware-readback status to double check this against instead (checked
         // against Sony's own Linux driver source - it doesn't exist), so keeping these two writes
-        // structurally inseparable is the strongest guarantee the protocol allows.
-        private static void WriteMicrophoneMuteState(byte[] report, int offset, bool muted) {
-            report[offset + 8] = muted ? (byte)1 : (byte)0; // mute_button_led
+        // structurally inseparable is the strongest guarantee the protocol allows. The LED's own
+        // on/off meaning is separately customizable (MicIndicatorLedByte, the "Mic indicator"
+        // profile option) - but power_save_control here always reflects the real muted state
+        // exactly, regardless of that setting, since the actual hardware mute must never be
+        // allowed to drift from what SetMicrophoneMuted's caller asked for.
+        private void WriteMicrophoneMuteState(byte[] report, int offset, bool muted) {
+            report[offset + 8] = MicIndicatorLedByte(muted); // mute_button_led
             report[offset + 9] = muted ? DualSensePowerSaveMicMute : (byte)0; // power_save_control
+        }
+
+        // "Mic indicator" profile option: what the mute-button LED actually shows, independent of
+        // the real hardware mute state it's paired with above. Enabled matches Sony's own default
+        // behavior (mute_button_led = mic_muted); Inverted flips it (lit = active, not muted);
+        // Disabled never lights it; EnabledWhileDisabled only lights it when Built-in mic itself
+        // is set to Disabled, ignoring the runtime mute toggle entirely otherwise.
+        private byte MicIndicatorLedByte(bool muted) {
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+
+            switch (ControllerMappings.MicIndicatorMode(mappingProfileId)) {
+                case ControllerMappings.MicIndicatorModeDisabled:
+                    return 0;
+                case ControllerMappings.MicIndicatorModeInverted:
+                    return muted ? (byte)0 : (byte)1;
+                case ControllerMappings.MicIndicatorModeEnabledWhileDisabled:
+                    return ControllerMappings.BluetoothMicrophoneMode(mappingProfileId) ==
+                        ControllerMappings.ModeDisable ? (byte)1 : (byte)0;
+                default: // MicIndicatorModeEnabled
+                    return muted ? (byte)1 : (byte)0;
+            }
         }
 
         private void WriteRetainedRumbleAndTriggerState(byte[] report, int commonOffset,

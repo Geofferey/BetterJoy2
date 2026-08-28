@@ -84,12 +84,15 @@ namespace BetterJoyForCemu {
         private ProfileChoiceSelector controllerAudioVolumeSelector;
         private ProfileChoiceSelector controllerAudioEndpointSelector;
         private Button controllerAudioTestButton;
-        private CheckBox controllerAudioUsbLoopbackCheckBox;
+        private ProfileChoiceSelector controllerAudioUsbLoopbackSelector;
+        private Label controllerAudioUsbLoopbackLabel;
         private Label controllerAudioEnabledLabel;
         private Label controllerAudioVolumeLabel;
         private Label controllerAudioEndpointLabel;
         private ProfileChoiceSelector controllerBluetoothMicrophoneSelector;
         private Label controllerBluetoothMicrophoneLabel;
+        private ProfileChoiceSelector micIndicatorSelector;
+        private Label micIndicatorLabel;
         private CheckBox invertStickXCheckBox;
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
@@ -254,7 +257,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_volume_up, btn_volume_down, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -289,6 +292,8 @@ namespace BetterJoyForCemu {
         private SplitButton btn_ratchet_gyro;
         private SplitButton btn_guide;
         private SplitButton btn_mic_mute;
+        private SplitButton btn_volume_up;
+        private SplitButton btn_volume_down;
         private SplitButton btn_touchpad_click;
         private SplitButton btn_touchpad_tap;
         private SplitButton btn_touchpad_two_finger_tap;
@@ -387,6 +392,8 @@ namespace BetterJoyForCemu {
             btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
             btn_guide = new SplitButton { Name = "btn_guide" };
             btn_mic_mute = new SplitButton { Name = "btn_mic_mute" };
+            btn_volume_up = new SplitButton { Name = "btn_volume_up" };
+            btn_volume_down = new SplitButton { Name = "btn_volume_down" };
             btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
             btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
             btn_touchpad_two_finger_tap = new SplitButton {
@@ -762,14 +769,22 @@ namespace BetterJoyForCemu {
             AddMappingRow(page, null, btn_guide, "Guide / PS output", 235, 24, 150, 430);
             AddMappingRow(page, null, btn_mic_mute, "Microphone button", 274, 24, 150, 430);
             AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 313, 24, 150, 430);
+            // No controller has a dedicated volume button, unlike the fixed-hardware-button
+            // remaps above - these bind an arbitrary combo instead (AdjustControllerAudioVolume,
+            // the same "any combo, one discrete step per press" model scroll_up/scroll_down use
+            // on the Gyro page), so the binding box itself works the same as every other row here
+            // even though nothing physical is being remapped. Only takes effect for DualSense/
+            // DualShock4 profiles, matching every other Controller audio setting.
+            AddMappingRow(page, null, btn_volume_up, "Controller vol +", 352, 24, 150, 430);
+            AddMappingRow(page, null, btn_volume_down, "Controller vol -", 391, 24, 150, 430);
 
-            page.Controls.Add(CreateDivider(24, 362));
-            AddSectionHeading(page, "Joy-Con rail buttons", 379,
+            page.Controls.Add(CreateDivider(24, 440));
+            AddSectionHeading(page, "Joy-Con rail buttons", 457,
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 440, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 440, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 481, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 481, 315, 440, 154);
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 518, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 518, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 559, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 559, 315, 440, 154);
             return page;
         }
 
@@ -1180,15 +1195,18 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(controllerAudioTestButton,
                 "Play a short tone through the selected controller speaker.");
 
-            controllerAudioUsbLoopbackCheckBox = CreateProfileCheckBox(
-                "Loopback desktop audio to controller (USB, experimental)", 24, 820,
-                "ControllerAudioUsbLoopback");
-            page.Controls.Add(controllerAudioUsbLoopbackCheckBox);
-            tip_reassign.SetToolTip(controllerAudioUsbLoopbackCheckBox,
-                "Off by default. Instead of relying on this controller being your Windows default " +
-                "playback device, capture the system's current default device and stream it to the " +
-                "controller's speaker directly - useful when you'd rather keep your normal speakers " +
-                "as the default output.");
+            controllerAudioUsbLoopbackLabel = CreateLabel(
+                "Loopback audio", 24, 826, ProfileText, false);
+            page.Controls.Add(controllerAudioUsbLoopbackLabel);
+            controllerAudioUsbLoopbackSelector = CreateProfileChoiceSelector(145, 820, 180);
+            controllerAudioUsbLoopbackSelector.Items.AddRange(new object[] { "Disabled", "Enabled" });
+            controllerAudioUsbLoopbackSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
+            page.Controls.Add(controllerAudioUsbLoopbackSelector);
+            tip_reassign.SetToolTip(controllerAudioUsbLoopbackSelector,
+                "USB, experimental. Disabled by default. Instead of relying on this controller " +
+                "being your Windows default playback device, capture the system's current default " +
+                "device and stream it to the controller's speaker directly - useful when you'd " +
+                "rather keep your normal speakers as the default output.");
 
             controllerBluetoothMicrophoneLabel = CreateLabel(
                 "Built-in mic", 24, 870, ProfileText, false);
@@ -1205,14 +1223,28 @@ namespace BetterJoyForCemu {
                 "enabled. Muted starts it muted every time it connects, requiring a press of the " +
                 "controller's own mute button before anything is actually captured.");
 
-            page.Controls.Add(CreateDivider(24, 910));
-            AddSectionHeading(page, "Orientation", 927,
+            micIndicatorLabel = CreateLabel("Mic indicator", 24, 910, ProfileText, false);
+            page.Controls.Add(micIndicatorLabel);
+            micIndicatorSelector = CreateProfileChoiceSelector(145, 904, 180);
+            micIndicatorSelector.Items.AddRange(new object[] {
+                "Disabled", "Inverted", "Enabled", "Enabled while disabled",
+            });
+            micIndicatorSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
+            page.Controls.Add(micIndicatorSelector);
+            tip_reassign.SetToolTip(micIndicatorSelector,
+                "What the mute-button LED shows. Enabled: lit while the mic is muted (matches " +
+                "Sony's own behavior). Inverted: lit while the mic is active instead. Disabled: " +
+                "never lit. Enabled while disabled: only ever lit when Built-in mic above is set " +
+                "to Disabled, off otherwise regardless of mute state.");
+
+            page.Controls.Add(CreateDivider(24, 950));
+            AddSectionHeading(page, "Orientation", 967,
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
                 "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
             AddMappingRow(page, null, btn_default_orientation, "Default orientation",
-                1002, 24, 145, 449);
+                1042, 24, 145, 449);
 
-            page.AutoScrollMinSize = new Size(0, 1060);
+            page.AutoScrollMinSize = new Size(0, 1100);
             return page;
         }
 
@@ -1731,6 +1763,18 @@ namespace BetterJoyForCemu {
                         : ControllerMappings.ModeDisable);
                 ControllerMappings.SetOptionValue(
                     SelectedProfileId, "ControllerBluetoothMicrophoneEnabled", mode);
+            } else if (sender == micIndicatorSelector) {
+                string[] modes = {
+                    ControllerMappings.MicIndicatorModeDisabled,
+                    ControllerMappings.MicIndicatorModeInverted,
+                    ControllerMappings.MicIndicatorModeEnabled,
+                    ControllerMappings.MicIndicatorModeEnabledWhileDisabled,
+                };
+                ControllerMappings.SetOptionValue(
+                    SelectedProfileId, "MicIndicatorMode", modes[micIndicatorSelector.SelectedIndex]);
+            } else if (sender == controllerAudioUsbLoopbackSelector) {
+                ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioUsbLoopback",
+                    (controllerAudioUsbLoopbackSelector.SelectedIndex == 1).ToString().ToLowerInvariant());
             }
             UpdateControllerAudioControlState();
         }
@@ -1803,8 +1847,10 @@ namespace BetterJoyForCemu {
             if (controllerAudioTestButton != null)
                 controllerAudioTestButton.Enabled = available && selected.IsUsb &&
                     controllerAudioEndpointSelector.SelectedItem is ControllerAudioEndpoint;
-            if (controllerAudioUsbLoopbackCheckBox != null)
-                controllerAudioUsbLoopbackCheckBox.Enabled = available && selected.IsUsb;
+            if (controllerAudioUsbLoopbackSelector != null)
+                controllerAudioUsbLoopbackSelector.Enabled = available && selected.IsUsb;
+            if (controllerAudioUsbLoopbackLabel != null)
+                controllerAudioUsbLoopbackLabel.Enabled = available && selected.IsUsb;
             if (controllerBluetoothMicrophoneSelector != null) {
                 bool supportsBluetoothMicrophone = selected != null &&
                     selected.Kind == ControllerKind.DualSense;
@@ -1813,6 +1859,10 @@ namespace BetterJoyForCemu {
                 if (controllerBluetoothMicrophoneLabel != null)
                     controllerBluetoothMicrophoneLabel.Enabled = available &&
                         supportsBluetoothMicrophone;
+                if (micIndicatorSelector != null)
+                    micIndicatorSelector.Enabled = available && supportsBluetoothMicrophone;
+                if (micIndicatorLabel != null)
+                    micIndicatorLabel.Enabled = available && supportsBluetoothMicrophone;
             }
         }
 
@@ -1839,7 +1889,8 @@ namespace BetterJoyForCemu {
                 swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
                 lightColorButton, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
-                controllerAudioUsbLoopbackCheckBox, controllerBluetoothMicrophoneSelector,
+                controllerAudioUsbLoopbackSelector, controllerBluetoothMicrophoneSelector,
+                micIndicatorSelector,
                 gyroStickModeSelector, gyroStickModeRightSelector,
                 gyroStickAxisXSelector, gyroStickAxisXRightSelector,
                 invertStickXCheckBox, invertStickYCheckBox,
@@ -1903,12 +1954,17 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "ControllerAudioVolume", 75);
                 controllerAudioVolumeSelector.SelectedItem = ClosestAudioVolume(audioVolume) + "%";
                 LoadControllerAudioEndpoints();
-                controllerAudioUsbLoopbackCheckBox.Checked = ControllerMappings.BoolOption(
-                    SelectedProfileId, "ControllerAudioUsbLoopback");
+                controllerAudioUsbLoopbackSelector.SelectedIndex = ControllerMappings.BoolOption(
+                    SelectedProfileId, "ControllerAudioUsbLoopback") ? 1 : 0;
                 string microphoneMode = ControllerMappings.BluetoothMicrophoneMode(SelectedProfileId);
                 controllerBluetoothMicrophoneSelector.SelectedIndex =
                     microphoneMode == ControllerMappings.ModeEnable ? 0 :
                     (microphoneMode == ControllerMappings.MicrophoneModeStartMuted ? 1 : 2);
+                string micIndicatorMode = ControllerMappings.MicIndicatorMode(SelectedProfileId);
+                micIndicatorSelector.SelectedIndex =
+                    micIndicatorMode == ControllerMappings.MicIndicatorModeDisabled ? 0 :
+                    (micIndicatorMode == ControllerMappings.MicIndicatorModeInverted ? 1 :
+                    (micIndicatorMode == ControllerMappings.MicIndicatorModeEnabledWhileDisabled ? 3 : 2));
                 gyroActivationModeSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroHoldToggle") ? 0 : 1;
                 btn_gyro_mouse_inhibit.Text = ControllerMappings.BoolOption(
@@ -2203,7 +2259,7 @@ namespace BetterJoyForCemu {
                 controllerAudioEndpointLabel,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
-                controllerAudioUsbLoopbackCheckBox,
+                controllerAudioUsbLoopbackSelector, controllerAudioUsbLoopbackLabel,
             }) {
                 if (control != null)
                     control.Visible = true;

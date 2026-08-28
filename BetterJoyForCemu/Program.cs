@@ -198,12 +198,20 @@ namespace BetterJoyForCemu {
                         if (!jc.isUSB && audioEnabled && bluetoothMicrophoneEnabled)
                             dualSense.StartBluetoothMicrophone(
                                 microphoneMode == ControllerMappings.MicrophoneModeStartMuted);
-                        else
+                        else {
                             dualSense.StopBluetoothMicrophone();
+                            // StopBluetoothMicrophone only tears down BetterJoy's own worker/
+                            // virtual-mic pipeline - it doesn't touch the controller's own
+                            // hardware mute state, so without this, Disabled (or Controller audio
+                            // itself off) never actually pushes the mute LED/power-save bit to the
+                            // controller at all, leaving whatever state an earlier session left it
+                            // in instead of the muted state this branch implies.
+                            dualSense.ApplyBluetoothMicrophoneMuteDefault();
+                        }
                         // USB's mic is a native USB Audio Class endpoint - no BetterJoy-owned
                         // start/stop lifecycle the way Bluetooth's is, so Disabled can't stop a
                         // worker the way it does there; it hard-mutes the real hardware instead
-                        // (see SetMicrophoneMuted/UsbMicrophoneHardwareMute) and, like Muted,
+                        // (see SetMicrophoneMuted/DualSensePowerSaveMicMute) and, like Muted,
                         // still needs applying once per connection. Both Disabled and Muted start
                         // muted - only Enable starts unmuted - the physical button can still
                         // toggle either at runtime. Deliberately independent of audioEnabled/

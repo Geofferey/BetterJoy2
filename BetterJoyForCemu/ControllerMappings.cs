@@ -40,9 +40,14 @@ namespace BetterJoyForCemu {
         public const string RumbleModeDisableWithGyro = "disable_with_gyro";
         public const string AudioModeRequireHeadphones = "require_headphones";
         public const string MicrophoneModeStartMuted = "start_muted";
+        public const string MicIndicatorModeDisabled = "disabled";
+        public const string MicIndicatorModeInverted = "inverted";
+        public const string MicIndicatorModeEnabled = "enabled";
+        public const string MicIndicatorModeEnabledWhileDisabled = "enabled_while_disabled";
 
         public static readonly string[] Keys = {
-            "capture", "home", "guide", "mic_mute", "sl_l", "sl_r", "sr_l", "sr_r", "shake",
+            "capture", "home", "guide", "mic_mute", "volume_up", "volume_down",
+            "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
             // independent activation keys below.
@@ -67,7 +72,7 @@ namespace BetterJoyForCemu {
             "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "ControllerAudioUsbLoopback",
-            "ControllerBluetoothMicrophoneEnabled",
+            "ControllerBluetoothMicrophoneEnabled", "MicIndicatorMode",
             "GyroHoldToggle", "GyroMouseInhibitButtons", "DragToggle",
             "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
             "TouchpadStickSensitivity",
@@ -414,6 +419,14 @@ namespace BetterJoyForCemu {
             if (value == MicrophoneModeStartMuted)
                 return value;
             return value == ModeEnable ? ModeEnable : ModeDisable;
+        }
+
+        public static string MicIndicatorMode(string profileId) {
+            string value = OptionValue(profileId, "MicIndicatorMode");
+            if (value == MicIndicatorModeDisabled || value == MicIndicatorModeInverted ||
+                    value == MicIndicatorModeEnabledWhileDisabled)
+                return value;
+            return MicIndicatorModeEnabled;
         }
 
         public static int IntOption(string profileId, string key, int fallback = -1) {
