@@ -1527,7 +1527,35 @@ namespace BetterJoyForCemu {
                 value = 0;
             value = Math.Max(0, Math.Min(100, value));
             input.Text = value.ToString();
-            ControllerMappings.SetOptionValue(SelectedProfileId, (string)input.Tag, value.ToString());
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, AdaptiveTriggerPercentOptionKey(input), value.ToString());
+        }
+
+        // The six Adaptive trigger Start/Secondary/Strength boxes reuse the same three physical
+        // controls per side across all three modes instead of showing nine separate ones - Tag
+        // holds the old flat key from CreateProfilePercentInput's call site, but a commit needs
+        // to land in whichever mode is actually selected right now, so it's resolved dynamically
+        // here instead. Every other percent input (gyro deflection) just uses its own Tag as-is.
+        private string AdaptiveTriggerPercentOptionKey(TextBox input) {
+            if (input == adaptiveTriggerStartLeftInput)
+                return ControllerMappings.AdaptiveTriggerFieldKey(
+                    "Left", "Start", AdaptiveTriggerModeValue(adaptiveTriggerModeLeftSelector));
+            if (input == adaptiveTriggerSecondaryLeftInput)
+                return ControllerMappings.AdaptiveTriggerFieldKey(
+                    "Left", "Secondary", AdaptiveTriggerModeValue(adaptiveTriggerModeLeftSelector));
+            if (input == adaptiveTriggerStrengthLeftInput)
+                return ControllerMappings.AdaptiveTriggerFieldKey(
+                    "Left", "Strength", AdaptiveTriggerModeValue(adaptiveTriggerModeLeftSelector));
+            if (input == adaptiveTriggerStartRightInput)
+                return ControllerMappings.AdaptiveTriggerFieldKey(
+                    "Right", "Start", AdaptiveTriggerModeValue(adaptiveTriggerModeRightSelector));
+            if (input == adaptiveTriggerSecondaryRightInput)
+                return ControllerMappings.AdaptiveTriggerFieldKey(
+                    "Right", "Secondary", AdaptiveTriggerModeValue(adaptiveTriggerModeRightSelector));
+            if (input == adaptiveTriggerStrengthRightInput)
+                return ControllerMappings.AdaptiveTriggerFieldKey(
+                    "Right", "Strength", AdaptiveTriggerModeValue(adaptiveTriggerModeRightSelector));
+            return (string)input.Tag;
         }
 
         // Same shape as CreateProfilePercentInput/ProfilePercentInput_Leave above, just with a
@@ -1628,7 +1656,30 @@ namespace BetterJoyForCemu {
                 : "AdaptiveTriggerModeRight";
             ControllerMappings.SetOptionValue(SelectedProfileId, optionKey,
                 AdaptiveTriggerModeValue(selector));
+            // The three boxes below are shared across all three modes (see
+            // AdaptiveTriggerPercentOptionKey) - switching modes has to refresh what they display
+            // to that mode's own stored values, not just update Enabled state.
+            LoadAdaptiveTriggerFieldInputs();
             UpdateAdaptiveTriggerControlState(true);
+        }
+
+        // Populates the six shared Start/Secondary/Strength boxes from whichever mode each side
+        // is currently on - called on profile load and whenever a mode dropdown changes.
+        private void LoadAdaptiveTriggerFieldInputs() {
+            string leftMode = AdaptiveTriggerModeValue(adaptiveTriggerModeLeftSelector);
+            string rightMode = AdaptiveTriggerModeValue(adaptiveTriggerModeRightSelector);
+            adaptiveTriggerStartLeftInput.Text = ControllerMappings.AdaptiveTriggerFieldValue(
+                SelectedProfileId, "Left", "Start", leftMode, 30).ToString();
+            adaptiveTriggerSecondaryLeftInput.Text = ControllerMappings.AdaptiveTriggerFieldValue(
+                SelectedProfileId, "Left", "Secondary", leftMode, 70).ToString();
+            adaptiveTriggerStrengthLeftInput.Text = ControllerMappings.AdaptiveTriggerFieldValue(
+                SelectedProfileId, "Left", "Strength", leftMode, 50).ToString();
+            adaptiveTriggerStartRightInput.Text = ControllerMappings.AdaptiveTriggerFieldValue(
+                SelectedProfileId, "Right", "Start", rightMode, 30).ToString();
+            adaptiveTriggerSecondaryRightInput.Text = ControllerMappings.AdaptiveTriggerFieldValue(
+                SelectedProfileId, "Right", "Secondary", rightMode, 70).ToString();
+            adaptiveTriggerStrengthRightInput.Text = ControllerMappings.AdaptiveTriggerFieldValue(
+                SelectedProfileId, "Right", "Strength", rightMode, 50).ToString();
         }
 
         private static string AdaptiveTriggerModeValue(ProfileChoiceSelector selector) {
@@ -2042,18 +2093,7 @@ namespace BetterJoyForCemu {
                 LoadAdaptiveTriggerMode(adaptiveTriggerModeRightSelector,
                     ControllerMappings.OptionValue(SelectedProfileId,
                         "AdaptiveTriggerModeRight"));
-                adaptiveTriggerStartLeftInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "AdaptiveTriggerStartLeft", 30).ToString();
-                adaptiveTriggerSecondaryLeftInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "AdaptiveTriggerSecondaryLeft", 70).ToString();
-                adaptiveTriggerStrengthLeftInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "AdaptiveTriggerStrengthLeft", 50).ToString();
-                adaptiveTriggerStartRightInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "AdaptiveTriggerStartRight", 30).ToString();
-                adaptiveTriggerSecondaryRightInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "AdaptiveTriggerSecondaryRight", 70).ToString();
-                adaptiveTriggerStrengthRightInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "AdaptiveTriggerStrengthRight", 50).ToString();
+                LoadAdaptiveTriggerFieldInputs();
 
                 int inactivityMinutes = ControllerMappings.IntOption(
                     SelectedProfileId, "PowerOffInactivity", -1);

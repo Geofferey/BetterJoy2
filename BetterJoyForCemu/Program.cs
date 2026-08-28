@@ -128,15 +128,20 @@ namespace BetterJoyForCemu {
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
                     if (jc is DualSenseController triggerController) {
+                        // Each mode keeps its own Start/Secondary/Strength now (see
+                        // ControllerMappings.AdaptiveTriggerFieldValue) - read using whichever
+                        // mode is actually configured per side, not a shared flat value.
+                        string leftMode = ControllerMappings.OptionValue(profileId, "AdaptiveTriggerModeLeft");
+                        string rightMode = ControllerMappings.OptionValue(profileId, "AdaptiveTriggerModeRight");
                         triggerController.SetAdaptiveTriggerProfile(
-                            ControllerMappings.OptionValue(profileId, "AdaptiveTriggerModeLeft"),
-                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStartLeft", 30),
-                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerSecondaryLeft", 70),
-                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStrengthLeft", 50),
-                            ControllerMappings.OptionValue(profileId, "AdaptiveTriggerModeRight"),
-                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStartRight", 30),
-                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerSecondaryRight", 70),
-                            ControllerMappings.IntOption(profileId, "AdaptiveTriggerStrengthRight", 50));
+                            leftMode,
+                            ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Left", "Start", leftMode, 30),
+                            ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Left", "Secondary", leftMode, 70),
+                            ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Left", "Strength", leftMode, 50),
+                            rightMode,
+                            ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Right", "Start", rightMode, 30),
+                            ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Right", "Secondary", rightMode, 70),
+                            ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Right", "Strength", rightMode, 50));
                     }
                     string audioMode = ControllerMappings.ControllerAudioMode(profileId);
                     bool audioEnabled = audioMode != ControllerMappings.ModeDisable;

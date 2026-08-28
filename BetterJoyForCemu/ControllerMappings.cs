@@ -94,6 +94,22 @@ namespace BetterJoyForCemu {
             "AdaptiveTriggerSecondaryLeft", "AdaptiveTriggerStrengthLeft",
             "AdaptiveTriggerModeRight", "AdaptiveTriggerStartRight",
             "AdaptiveTriggerSecondaryRight", "AdaptiveTriggerStrengthRight",
+            // Per-mode Start/Secondary/Strength (AdaptiveTriggerFieldValue/AdaptiveTriggerFieldKey
+            // below) - the four keys above stay registered only so an existing profile's one
+            // shared set of values can still be read as a migration fallback, never written to by
+            // new code.
+            "AdaptiveTriggerStartLeftResistance", "AdaptiveTriggerSecondaryLeftResistance",
+            "AdaptiveTriggerStrengthLeftResistance",
+            "AdaptiveTriggerStartLeftWeapon", "AdaptiveTriggerSecondaryLeftWeapon",
+            "AdaptiveTriggerStrengthLeftWeapon",
+            "AdaptiveTriggerStartLeftVibration", "AdaptiveTriggerSecondaryLeftVibration",
+            "AdaptiveTriggerStrengthLeftVibration",
+            "AdaptiveTriggerStartRightResistance", "AdaptiveTriggerSecondaryRightResistance",
+            "AdaptiveTriggerStrengthRightResistance",
+            "AdaptiveTriggerStartRightWeapon", "AdaptiveTriggerSecondaryRightWeapon",
+            "AdaptiveTriggerStrengthRightWeapon",
+            "AdaptiveTriggerStartRightVibration", "AdaptiveTriggerSecondaryRightVibration",
+            "AdaptiveTriggerStrengthRightVibration",
         };
 
         // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected
@@ -428,6 +444,56 @@ namespace BetterJoyForCemu {
                     value == MicIndicatorModeEnabledWhileDisabled)
                 return value;
             return MicIndicatorModeEnabled;
+        }
+
+        // Builds the per-mode Start/Secondary/Strength key for one trigger side - e.g.
+        // ("Left", "Start", "weapon") -> "AdaptiveTriggerStartLeftWeapon". Shared by the read
+        // path below and by Reassign.cs, which needs the exact same key when committing an edited
+        // box, so the two can never drift apart on the naming scheme.
+        public static string AdaptiveTriggerFieldKey(string side, string field, string mode) {
+            string capitalizedMode = String.IsNullOrEmpty(mode)
+                ? ""
+                : Char.ToUpperInvariant(mode[0]) + mode.Substring(1).ToLowerInvariant();
+            return "AdaptiveTrigger" + field + side + capitalizedMode;
+        }
+
+        // Each Adaptive trigger mode (Resistance/Weapon/Vibration) stores its own independent
+        // Start/Secondary/Strength values instead of sharing one set - switching modes (via the
+        // dropdown, or the LT/RT haptics cycling bindings) no longer clobbers another mode's
+        // configured feel. Migrated lazily rather than in a batch pass: an existing profile only
+        // ever had the old flat AdaptiveTrigger{Field}{Side} key, holding whatever was configured
+        // for whichever mode was active at the time - if the new per-mode key was never
+        // explicitly set, and this happens to be the mode the profile's own
+        // AdaptiveTriggerMode{Side} is (or was) set to, fall back to that old key so an existing
+        // user's current effect is preserved exactly. Any other mode just gets the plain default,
+        // matching a fresh profile - there was never a configured value for it to migrate.
+        public static int AdaptiveTriggerFieldValue(string profileId, string side, string field,
+                string mode, int fallback) {
+            // Off has no effect parameters at all, so it was never given per-mode keys
+            // (AdaptiveTriggerFieldKey(..., "off") would build a key that was never registered in
+            // OptionKeys) - short-circuit here rather than let OptionValue throw for every
+            // DualSense profile sitting at the default Off mode, which is the vast majority of
+            // them.
+            if (String.Equals((mode ?? "").Trim(), "off", StringComparison.OrdinalIgnoreCase))
+                return fallback;
+
+            string perModeRaw = OptionValue(profileId, AdaptiveTriggerFieldKey(side, field, mode));
+            if (!String.IsNullOrEmpty(perModeRaw)) {
+                int value;
+                return Int32.TryParse(perModeRaw, out value) ? value : fallback;
+            }
+
+            string activeMode = (OptionValue(profileId, "AdaptiveTriggerMode" + side) ?? "off")
+                .Trim().ToLowerInvariant();
+            if (!String.Equals(activeMode, mode, StringComparison.OrdinalIgnoreCase))
+                return fallback;
+
+            string legacyRaw = OptionValue(profileId, "AdaptiveTrigger" + field + side);
+            if (String.IsNullOrEmpty(legacyRaw))
+                return fallback;
+
+            int legacyValue;
+            return Int32.TryParse(legacyRaw, out legacyValue) ? legacyValue : fallback;
         }
 
         public static int IntOption(string profileId, string key, int fallback = -1) {
