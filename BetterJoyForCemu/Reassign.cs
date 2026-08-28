@@ -257,7 +257,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -292,6 +292,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_ratchet_gyro;
         private SplitButton btn_guide;
         private SplitButton btn_mic_mute;
+        private SplitButton btn_toggle_built_in_mic;
         private SplitButton btn_volume_up;
         private SplitButton btn_volume_down;
         private SplitButton btn_lt_haptics;
@@ -394,6 +395,7 @@ namespace BetterJoyForCemu {
             btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
             btn_guide = new SplitButton { Name = "btn_guide" };
             btn_mic_mute = new SplitButton { Name = "btn_mic_mute" };
+            btn_toggle_built_in_mic = new SplitButton { Name = "btn_toggle_built_in_mic" };
             btn_volume_up = new SplitButton { Name = "btn_volume_up" };
             btn_volume_down = new SplitButton { Name = "btn_volume_down" };
             btn_lt_haptics = new SplitButton { Name = "btn_lt_haptics" };
@@ -788,14 +790,20 @@ namespace BetterJoyForCemu {
             // hasAdaptiveTriggers), since no other controller has adaptive triggers at all.
             AddMappingRow(page, null, btn_lt_haptics, "LT haptics", 430, 24, 150, 430);
             AddMappingRow(page, null, btn_rt_haptics, "RT haptics", 469, 24, 150, 430);
+            // The actual mute toggle, as opposed to "Microphone button" above (which only remaps
+            // what pressing the physical mic-mute button outputs elsewhere, unrelated to
+            // BetterJoy's own mute state). Defaults to that same physical button alone
+            // (ControllerMappings.LegacyValue), so nothing changes unless this is reassigned to a
+            // different chord.
+            AddMappingRow(page, null, btn_toggle_built_in_mic, "Toggle Built-in mic", 508, 24, 150, 430);
 
-            page.Controls.Add(CreateDivider(24, 518));
-            AddSectionHeading(page, "Joy-Con rail buttons", 535,
+            page.Controls.Add(CreateDivider(24, 557));
+            AddSectionHeading(page, "Joy-Con rail buttons", 574,
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 596, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 596, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 637, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 637, 315, 440, 154);
+            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 635, 24, 145, 140);
+            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 635, 315, 440, 154);
+            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 676, 24, 145, 140);
+            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 676, 315, 440, 154);
             return page;
         }
 

@@ -46,7 +46,8 @@ namespace BetterJoyForCemu {
         public const string MicIndicatorModeEnabledWhileDisabled = "enabled_while_disabled";
 
         public static readonly string[] Keys = {
-            "capture", "home", "guide", "mic_mute", "volume_up", "volume_down",
+            "capture", "home", "guide", "mic_mute", "toggle_built_in_mic",
+            "volume_up", "volume_down",
             "lt_haptics", "rt_haptics",
             "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
@@ -866,6 +867,12 @@ namespace BetterJoyForCemu {
         private static string LegacyValue(string key) {
             if (key == "guide")
                 return "default";
+            // Was a hardcoded check against the physical mic-mute button (DualSense.cs) before
+            // this became a real binding - defaults to that exact same button alone so existing
+            // behavior doesn't change for anyone who hasn't touched this, while still letting it
+            // be reassigned to a different chord like every other binding.
+            if (key == "toggle_built_in_mic")
+                return "joy_" + (int)Controller.Button.MIC_MUTE;
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
             if (TouchpadActivationKeys.Contains(key))

@@ -2250,6 +2250,13 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(mappingProfileId, optionKey, next);
         }
 
+        // Hook for a subclass's own binding-driven button actions that need a private/internal
+        // member only that subclass has (DualSenseController's built-in-mic mute toggle needs
+        // SetMicrophoneMuted, which nothing outside that class should call directly) - the
+        // combo-bound actions above don't need this since they only ever touch ControllerMappings
+        // and this base class's own fields.
+        protected virtual void DoDeviceSpecificButtonActions() { }
+
         protected void DoThingsWithButtons() {
             // Checked first and returns early like the other button-driven side effects below -
             // a face button doubling as "confirm" only ever matters while a calibration prompt
@@ -2338,6 +2345,7 @@ namespace BetterJoyForCemu {
                 CycleAdaptiveTriggerModeOnPress("lt_haptics", "AdaptiveTriggerModeLeft");
                 CycleAdaptiveTriggerModeOnPress("rt_haptics", "AdaptiveTriggerModeRight");
             }
+            DoDeviceSpecificButtonActions();
 
             if (HasTouchpad) {
                 if (buttons_down[(int)Button.TOUCHPAD])

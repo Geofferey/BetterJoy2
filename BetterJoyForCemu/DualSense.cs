@@ -765,12 +765,11 @@ namespace BetterJoyForCemu {
                 b[(int)Button.HOME] = (btn3 & 0x01) != 0; // PS button
                 b[(int)Button.TOUCHPAD] = (btn3 & 0x02) != 0;
                 b[(int)Button.MIC_MUTE] = (btn3 & 0x04) != 0;
-                // Toggle unconditionally on press, not just while Bluetooth mic streaming is
-                // requested - the mute LED/state is the same shared hardware field on USB too
-                // (see the field comment on microphoneMuted), and previously never got set at
-                // all outside that one Bluetooth feature, so the button did nothing over USB.
-                if (b[(int)Button.MIC_MUTE] && !down_[(int)Button.MIC_MUTE])
-                    SetMicrophoneMuted(!microphoneMuted);
+                // The actual mute toggle used to live here as a hardcoded check against this one
+                // physical button - now a real binding (toggle_built_in_mic, defaulting to this
+                // same button), dispatched from DoDeviceSpecificButtonActions once buttons is
+                // committed below and combo-matching against it is valid. Still populating the
+                // raw state here regardless, since IsComboHeld needs it live either way.
                 // Edge paddles remain unmapped; SL/SR have no DualSense equivalent.
 
                 buttons = b;
@@ -1188,6 +1187,17 @@ namespace BetterJoyForCemu {
                     bluetoothOutputStateDirty = true;
                 StopBluetoothMediaTransportIfIdle();
             }
+        }
+
+        // toggle_built_in_mic defaults to the physical mute button alone (see
+        // ControllerMappings.LegacyValue) but is a real binding like volume_up/lt_haptics, so it
+        // can be reassigned to a different chord instead. Same discrete-per-press model; the
+        // combo is checked against buttons here rather than in the raw report parser, since that
+        // runs before buttons is committed for this report and combo-matching needs it live.
+        protected override void DoDeviceSpecificButtonActions() {
+            bool held = UpdateDesktopActionComboHeld("toggle_built_in_mic", true, out bool wasHeld);
+            if (held && !wasHeld)
+                SetMicrophoneMuted(!microphoneMuted);
         }
 
         private void SetMicrophoneMuted(bool muted) {
