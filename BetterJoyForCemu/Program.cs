@@ -265,16 +265,47 @@ namespace BetterJoyForCemu {
         private static void ApplyControllerProfileLighting(Controller controller,
                                                             string profileId) {
             controller.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
-            // LightingOff (toggle_lighting binding) never touches the user's actual LightColor
-            // setting - it's a separate flag applied on top, so the real chosen color is always
-            // still there to go back to the instant it's toggled back on, nothing to save/restore.
-            if (ControllerMappings.BoolOption(profileId, "LightingOff")) {
-                controller.SetLightColor(0, 0, 0);
-                return;
-            }
+
             byte red, green, blue;
-            ControllerMappings.GetLightColor(profileId, out red, out green, out blue);
+            // LightingOff (toggle_lighting binding) never touches the user's actual LightColor
+            // setting or Lighting mode - it's a separate flag applied on top of whichever of those
+            // is otherwise in effect, so what was there before is always still there to go back to
+            // the instant it's toggled back on, nothing to save/restore.
+            if (ControllerMappings.BoolOption(profileId, "LightingOff")) {
+                red = green = blue = 0;
+            } else if (ControllerMappings.LightingMode(profileId) ==
+                    ControllerMappings.LightingModeBattery) {
+                (red, green, blue) = BatteryLightColor(controller.batteryPercent);
+            } else {
+                ControllerMappings.GetLightColor(profileId, out red, out green, out blue);
+            }
+
+            // Skips the HID write entirely when nothing actually changed since the last time this
+            // ran - see the field comment on lastAppliedLightColor. The desired (red,green,blue)
+            // is still recomputed fresh above on every call regardless (cheap - no I/O), so a
+            // toggle_lighting binding press back to on in Battery mode always reflects whatever
+            // the charge actually is right then, not a stale value from before it was switched off.
+            string state = red + "," + green + "," + blue;
+            if (controller.lastAppliedLightColor == state)
+                return;
+
+            controller.lastAppliedLightColor = state;
             controller.SetLightColor(red, green, blue);
+        }
+
+        // Pure green/yellow/red bands rather than a gradient - deliberately coarse (matches the
+        // "update only when the charge crosses into a different band" requirement this exists
+        // for) so the lightbar doesn't need a fresh color sent on every small percentage change.
+        // Luminosity capped at 15 per channel rather than full 255 - a lightbar at max brightness
+        // for something meant to be a subtle, glanceable indicator is uncomfortably bright.
+        private const byte BatteryLightLuminosity = 15;
+
+        private static (byte, byte, byte) BatteryLightColor(int batteryPercent) {
+            if (batteryPercent <= 33)
+                return (BatteryLightLuminosity, 0, 0);
+            if (batteryPercent <= 66)
+                return (BatteryLightLuminosity, BatteryLightLuminosity, 0);
+            return (0, BatteryLightLuminosity, 0);
         }
 
         void CheckForNewControllersTime(Object source, ElapsedEventArgs e) {

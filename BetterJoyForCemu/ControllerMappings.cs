@@ -44,6 +44,8 @@ namespace BetterJoyForCemu {
         public const string MicIndicatorModeInverted = "inverted";
         public const string MicIndicatorModeEnabled = "enabled";
         public const string MicIndicatorModeEnabledWhileDisabled = "enabled_while_disabled";
+        public const string LightingModeUser = "user";
+        public const string LightingModeBattery = "battery";
 
         // Single source of truth for every "cycle through the modes of a dropdown" binding
         // (lt_haptics/rt_haptics/toggle_haptics) as well as the dropdowns themselves
@@ -57,6 +59,9 @@ namespace BetterJoyForCemu {
         public static readonly (string Value, string Label)[] RumbleModes = {
             (ModeEnable, "Enable"), (ModeDisable, "Disable"),
             (RumbleModeDisableWithGyro, "Disable with gyro"),
+        };
+        public static readonly (string Value, string Label)[] LightingModes = {
+            (LightingModeUser, "User"), (LightingModeBattery, "Battery"),
         };
 
         // Shared by every mode-cycling binding - advances from whichever entry matches current
@@ -105,7 +110,7 @@ namespace BetterJoyForCemu {
             "TouchpadHorizontalScale", "TouchpadVerticalScale",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
-            "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "LightingOff",
+            "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "LightingOff", "LightingMode",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
             "GyroStickAxisXLeft", "GyroStickAxisXRight",
@@ -469,6 +474,13 @@ namespace BetterJoyForCemu {
                     value == MicIndicatorModeEnabledWhileDisabled)
                 return value;
             return MicIndicatorModeEnabled;
+        }
+
+        public static string LightingMode(string profileId) {
+            string value = OptionValue(profileId, "LightingMode");
+            return String.Equals(value, LightingModeBattery, StringComparison.OrdinalIgnoreCase)
+                ? LightingModeBattery
+                : LightingModeUser;
         }
 
         // Builds the per-mode Start/Secondary/Strength key for one trigger side - e.g.

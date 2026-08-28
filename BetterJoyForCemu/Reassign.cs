@@ -80,6 +80,8 @@ namespace BetterJoyForCemu {
         private CheckBox homeLedCheckBox;
         private Label lightColorLabel;
         private Button lightColorButton;
+        private Label lightingModeLabel;
+        private ProfileChoiceSelector lightingModeSelector;
         private ProfileChoiceSelector controllerAudioEnabledSelector;
         private ProfileChoiceSelector controllerAudioVolumeSelector;
         private ProfileChoiceSelector controllerAudioEndpointSelector;
@@ -1159,6 +1161,19 @@ namespace BetterJoyForCemu {
             page.Controls.Add(lightColorLabel);
             page.Controls.Add(lightColorButton);
 
+            lightingModeLabel = CreateLabel("Mode", 320, 514, ProfileText, false);
+            page.Controls.Add(lightingModeLabel);
+            lightingModeSelector = CreateProfileChoiceSelector(365, 508, 140);
+            foreach (var mode in ControllerMappings.LightingModes)
+                lightingModeSelector.Items.Add(mode.Label);
+            lightingModeSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
+            page.Controls.Add(lightingModeSelector);
+            tip_reassign.SetToolTip(lightingModeSelector,
+                "User: always show Light color. Battery: show the controller's current charge " +
+                "instead - green above 66%, yellow above 33%, red at or below 33% - updated only " +
+                "when the charge crosses into a different band, to avoid constant chatter with " +
+                "the controller over something that barely changes.");
+
             page.Controls.Add(CreateDivider(24, 558));
             AddSectionHeading(page, "Haptics", 575,
                 "Control controller vibration for this profile.");
@@ -1846,6 +1861,11 @@ namespace BetterJoyForCemu {
             } else if (sender == controllerAudioUsbLoopbackSelector) {
                 ControllerMappings.SetOptionValue(SelectedProfileId, "ControllerAudioUsbLoopback",
                     (controllerAudioUsbLoopbackSelector.SelectedIndex == 1).ToString().ToLowerInvariant());
+            } else if (sender == lightingModeSelector) {
+                var modes = ControllerMappings.LightingModes;
+                int index = lightingModeSelector.SelectedIndex;
+                ControllerMappings.SetOptionValue(SelectedProfileId, "LightingMode",
+                    index >= 0 && index < modes.Length ? modes[index].Value : modes[0].Value);
             }
             UpdateControllerAudioControlState();
         }
@@ -1958,7 +1978,7 @@ namespace BetterJoyForCemu {
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
-                lightColorButton, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
+                lightColorButton, lightingModeSelector, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
                 controllerAudioUsbLoopbackSelector, controllerBluetoothMicrophoneSelector,
                 micIndicatorSelector,
@@ -2017,6 +2037,10 @@ namespace BetterJoyForCemu {
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 UpdateLightColorButton(
                     ControllerMappings.OptionValue(SelectedProfileId, "LightColor"));
+                string lightingMode = ControllerMappings.LightingMode(SelectedProfileId);
+                int lightingModeIndex = Array.FindIndex(ControllerMappings.LightingModes,
+                    m => String.Equals(m.Value, lightingMode, StringComparison.OrdinalIgnoreCase));
+                lightingModeSelector.SelectedIndex = Math.Max(0, lightingModeIndex);
                 string audioMode = ControllerMappings.ControllerAudioMode(SelectedProfileId);
                 controllerAudioEnabledSelector.SelectedIndex =
                     audioMode == ControllerMappings.ModeEnable ? 0 :
@@ -2312,6 +2336,12 @@ namespace BetterJoyForCemu {
                 lightColorLabel.Visible = hasConfigurableLight;
             if (lightColorButton != null)
                 lightColorButton.Visible = hasConfigurableLight;
+            if (lightingModeLabel != null)
+                lightingModeLabel.Visible = hasConfigurableLight;
+            if (lightingModeSelector != null) {
+                lightingModeSelector.Visible = hasConfigurableLight;
+                lightingModeSelector.Enabled = hasConfigurableLight;
+            }
             if (homeLedCheckBox != null)
                 homeLedCheckBox.Visible = !hasConfigurableLight;
             foreach (Control control in new Control[] {

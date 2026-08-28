@@ -94,6 +94,16 @@ namespace BetterJoyForCemu {
         public int constate = 2;
         public int connection = 3;
 
+        // Program.cs's ApplyControllerProfileLighting caches the last (red,green,blue) it
+        // actually sent here, so it can skip re-sending an identical color on every ~2s
+        // reconciliation tick - most relevant for Battery lighting mode, whose color only
+        // actually needs to change when the charge crosses into a different band, not on every
+        // tick. Deliberately not reset on reconnect - the low-probability downside (skipping one
+        // resend if the desired color happens to already match a stale cached value from before a
+        // disconnect) is far cheaper than hunting down every controller type's own connect path
+        // just to invalidate this.
+        public string lastAppliedLightColor;
+
         protected void BatteryChanged() { // battery changed level
             form.UpdateBatteryColor(this);
 
