@@ -875,8 +875,11 @@ namespace BetterJoyForCemu {
         // once per Poll iteration, same pattern as SendQueuedRumbleIfAny) - every read and write
         // for this handle now happens from that one thread, like everything else in this class.
         // Poll's own natural iteration rate (driven by real HID read timing, typically a few ms)
-        // paces output well enough on its own; no artificial sleep needed. One concurrent stream,
-        // matching the reference project's own scope ("demo only supports one controller").
+        // paces output well enough on its own; no artificial sleep needed. One concurrent stream
+        // per controller instance - each DualShock4Controller owns exactly one HID handle and one
+        // Poll thread, so it was never going to send more than one anyway. Multiple different
+        // controllers (e.g. this one and a DualSense at the same time) each run their own fully
+        // independent capture/encode/send pipeline - see InputHelper.cs's per-pad audioCaptures.
         // Start/StopBluetoothAudioStream run on Program.cs's profile-reconciliation thread while
         // SendQueuedBluetoothAudioIfAny runs on Poll. Live profile changes can restart an existing
         // stream, so the old publish-once ordering is no longer sufficient to protect the pending

@@ -27,15 +27,15 @@ namespace BetterJoyForCemu {
             var writer = new BinaryWriter(pipe);
             var writeLock = new object();
 
-            // One concurrent Bluetooth audio capture at a time, matching
-            // DualShock4Controller's own single-stream scope. padId is remembered here (not
-            // carried by BluetoothAudioCapture itself) purely to tag outgoing AudioFrame
-            // messages with the right pad.
-            int audioCapturePadId = -1;
-            var audioCapture = new BluetoothAudioCapture(frame => {
-                if (audioCapturePadId >= 0)
-                    SendAudioFrame(pipe, writer, writeLock, audioCapturePadId, frame);
-            });
+            // One independent capture pipeline per pad - each controller's Bluetooth audio is a
+            // fully separate WASAPI capture/resample/encode chain (BluetoothAudioCapture has no
+            // shared/static state of its own), so two controllers streaming at once never contend
+            // for the same pipeline the way a single shared instance used to. Shared mode WASAPI
+            // loopback capture already supports multiple simultaneous captures of the same render
+            // endpoint, so this works even when both controllers are capturing the same "Default"
+            // device. Each entry's onFrame closure captures its own padId directly, unlike the old
+            // single-instance version which had to track a separately-mutated "current" pad.
+            var audioCaptures = new Dictionary<int, BluetoothAudioCapture>();
 
             // Unlike Bluetooth audio, USB loopback never sends data over the pipe at all (capture
             // and render both happen locally here), and has none of hidapi's single-handle
@@ -75,27 +75,20 @@ namespace BetterJoyForCemu {
                     while (pipe.IsConnected) {
                         InputMessage msg = InputMessage.ReadFrom(reader);
                         switch (msg.Type) {
-                            case InputMessageType.StartAudioCapture:
-                                // Do not retag a final callback from the previous controller/
-                                // codec as belonging to the new stream while Start synchronously
-                                // stops and replaces the capture pipeline.
-                                audioCapturePadId = -1;
-                                audioCapture.Start(reader.ReadString(), (BluetoothAudioCodec)msg.B);
-                                audioCapturePadId = msg.A;
-                                break;
-                            case InputMessageType.StopAudioCapture:
-                                // Only the pad that actually owns the capture right now may stop
-                                // it. The service picks a single owner per reconciliation pass
-                                // (see JoyconManager's bluetoothAudioCaptureOwner), but a demoted
-                                // controller's own Stop message can still be sent in the same pass
-                                // as the new owner's Start - if it happened to arrive here second,
-                                // an unconditional Stop would kill the new owner's stream it never
-                                // asked to touch. A Stop for a pad that isn't (or is no longer)
-                                // the active one is simply stale and ignored.
-                                if (msg.A == audioCapturePadId) {
-                                    audioCapture.Stop();
-                                    audioCapturePadId = -1;
+                            case InputMessageType.StartAudioCapture: {
+                                string endpointId = reader.ReadString();
+                                int startPadId = msg.A;
+                                if (!audioCaptures.TryGetValue(startPadId, out BluetoothAudioCapture capture)) {
+                                    capture = new BluetoothAudioCapture(frame =>
+                                        SendAudioFrame(pipe, writer, writeLock, startPadId, frame));
+                                    audioCaptures[startPadId] = capture;
                                 }
+                                capture.Start(endpointId, (BluetoothAudioCodec)msg.B);
+                                break;
+                            }
+                            case InputMessageType.StopAudioCapture:
+                                if (audioCaptures.TryGetValue(msg.A, out BluetoothAudioCapture toStopCapture))
+                                    toStopCapture.Stop();
                                 break;
                             case InputMessageType.StartUsbAudioLoopback: {
                                 string sourceEndpointId = reader.ReadString();
@@ -130,7 +123,8 @@ namespace BetterJoyForCemu {
 
             keyboard.Dispose();
             mouse.Dispose();
-            audioCapture.Dispose();
+            foreach (BluetoothAudioCapture capture in audioCaptures.Values)
+                capture.Dispose();
             foreach (UsbAudioLoopback loopback in usbAudioLoopbacks.Values)
                 loopback.Dispose();
             desktopInput.Dispose();
@@ -151,9 +145,11 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // BluetoothAudioCapture invokes its onFrame callback from a WASAPI capture callback
-        // thread, concurrently with the keyboard/mouse hook threads already using SendSafe above -
-        // same writeLock, so writes to the shared pipe/writer never interleave.
+        // Each BluetoothAudioCapture invokes its own onFrame callback from its own WASAPI capture
+        // callback thread - with two or more streaming at once, this can be called concurrently
+        // from multiple threads, alongside the keyboard/mouse hook threads already using SendSafe
+        // above. Same writeLock for all of them, so writes to the shared pipe/writer never
+        // interleave regardless of how many captures are active.
         private static void SendAudioFrame(NamedPipeClientStream pipe, BinaryWriter writer, object writeLock, int padId, byte[] frame) {
             lock (writeLock) {
                 if (!pipe.IsConnected)
