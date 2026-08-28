@@ -114,6 +114,11 @@ namespace BetterJoyForCemu {
         private const byte DualSenseValidRumbleAndTriggers =
             DualSenseValidCompatibleVibration | DualSenseValidHapticsSelect |
             DualSenseValidRightTrigger | DualSenseValidLeftTrigger;
+        // valid_flag1/power_save_control names and bit values match the Linux hid-playstation
+        // driver exactly - this is what actually powers the mic capsule down at the hardware
+        // level (see WriteRetainedRumbleAndTriggerState), not just the mute LED.
+        private const byte DualSensePowerSaveControlEnable = 0x02; // DS_OUTPUT_VALID_FLAG1_POWER_SAVE_CONTROL_ENABLE
+        private const byte DualSensePowerSaveMicMute = 0x10; // DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE
         private const int BtAudioPrimeFrameCount = 8;
         // Bound latency as well as memory. With the capture/media clocks matched this remains near
         // the eight-frame prime; twelve frames leaves jitter margin but can never hide ~1 second
@@ -1045,13 +1050,16 @@ namespace BetterJoyForCemu {
         // Attach). Program.cs's reconciliation loop calls this every ~2 seconds for every USB
         // DualSense regardless of the Built-in mic setting; the latch is what keeps this a true
         // one-shot "on connect" default rather than fighting the physical mute button afterward.
+        // Always calls SetMicrophoneMuted explicitly, even to unmute - the real hardware endpoint's
+        // mute state is a persistent Windows setting that survives reconnects, so a fresh
+        // connection with startMuted=false still has to actively correct a mic left muted from an
+        // earlier session, not just skip touching it.
         public void ApplyUsbMicrophoneMuteDefault(bool startMuted) {
             if (!isUSB || usbMicrophoneMuteDefaultApplied)
                 return;
 
             usbMicrophoneMuteDefaultApplied = true;
-            if (startMuted)
-                SetMicrophoneMuted(true);
+            SetMicrophoneMuted(startMuted);
         }
 
         public void StopBluetoothMicrophone() {
@@ -1640,7 +1648,7 @@ namespace BetterJoyForCemu {
                 ? (byte)0x01
                 : (byte)0x00;
             report[BtAudioStateOffset + 9] = microphoneMuted
-                ? (byte)0x10
+                ? DualSensePowerSaveMicMute
                 : (byte)0x00;
             WriteAdaptiveTriggerState(report, BtAudioStateOffset,
                 bluetoothOutputStateDirty);
@@ -1774,10 +1782,18 @@ namespace BetterJoyForCemu {
             // byte below on every single report - previously that byte was just left at its
             // zero-initialized default, meaning every rumble/lightbar report silently forced the
             // controller back to unmuted regardless of what the physical button had set.
-            report[commonOffset + 1] = 0x55;
+            // Also OR in bit 1 (DS_OUTPUT_VALID_FLAG1_POWER_SAVE_CONTROL_ENABLE) so
+            // power_save_control below actually takes effect - mute_button_led only ever
+            // controlled the LED (confirmed against the same Linux driver's naming; the physical
+            // button's own mute state has never affected the mic hardware, on real hardware or in
+            // any OS), power_save_control's DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE bit (BIT 4) is
+            // the real thing - it's what actually powers the mic capsule down at the hardware
+            // level, the same control Sony's own driver uses.
+            report[commonOffset + 1] = 0x55 | DualSensePowerSaveControlEnable;
             report[commonOffset + 2] = rightMotor;
             report[commonOffset + 3] = leftMotor;
             report[commonOffset + 8] = microphoneMuted ? (byte)1 : (byte)0; // mute_button_led
+            report[commonOffset + 9] = microphoneMuted ? DualSensePowerSaveMicMute : (byte)0; // power_save_control
             WriteAdaptiveTriggerState(report, commonOffset, true);
             report[commonOffset + 44] = lightbarRed;
             report[commonOffset + 45] = lightbarGreen;
