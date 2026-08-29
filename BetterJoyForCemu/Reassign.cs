@@ -840,82 +840,87 @@ namespace BetterJoyForCemu {
         private Panel BuildGyroPage() {
             Panel page = CreateProfilePage("Gyro",
                 "Choose where motion is sent and how each output activates.");
-            AddSectionHeading(page, "Output activation", 86,
-                "Set each output to always on, disabled, or activate it with a binding.");
-            page.Controls.Add(CreateLabel("Output", 24, 137, ProfileMuted, false, 8.25F));
-            page.Controls.Add(CreateLabel("Activation", 180, 137, ProfileMuted, false, 8.25F));
-            AddMappingRow(page, lbl_activate_gyro, btn_active_gyro, "Mouse", 158, 24, 180, 414);
-            AddMappingRow(page, null, gyroStickActivationButtons[0], "Left stick", 195, 24, 180, 414);
-            AddMappingRow(page, null, gyroStickActivationButtons[1], "Right stick", 232, 24, 180, 414);
+            var layout = new PageLayout(this, page, 86);
 
+            layout.Heading("Output activation",
+                "Set each output to always on, disabled, or activate it with a binding.");
+            // A small column-header row (Output/Activation) rather than a real Row - advance by
+            // hand for the header itself, then the rows below go back to the normal cursor.
+            page.Controls.Add(CreateLabel("Output", 24, layout.Y + 21, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 180, layout.Y + 21, ProfileMuted, false, 8.25F));
+            layout.Advance(21 + 21);
+            layout.Row(lbl_activate_gyro, btn_active_gyro, "Mouse", buttonX: 180, buttonWidth: 414);
+            layout.Row(null, gyroStickActivationButtons[0], "Left stick", buttonX: 180, buttonWidth: 414);
+            layout.Row(null, gyroStickActivationButtons[1], "Right stick", buttonX: 180, buttonWidth: 414);
             // Gyro-driven L2/R2 analog output while a stick-gyro output button is held (see
             // Joycon.GyroAnalogSliders) - listed last since it modifies the stick outputs above
             // rather than being an output of its own. A plain on/off flag, not a bind, so its
             // SplitButton opens menu_gyro_analog_sliders on any click (wired in
             // CreateDynamicProfileControls) instead of the Remap combo-capture the other rows use.
-            AddMappingRow(page, null, btn_gyro_analog_sliders, "Analog triggers", 269, 24, 180, 414);
-
+            layout.Row(null, btn_gyro_analog_sliders, "Analog triggers", buttonX: 180, buttonWidth: 414);
             // While held, zeroes gyro-to-stick output instead of tracking live rotation - lets
             // the wrist reposition back to a comfortable angle without that motion registering as
             // a reverse turn, or a mid-turn hold continuing to turn on its own (see
             // Joycon.gyroStickRatcheted).
-            AddMappingRow(page, null, btn_ratchet_gyro, "Ratchet gyro", 306, 24, 180, 414);
+            layout.Row(null, btn_ratchet_gyro, "Ratchet gyro", buttonX: 180, buttonWidth: 414);
 
-            page.Controls.Add(CreateDivider(24, 348));
-            AddSectionHeading(page, "Stick mapping", 363,
+            layout.Divider();
+            layout.Heading("Stick mapping",
                 "Shape how gyro tilt drives the stick outputs above per stick. Requires IMU filtering.");
+            layout.Row(null, gyroStickModeSelector, "Left stick response", buttonX: 180, buttonWidth: 180);
+            layout.Row(null, gyroStickModeRightSelector, "Right stick response", buttonX: 180, buttonWidth: 180);
+            layout.Row(null, gyroStickAxisXSelector, "Left turn axis", buttonX: 180, buttonWidth: 180);
+            layout.Row(null, gyroStickAxisXRightSelector, "Right turn axis", buttonX: 180, buttonWidth: 180);
 
-            AddMappingRow(page, null, gyroStickModeSelector,
-                "Left stick response", 419, 24, 180, 180);
-            AddMappingRow(page, null, gyroStickModeRightSelector,
-                "Right stick response", 457, 24, 180, 180);
-            AddMappingRow(page, null, gyroStickAxisXSelector,
-                "Left turn axis", 495, 24, 180, 180);
-            AddMappingRow(page, null, gyroStickAxisXRightSelector,
-                "Right turn axis", 533, 24, 180, 180);
-
-            invertStickXCheckBox = CreateProfileCheckBox("Invert left X", 24, 571, "GyroStickInvertXLeft");
-            invertStickYCheckBox = CreateProfileCheckBox("Invert left Y", 190, 571, "GyroStickInvertYLeft");
-            invertStickXRightCheckBox = CreateProfileCheckBox("Invert right X", 24, 595, "GyroStickInvertXRight");
-            invertStickYRightCheckBox = CreateProfileCheckBox("Invert right Y", 190, 595, "GyroStickInvertYRight");
+            // A 2x2 checkbox grid, not a Row - two short rows of their own (checkboxes are
+            // shorter than a SplitButton, so this pair is tighter than the normal row gap).
+            invertStickXCheckBox = CreateProfileCheckBox("Invert left X", 24, layout.Y, "GyroStickInvertXLeft");
+            invertStickYCheckBox = CreateProfileCheckBox("Invert left Y", 190, layout.Y, "GyroStickInvertYLeft");
+            layout.Advance(24);
+            invertStickXRightCheckBox = CreateProfileCheckBox("Invert right X", 24, layout.Y, "GyroStickInvertXRight");
+            invertStickYRightCheckBox = CreateProfileCheckBox("Invert right Y", 190, layout.Y, "GyroStickInvertYRight");
+            layout.Advance(41);
             page.Controls.Add(invertStickXCheckBox);
             page.Controls.Add(invertStickYCheckBox);
             page.Controls.Add(invertStickXRightCheckBox);
             page.Controls.Add(invertStickYRightCheckBox);
 
-            page.Controls.Add(CreateDivider(24, 636));
-            AddSectionHeading(page, "Deflection limits", 651,
+            layout.Divider();
+            layout.Heading("Deflection limits",
                 "How far gyro alone may push each stick, and the minimum once it starts moving.");
 
             int[] deflectionColumnX = { 140, 240, 340, 440 };
             string[] deflectionColumnLabels = { "Max X", "Max Y", "Min X", "Min Y" };
             for (int column = 0; column < deflectionColumnX.Length; column++)
-                page.Controls.Add(CreateLabel(deflectionColumnLabels[column], deflectionColumnX[column], 707,
-                    ProfileMuted, false, 8.25F));
+                page.Controls.Add(CreateLabel(deflectionColumnLabels[column], deflectionColumnX[column],
+                    layout.Y, ProfileMuted, false, 8.25F));
+            layout.Advance(21);
 
-            page.Controls.Add(CreateLabel("Left stick", 24, 734, ProfileText, false));
-            maxDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[0], 728, "GyroStickMaxDeflectionXLeft");
-            maxDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[1], 728, "GyroStickMaxDeflectionYLeft");
-            minDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[2], 728, "GyroStickMinDeflectionXLeft");
-            minDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[3], 728, "GyroStickMinDeflectionYLeft");
+            page.Controls.Add(CreateLabel("Left stick", 24, layout.Y + 6, ProfileText, false));
+            maxDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[0], layout.Y, "GyroStickMaxDeflectionXLeft");
+            maxDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[1], layout.Y, "GyroStickMaxDeflectionYLeft");
+            minDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[2], layout.Y, "GyroStickMinDeflectionXLeft");
+            minDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[3], layout.Y, "GyroStickMinDeflectionYLeft");
+            layout.Advance(34);
 
-            page.Controls.Add(CreateLabel("Right stick", 24, 768, ProfileText, false));
-            maxDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[0], 762, "GyroStickMaxDeflectionXRight");
-            maxDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[1], 762, "GyroStickMaxDeflectionYRight");
-            minDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[2], 762, "GyroStickMinDeflectionXRight");
-            minDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[3], 762, "GyroStickMinDeflectionYRight");
+            page.Controls.Add(CreateLabel("Right stick", 24, layout.Y + 6, ProfileText, false));
+            maxDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[0], layout.Y, "GyroStickMaxDeflectionXRight");
+            maxDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[1], layout.Y, "GyroStickMaxDeflectionYRight");
+            minDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[2], layout.Y, "GyroStickMinDeflectionXRight");
+            minDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[3], layout.Y, "GyroStickMinDeflectionYRight");
+            layout.Advance(43);
 
-            page.Controls.Add(CreateDivider(24, 805));
-            AddSectionHeading(page, "Orientation", 820,
+            layout.Divider();
+            layout.Heading("Orientation",
                 "Reset the current controller angle while gyro mouse or an Absolute/Hybrid " +
                 "stick output is active.");
-            AddMappingRow(page, lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", 876, 24, 138, 456);
+            layout.Row(lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", buttonX: 138, buttonWidth: 456);
 
-            page.Controls.Add(CreateDivider(24, 920));
-            AddSectionHeading(page, "Mouse actions", 935,
+            layout.Divider();
+            layout.Heading("Mouse actions",
                 "Optional controller inputs available while gyro mouse is active.");
-            const int mouseActionTop = 987;
             const int mouseActionRowSpacing = 34;
+            int mouseActionTop = layout.Y + 17;
             string[] labels = { "Left click", "Right click", "Middle click", "Clench gyro", "Scroll up", "Scroll down" };
             for (int index = 0; index < gyroMouseButtons.Count; index++) {
                 int column = index % 2;
@@ -931,82 +936,76 @@ namespace BetterJoyForCemu {
                 mouseActionTop + 3 * mouseActionRowSpacing, 24, 114, 181);
             tip_reassign.SetToolTip(btn_gyro_mouse_inhibit,
                 "Inhibit controller actions in mouse mode.");
-            page.AutoScrollMinSize = new Size(0, 1144);
+            layout.Advance(17 + 4 * mouseActionRowSpacing + 24);
+
+            page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
         }
 
         private Panel BuildTouchpadPage() {
             Panel page = CreateProfilePage("Touchpad",
                 "Use this controller's touch surface as an independently activated mouse or stick.");
+            var layout = new PageLayout(this, page, 96);
 
-            AddSectionHeading(page, "Physical control", 96,
+            layout.Heading("Physical control",
                 "Bind press and tap gestures independently, with optional tap-and-hold dragging.");
-            AddMappingRow(page, null, btn_touchpad_click, "Touchpad click",
-                157, 24, 114, 181);
-            AddMappingRow(page, null, btn_touchpad_tap, "Tap",
-                157, 323, 423, 171);
+            layout.RowPair(
+                null, btn_touchpad_click, "Touchpad click", 24, 114, 181,
+                null, btn_touchpad_tap, "Tap", 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_tap,
                 "A short one-finger touch with limited travel. Dragging or pressing the pad cancels it.");
-
-            AddMappingRow(page, null, btn_touchpad_two_finger_tap, "Two-finger tap",
-                194, 24, 114, 181);
+            layout.RowPair(
+                null, btn_touchpad_two_finger_tap, "Two-finger tap", 24, 114, 181,
+                null, btn_touchpad_tap_hold, "Tap behavior", 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_two_finger_tap,
                 "A short two-finger touch with limited travel. Defaults to right click while touchpad mouse is active.");
-            AddMappingRow(page, null, btn_touchpad_tap_hold, "Tap behavior",
-                194, 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_tap_hold,
                 "Choose whether holding one touch or a second tap holds the Tap action for dragging.");
 
-            page.Controls.Add(CreateDivider(24, 242));
-            AddSectionHeading(page, "Two-finger scroll", 257,
+            layout.Divider();
+            layout.Heading("Two-finger scroll",
                 "Enable vertical scrolling and optionally replace either direction's wheel action.");
-            AddMappingRow(page, null, btn_touchpad_two_finger_scroll, "Scrolling",
-                318, 24, 114, 480);
+            layout.Row(null, btn_touchpad_two_finger_scroll, "Scrolling", buttonX: 114, buttonWidth: 480);
             tip_reassign.SetToolTip(btn_touchpad_two_finger_scroll,
                 "Enable or disable recognition of two-finger vertical scroll gestures.");
-            AddMappingRow(page, null, btn_touchpad_two_finger_scroll_up, "Scroll up",
-                355, 24, 114, 181);
-            AddMappingRow(page, null, btn_touchpad_two_finger_scroll_down, "Scroll down",
-                355, 323, 423, 171);
+            layout.RowPair(
+                null, btn_touchpad_two_finger_scroll_up, "Scroll up", 24, 114, 181,
+                null, btn_touchpad_two_finger_scroll_down, "Scroll down", 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_two_finger_scroll_up,
                 "Defaults to wheel up while touchpad mouse is active. Assign any replacement input or combo.");
             tip_reassign.SetToolTip(btn_touchpad_two_finger_scroll_down,
                 "Defaults to wheel down while touchpad mouse is active. Assign any replacement input or combo.");
 
-            page.Controls.Add(CreateDivider(24, 403));
-            AddSectionHeading(page, "Output activation", 418,
+            layout.Divider();
+            layout.Heading("Output activation",
                 "Enable mouse or floating-origin stick output independently with bindings.");
-            page.Controls.Add(CreateLabel("Output", 24, 469, ProfileMuted, false, 8.25F));
-            page.Controls.Add(CreateLabel("Activation", 114, 469, ProfileMuted, false, 8.25F));
-            AddMappingRow(page, null, btn_active_touchpad_mouse, "Mouse",
-                490, 24, 114, 480);
-            AddMappingRow(page, null, touchpadStickActivationButtons[0], "Left stick",
-                527, 24, 114, 480);
-            AddMappingRow(page, null, touchpadStickActivationButtons[1], "Right stick",
-                564, 24, 114, 480);
+            page.Controls.Add(CreateLabel("Output", 24, layout.Y + 21, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 114, layout.Y + 21, ProfileMuted, false, 8.25F));
+            layout.Advance(21 + 21);
+            layout.Row(null, btn_active_touchpad_mouse, "Mouse", buttonX: 114, buttonWidth: 480);
+            layout.Row(null, touchpadStickActivationButtons[0], "Left stick", buttonX: 114, buttonWidth: 480);
+            layout.Row(null, touchpadStickActivationButtons[1], "Right stick", buttonX: 114, buttonWidth: 480);
 
-            AddMappingRow(page, null, btn_touchpad_sensitivity, "Mouse sensitivity",
-                601, 24, 114, 181);
-            AddMappingRow(page, null, btn_touchpad_stick_sensitivity, "Stick sensitivity",
-                601, 323, 423, 171);
+            layout.RowPair(
+                null, btn_touchpad_sensitivity, "Mouse sensitivity", 24, 114, 181,
+                null, btn_touchpad_stick_sensitivity, "Stick sensitivity", 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_sensitivity,
                 "Scale touchpad mouse response. Choose a preset or right-click for 10% to 400%.");
             tip_reassign.SetToolTip(btn_touchpad_stick_sensitivity,
                 "Scale floating touchpad-stick response. Choose a preset or right-click for 10% to 400%.");
-            AddMappingRow(page, null, btn_touchpad_horizontal_scale, "Horizontal scale",
-                638, 24, 114, 181);
-            AddMappingRow(page, null, btn_touchpad_vertical_scale, "Vertical scale",
-                638, 323, 423, 171);
+            layout.RowPair(
+                null, btn_touchpad_horizontal_scale, "Horizontal scale", 24, 114, 181,
+                null, btn_touchpad_vertical_scale, "Vertical scale", 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_horizontal_scale,
                 "Scale horizontal mouse and stick output from 0% to 100%. Zero locks the axis.");
             tip_reassign.SetToolTip(btn_touchpad_vertical_scale,
                 "Scale vertical mouse and stick output from 0% to 100%. Zero locks the axis.");
 
-            page.Controls.Add(CreateDivider(24, 686));
-            AddSectionHeading(page, "Mouse actions", 701,
+            layout.Divider();
+            layout.Heading("Mouse actions",
                 "Optional controller inputs available while touchpad mouse is active.");
-            const int actionTop = 753;
             const int actionSpacing = 34;
+            int actionTop = layout.Y + 17;
             string[] labels = {
                 "Left click", "Right click", "Middle click", "Clench touchpad",
                 "Scroll up", "Scroll down",
@@ -1029,7 +1028,9 @@ namespace BetterJoyForCemu {
                 actionTop + 3 * actionSpacing, 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_click_lockout,
                 "Prevent pointer movement while the physical touchpad is pressed.");
-            page.AutoScrollMinSize = new Size(0, 921);
+            layout.Advance(17 + 4 * actionSpacing + 35);
+
+            page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
         }
 
@@ -1114,60 +1115,70 @@ namespace BetterJoyForCemu {
         private Panel BuildDeviceBehaviorPage() {
             Panel page = CreateProfilePage("Device behavior",
                 "Control power, input behavior, lighting, haptics, and audio for this profile.");
+            var layout = new PageLayout(this, page, 96);
 
-            AddSectionHeading(page, "Power", 96,
-                "Choose when this controller powers itself off.");
+            // Most of this page is a dense mix of checkboxes/labels/selectors/custom buttons per
+            // section rather than uniform mapping rows, so PageLayout only owns the section-level
+            // flow (heading/divider) here - each section still positions its own controls, but
+            // relative to sectionTop instead of a hardcoded absolute number, so the whole section
+            // moves together if something above it ever changes. layout.Advance(...) at the end of
+            // each section is the one place that has to know that section's actual height.
+            layout.Heading("Power", "Choose when this controller powers itself off.");
+            int sectionTop = layout.Y;
             autoPowerOffCheckBox = CreateProfileCheckBox(
-                "Power off when BetterJoy exits", 24, 153, "AutoPowerOff");
+                "Power off when BetterJoy exits", 24, sectionTop, "AutoPowerOff");
             homeLongPowerOffCheckBox = CreateProfileCheckBox(
-                "Hold Home / Capture to power off", 315, 153, "HomeLongPowerOff");
+                "Hold Home / Capture to power off", 315, sectionTop, "HomeLongPowerOff");
             page.Controls.Add(autoPowerOffCheckBox);
             page.Controls.Add(homeLongPowerOffCheckBox);
-            page.Controls.Add(CreateLabel("for", 315, 179, ProfileText, false));
-            homeLongPowerOffHoldInput = CreateProfileSecondsInput(page, 340, 173, "HomeLongPowerOffHoldSeconds");
-            page.Controls.Add(CreateLabel("seconds", 396, 179, ProfileText, false));
+            page.Controls.Add(CreateLabel("for", 315, sectionTop + 26, ProfileText, false));
+            homeLongPowerOffHoldInput = CreateProfileSecondsInput(page, 340, sectionTop + 20, "HomeLongPowerOffHoldSeconds");
+            page.Controls.Add(CreateLabel("seconds", 396, sectionTop + 26, ProfileText, false));
             tip_reassign.SetToolTip(homeLongPowerOffHoldInput,
                 "DualSense and DualShock4 controllers have their own built-in ~5 second hold " +
                 "timeout that powers them off regardless of this setting - BetterJoy can't " +
                 "override that, so a value past 5s won't do anything for those specifically.");
-            page.Controls.Add(CreateLabel("After inactivity", 24, 224, ProfileText, false));
-            inactivitySelector = CreateProfileChoiceSelector(145, 218, 180);
+            page.Controls.Add(CreateLabel("After inactivity", 24, sectionTop + 71, ProfileText, false));
+            inactivitySelector = CreateProfileChoiceSelector(145, sectionTop + 65, 180);
             inactivitySelector.Items.AddRange(new object[] {
                 "Never", "1 minute", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes",
             });
             inactivitySelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(inactivitySelector);
+            layout.Advance(117);
 
-            page.Controls.Add(CreateDivider(24, 270));
-            AddSectionHeading(page, "Input behavior", 287,
+            layout.Divider();
+            layout.Heading("Input behavior",
                 "Customize face buttons, mouse dragging, and gyro activation for this profile.");
-            swapAbCheckBox = CreateProfileCheckBox("Swap A / B", 24, 318, "SwapAB");
-            swapXyCheckBox = CreateProfileCheckBox("Swap X / Y", 190, 318, "SwapXY");
+            sectionTop = layout.Y;
+            swapAbCheckBox = CreateProfileCheckBox("Swap A / B", 24, sectionTop, "SwapAB");
+            swapXyCheckBox = CreateProfileCheckBox("Swap X / Y", 190, sectionTop, "SwapXY");
             dragToggleCheckBox = CreateProfileCheckBox(
-                "Toggle mouse drag", 356, 318, "DragToggle");
+                "Toggle mouse drag", 356, sectionTop, "DragToggle");
             page.Controls.Add(swapAbCheckBox);
             page.Controls.Add(swapXyCheckBox);
             page.Controls.Add(dragToggleCheckBox);
-            page.Controls.Add(CreateLabel("Output binding behavior", 24, 366, ProfileText, false));
-            gyroActivationModeSelector = CreateProfileChoiceSelector(180, 360, 180);
+            page.Controls.Add(CreateLabel("Output binding behavior", 24, sectionTop + 48, ProfileText, false));
+            gyroActivationModeSelector = CreateProfileChoiceSelector(180, sectionTop + 42, 180);
             gyroActivationModeSelector.Items.AddRange(new object[] { "Hold", "Toggle" });
             gyroActivationModeSelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(gyroActivationModeSelector);
             Label gyroHelp = CreateLabel(
                 "Applies to gyro and touchpad mouse/stick activation bindings.",
-                24, 399, ProfileMuted, false, 8.5F);
+                24, sectionTop + 81, ProfileMuted, false, 8.5F);
             page.Controls.Add(gyroHelp);
+            layout.Advance(103);
 
-            page.Controls.Add(CreateDivider(24, 440));
-            AddSectionHeading(page, "Lighting", 457,
-                "Choose the lightbar color or Home LED behavior for this profile.");
+            layout.Divider();
+            layout.Heading("Lighting", "Choose the lightbar color or Home LED behavior for this profile.");
+            sectionTop = layout.Y;
             homeLedCheckBox = CreateProfileCheckBox(
-                "Keep the Home LED on", 24, 514, "HomeLEDOn");
+                "Keep the Home LED on", 24, sectionTop + 6, "HomeLEDOn");
             page.Controls.Add(homeLedCheckBox);
 
-            lightColorLabel = CreateLabel("Light color", 24, 520, ProfileText, false);
+            lightColorLabel = CreateLabel("Light color", 24, sectionTop + 12, ProfileText, false);
             lightColorButton = new Button {
-                Location = new Point(114, 508),
+                Location = new Point(114, sectionTop),
                 Size = new Size(180, 31),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(8, 0, 0, 0),
@@ -1179,9 +1190,9 @@ namespace BetterJoyForCemu {
             page.Controls.Add(lightColorLabel);
             page.Controls.Add(lightColorButton);
 
-            lightingModeLabel = CreateLabel("Mode", 320, 514, ProfileText, false);
+            lightingModeLabel = CreateLabel("Mode", 320, sectionTop + 6, ProfileText, false);
             page.Controls.Add(lightingModeLabel);
-            lightingModeSelector = CreateProfileChoiceSelector(365, 508, 140);
+            lightingModeSelector = CreateProfileChoiceSelector(365, sectionTop, 140);
             foreach (var mode in ControllerMappings.LightingModes)
                 lightingModeSelector.Items.Add(mode.Label);
             lightingModeSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
@@ -1191,27 +1202,30 @@ namespace BetterJoyForCemu {
                 "instead - green above 66%, yellow above 33%, red at or below 33% - updated only " +
                 "when the charge crosses into a different band, to avoid constant chatter with " +
                 "the controller over something that barely changes.");
+            layout.Advance(33);
 
-            page.Controls.Add(CreateDivider(24, 558));
-            AddSectionHeading(page, "Haptics", 575,
-                "Control controller vibration for this profile.");
-            rumbleModeLabel = CreateLabel("Rumble", 24, 638, ProfileText, false);
+            layout.Divider();
+            layout.Heading("Haptics", "Control controller vibration for this profile.");
+            sectionTop = layout.Y;
+            rumbleModeLabel = CreateLabel("Rumble", 24, sectionTop + 6, ProfileText, false);
             page.Controls.Add(rumbleModeLabel);
-            rumbleModeSelector = CreateProfileChoiceSelector(114, 632, 180);
+            rumbleModeSelector = CreateProfileChoiceSelector(114, sectionTop, 180);
             foreach (var mode in ControllerMappings.RumbleModes)
                 rumbleModeSelector.Items.Add(mode.Label);
             rumbleModeSelector.SelectedIndexChanged += RumbleModeOptionChanged;
             page.Controls.Add(rumbleModeSelector);
             tip_reassign.SetToolTip(rumbleModeSelector,
                 "Allow rumble, disable it completely, or suppress it only while gyro output is active.");
+            layout.Advance(33);
 
-            page.Controls.Add(CreateDivider(24, 676));
-            AddSectionHeading(page, "Audio", 693,
+            layout.Divider();
+            layout.Heading("Audio",
                 "Route Windows audio to supported controller speakers, headphones, and microphones.");
+            sectionTop = layout.Y;
             controllerAudioEnabledLabel = CreateLabel(
-                "Controller audio", 24, 750, ProfileText, false);
+                "Controller audio", 24, sectionTop + 6, ProfileText, false);
             page.Controls.Add(controllerAudioEnabledLabel);
-            controllerAudioEnabledSelector = CreateProfileChoiceSelector(145, 744, 180);
+            controllerAudioEnabledSelector = CreateProfileChoiceSelector(145, sectionTop, 180);
             controllerAudioEnabledSelector.Items.AddRange(new object[] {
                 "Enable", "Disable", "Require headphones",
             });
@@ -1220,9 +1234,9 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(controllerAudioEnabledSelector,
                 "Enable controller audio, disable it, or wait for Bluetooth headphones before streaming.");
 
-            controllerAudioVolumeLabel = CreateLabel("Volume", 356, 750, ProfileText, false);
+            controllerAudioVolumeLabel = CreateLabel("Volume", 356, sectionTop + 6, ProfileText, false);
             page.Controls.Add(controllerAudioVolumeLabel);
-            controllerAudioVolumeSelector = CreateProfileChoiceSelector(423, 744, 171);
+            controllerAudioVolumeSelector = CreateProfileChoiceSelector(423, sectionTop, 171);
             controllerAudioVolumeSelector.Items.AddRange(new object[] {
                 "25%", "50%", "75%", "100%",
             });
@@ -1230,14 +1244,14 @@ namespace BetterJoyForCemu {
             page.Controls.Add(controllerAudioVolumeSelector);
 
             controllerAudioEndpointLabel = CreateLabel(
-                "Audio endpoint", 24, 790, ProfileText, false);
+                "Audio endpoint", 24, sectionTop + 46, ProfileText, false);
             page.Controls.Add(controllerAudioEndpointLabel);
-            controllerAudioEndpointSelector = CreateProfileChoiceSelector(145, 784, 320);
+            controllerAudioEndpointSelector = CreateProfileChoiceSelector(145, sectionTop + 40, 320);
             controllerAudioEndpointSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
             page.Controls.Add(controllerAudioEndpointSelector);
 
             controllerAudioTestButton = new Button {
-                Location = new Point(475, 783),
+                Location = new Point(475, sectionTop + 39),
                 Size = new Size(119, 27),
                 Text = "Test speaker",
             };
@@ -1256,9 +1270,9 @@ namespace BetterJoyForCemu {
                 "Play a short tone through the selected controller speaker.");
 
             controllerAudioUsbLoopbackLabel = CreateLabel(
-                "Loopback audio", 24, 826, ProfileText, false);
+                "Loopback audio", 24, sectionTop + 82, ProfileText, false);
             page.Controls.Add(controllerAudioUsbLoopbackLabel);
-            controllerAudioUsbLoopbackSelector = CreateProfileChoiceSelector(145, 820, 180);
+            controllerAudioUsbLoopbackSelector = CreateProfileChoiceSelector(145, sectionTop + 76, 180);
             controllerAudioUsbLoopbackSelector.Items.AddRange(new object[] { "Disabled", "Enabled" });
             controllerAudioUsbLoopbackSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
             page.Controls.Add(controllerAudioUsbLoopbackSelector);
@@ -1269,9 +1283,9 @@ namespace BetterJoyForCemu {
                 "rather keep your normal speakers as the default output.");
 
             controllerBluetoothMicrophoneLabel = CreateLabel(
-                "Built-in mic", 24, 870, ProfileText, false);
+                "Built-in mic", 24, sectionTop + 126, ProfileText, false);
             page.Controls.Add(controllerBluetoothMicrophoneLabel);
-            controllerBluetoothMicrophoneSelector = CreateProfileChoiceSelector(145, 864, 180);
+            controllerBluetoothMicrophoneSelector = CreateProfileChoiceSelector(145, sectionTop + 120, 180);
             controllerBluetoothMicrophoneSelector.Items.AddRange(new object[] {
                 "Enable", "Muted", "Disable",
             });
@@ -1283,9 +1297,9 @@ namespace BetterJoyForCemu {
                 "enabled. Muted starts it muted every time it connects, requiring a press of the " +
                 "controller's own mute button before anything is actually captured.");
 
-            micIndicatorLabel = CreateLabel("Mic indicator", 24, 910, ProfileText, false);
+            micIndicatorLabel = CreateLabel("Mic indicator", 24, sectionTop + 166, ProfileText, false);
             page.Controls.Add(micIndicatorLabel);
-            micIndicatorSelector = CreateProfileChoiceSelector(145, 904, 180);
+            micIndicatorSelector = CreateProfileChoiceSelector(145, sectionTop + 160, 180);
             micIndicatorSelector.Items.AddRange(new object[] {
                 "Disabled", "Inverted", "Enabled", "Enabled while disabled",
             });
@@ -1296,32 +1310,31 @@ namespace BetterJoyForCemu {
                 "Sony's own behavior). Inverted: lit while the mic is active instead. Disabled: " +
                 "never lit. Enabled while disabled: only ever lit when Built-in mic above is set " +
                 "to Disabled, off otherwise regardless of mute state.");
+            layout.Advance(189);
 
-            page.Controls.Add(CreateDivider(24, 950));
-            AddSectionHeading(page, "Orientation", 967,
+            layout.Divider();
+            layout.Heading("Orientation",
                 "Only applies when this Joy-Con is used solo with no partner - whether it " +
                 "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
-            AddMappingRow(page, null, btn_default_orientation, "Default orientation",
-                1042, 24, 145, 449);
+            layout.Row(null, btn_default_orientation, "Default orientation", buttonX: 145, buttonWidth: 449);
 
-            page.AutoScrollMinSize = new Size(0, 1100);
+            page.AutoScrollMinSize = new Size(0, layout.Y + 35);
             return page;
         }
 
         private Panel BuildVirtualControllerPage() {
             Panel page = CreateProfilePage("Virtual controller",
                 "Inspect and test the virtual gamepad connected to this profile.");
-            AddSectionHeading(page, "Output device", 96,
-                "Windows exposes connected profiles as virtual game controllers.");
+            var layout = new PageLayout(this, page, 96);
 
-            page.Controls.Add(CreateLabel("Use as", 24, 163, ProfileText, false));
-            useAsSelector = CreateProfileChoiceSelector(115, 157, 300);
+            layout.Heading("Output device",
+                "Windows exposes connected profiles as virtual game controllers.");
+            useAsSelector = CreateProfileChoiceSelector(0, 0, 0);
             useAsSelector.Items.AddRange(new object[] {
                 "Xbox 360 controller", "Xbox 360 controller (VIIPER)", "DualShock 4 controller",
                 "DualSense controller (VIIPER)", "Disabled",
             });
             useAsSelector.SelectedIndexChanged += ProfileOptionControlChanged;
-            page.Controls.Add(useAsSelector);
             tip_reassign.SetToolTip(useAsSelector,
                 "Xbox 360 controller and DualShock 4 controller use ViGEmBus, the standard " +
                 "virtual-controller driver most setups already have. The (VIIPER) options are " +
@@ -1329,9 +1342,17 @@ namespace BetterJoyForCemu {
                 "same optional drivers bundled for the DualSense Bluetooth microphone. DualSense " +
                 "has no ViGEmBus equivalent at all - VIIPER is the only way to expose a real " +
                 "PS5-shaped virtual controller here.");
+            // AddMappingRow's label top+7/button top+0 convention - the same one every other row
+            // in the app uses - rather than this row's old one-off hand-placed offsets. Its fixed
+            // 80px-minimum label width assumes a longer label than "Use as", so it's shrunk to fit
+            // afterward - otherwise either the label box bleeds into the dropdown (buttonX under
+            // ~116) or there's a big dead gap in front of it (buttonX at/above ~116).
+            Label useAsLabel = new Label();
+            layout.Row(useAsLabel, useAsSelector, "Use as", buttonX: 90, buttonWidth: 300);
+            useAsLabel.AutoSize = true;
 
             Panel deviceCard = new Panel {
-                Location = new Point(24, 210),
+                Location = new Point(24, layout.Y + 14),
                 Size = new Size(570, 142),
                 BackColor = Color.FromArgb(38, 39, 41),
             };
@@ -1352,9 +1373,10 @@ namespace BetterJoyForCemu {
             deviceCard.Controls.Add(virtualControllerDetailLabel);
             deviceCard.Controls.Add(gameControllersButton);
             page.Controls.Add(deviceCard);
+            layout.Advance(14 + 142);
 
-            page.Controls.Add(CreateDivider(24, 379));
-            AddSectionHeading(page, "About testing", 396,
+            layout.Divider();
+            layout.Heading("About testing",
                 "Connected profiles open the matching virtual controller's Properties dialog. " +
                 "Disconnected profiles open the standard Windows Game Controllers list.");
             return page;
@@ -1363,72 +1385,86 @@ namespace BetterJoyForCemu {
         private Panel BuildGlobalPage() {
             Panel page = CreateProfilePage("Global options",
                 "Application-wide behavior shared by every controller profile.");
+            var layout = new PageLayout(this, page, 96);
 
-            AddSectionHeading(page, "Application", 96,
+            layout.Heading("Application",
                 "Choose how the BetterJoy window behaves when the application starts.");
+            int sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
-                "Start in the system tray", 24, 153, "StartInTray"));
+                "Start in the system tray", 24, sectionTop, "StartInTray"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Hide the status log", 315, 153, "HideStatus"));
+                "Hide the status log", 315, sectionTop, "HideStatus"));
+            layout.Advance(50);
 
-            page.Controls.Add(CreateDivider(24, 203));
-            AddSectionHeading(page, "Controller discovery", 220,
+            layout.Divider();
+            layout.Heading("Controller discovery",
                 "Control background scanning and automatic registration of supported controllers.");
+            sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
-                "Scan for new controllers", 24, 277, "PassiveScan"));
+                "Scan for new controllers", 24, sectionTop, "PassiveScan"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Automatically add supported controllers", 315, 277, "AutoAddControllers"));
+                "Automatically add supported controllers", 315, sectionTop, "AutoAddControllers"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Block auto-add over USB", 24, 310, "BlockAutoAddUSB"));
+                "Block auto-add over USB", 24, sectionTop + 33, "BlockAutoAddUSB"));
+            layout.Advance(77);
 
-            page.Controls.Add(CreateDivider(24, 354));
-            AddSectionHeading(page, "Controller support", 371,
+            layout.Divider();
+            layout.Heading("Controller support",
                 "Configure calibration access and physical-controller hiding for all profiles.");
+            sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
-                "Allow calibration", 24, 428, "AllowCalibration"));
+                "Allow calibration", 24, sectionTop, "AllowCalibration"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Use HidHide", 315, 428, "UseHidHide"));
+                "Use HidHide", 315, sectionTop, "UseHidHide"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Unhide on exit", 315, 461, "UnhideOnExit"));
+                "Unhide on exit", 315, sectionTop + 33, "UnhideOnExit"));
+            layout.Advance(77);
 
-            page.Controls.Add(CreateDivider(24, 505));
-            AddSectionHeading(page, "Motion server", 522,
+            layout.Divider();
+            layout.Heading("Motion server",
                 "Expose controller motion through the CemuHook-compatible motion server.");
+            sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
-                "Enable motion server", 24, 579, "MotionServer"));
+                "Enable motion server", 24, sectionTop, "MotionServer"));
+            layout.Advance(50);
 
-            page.Controls.Add(CreateDivider(24, 629));
-            AddSectionHeading(page, "Microphone backend", 646,
+            layout.Divider();
+            layout.Heading("Microphone backend",
                 "Which Windows device the DualSense's built-in Bluetooth microphone is presented as");
+            sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
-                "Use VIIPER for DualSense microphone", 24, 703,
+                "Use VIIPER for DualSense microphone", 24, sectionTop,
                 "UseViiperForDualSenseMicrophone"));
             tip_reassign.SetToolTip(globalOptionCheckBoxes["UseViiperForDualSenseMicrophone"],
                 "On: prefer VIIPER (emulates a real USB audio device). Off, or if VIIPER isn't " +
                 "available: fall back to Steam Streaming Microphone instead - the same virtual " +
                 "audio device Valve's own Steam Link/Remote Play voice chat uses, Microsoft " +
                 "attestation-signed, no test-signing mode required.");
+            layout.Advance(50);
 
-            page.Controls.Add(CreateDivider(24, 753));
-            AddSectionHeading(page, "Debug logging", 770,
+            layout.Divider();
+            layout.Heading("Debug logging",
                 "Diagnostic file logs can grow quickly; enable them only while troubleshooting.");
+            sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
-                "Debug logging", 24, 827, "DebugLogging"));
+                "Debug logging", 24, sectionTop, "DebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "DualSense debug logging", 24, 861, "DualSenseDebugLogging"));
+                "DualSense debug logging", 24, sectionTop + 34, "DualSenseDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "DualShock 4 debug logging", 315, 861, "DualShock4DebugLogging"));
+                "DualShock 4 debug logging", 315, sectionTop + 34, "DualShock4DebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Gyro mouse debug logging", 24, 895, "GyroMouseDebugLogging"));
+                "Gyro mouse debug logging", 24, sectionTop + 68, "GyroMouseDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Gyro stick debug logging", 315, 895, "GyroStickDebugLogging"));
+                "Gyro stick debug logging", 315, sectionTop + 68, "GyroStickDebugLogging"));
             page.Controls.Add(CreateGlobalCheckBox(
-                "Auto-calibration debug logging", 24, 929, "AutoCalDebugLogging"));
+                "Auto-calibration debug logging", 24, sectionTop + 102, "AutoCalDebugLogging"));
 
             page.Controls.Add(CreateLabel(
                 "Some changes, including HidHide and startup behavior, take effect after restart.",
-                24, 974, ProfileMuted, false, 8.5F));
-            page.AutoScrollMinSize = new Size(0, 1016);
+                24, sectionTop + 147, ProfileMuted, false, 8.5F));
+            layout.Advance(189);
+
+            page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
         }
 
@@ -1481,6 +1517,15 @@ namespace BetterJoyForCemu {
                 owner.AddMappingRow(page, labelA, buttonA, textA, Y, labelXA, buttonXA, buttonWidthA);
                 owner.AddMappingRow(page, labelB, buttonB, textB, Y, labelXB, buttonXB, buttonWidthB);
                 Y += RowGap;
+            }
+
+            // Escape hatch for anything that isn't a plain heading/row/divider - a grid of
+            // checkboxes, a multi-column block of percent inputs, and so on. Those still place
+            // their own controls at whatever Y they need (usually layout.Y, read once up front),
+            // but call this afterward with the total height they actually used so everything
+            // below still lines up correctly - the one thing this class exists to guarantee.
+            public void Advance(int pixels) {
+                Y += pixels;
             }
 
             public void Divider() {
