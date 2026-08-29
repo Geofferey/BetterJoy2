@@ -1059,7 +1059,21 @@ namespace BetterJoyForCemu {
             if (worker != null && worker.IsAlive)
                 return;
 
-            SetMicrophoneMuted(startMuted);
+            // Deliberately NOT SetMicrophoneMuted(startMuted) - that publishes through the
+            // Bluetooth media carrier (EnsureBluetoothMediaTransport), which puts the controller
+            // into the mode where it interleaves mic-duplex frames into the same 0x31 report ID
+            // as ordinary input (see ReceiveRaw's IsBluetoothMicrophoneFrame comment) - for every
+            // reader of the raw device, not just BetterJoy. Doing that here meant simply choosing
+            // Muted put the controller in that mode for the entire session even if nothing was
+            // ever actually recorded from it. The hardware mute/power-save state still gets
+            // published correctly below via the ordinary (non-media-carrier) rumble/lightbar
+            // report - WriteRetainedRumbleAndTriggerState writes it regardless. Only
+            // BluetoothMicrophoneWorker's own interfaceActive transition (a real recording app
+            // actually opening the endpoint) should ever call EnsureBluetoothMediaTransport - and
+            // already does, further down.
+            microphoneMuted = startMuted;
+            microphoneMuteStatePending = true;
+            SendDualSenseRumble(currentLeftMotor, currentRightMotor);
 
             bluetoothMicrophoneThread = new Thread(BluetoothMicrophoneWorker) {
                 IsBackground = true,
@@ -1117,11 +1131,21 @@ namespace BetterJoyForCemu {
             bool failureReported = false;
             try {
                 while (bluetoothMicrophoneRequested && state > state_.DROPPED) {
+                    // Muted means fully inert, not just muted PCM - no endpoint, no media
+                    // transport, nothing that could put the controller into its mic-duplex report
+                    // mode (see StartBluetoothMicrophone's comment) - until the user actually
+                    // unmutes. SetMicrophoneMuted signals bluetoothMicrophoneSignal on every
+                    // toggle, so this wakes promptly in both directions rather than polling.
+                    if (microphoneMuted) {
+                        bluetoothMicrophoneSignal.WaitOne(250);
+                        continue;
+                    }
+
                     IMicrophoneEndpoint endpoint = null;
                     try {
                         endpoint = MicrophoneEndpointFactory.Open();
-                        if (!bluetoothMicrophoneRequested)
-                            return;
+                        if (!bluetoothMicrophoneRequested || microphoneMuted)
+                            continue;
 
                         form.AppendTextBox(failureReported
                             ? "DualSense Bluetooth microphone backend recovered.\r\n"
@@ -1131,7 +1155,8 @@ namespace BetterJoyForCemu {
                         IOpusDecoder decoder = OpusCodecFactory.CreateDecoder(48000, 1);
                         short[] monoPcm = new short[BtMicrophonePcmFrames];
                         byte[] stereoPcm = new byte[BtMicrophonePcmFrames * 2 * sizeof(short)];
-                        while (bluetoothMicrophoneRequested && state > state_.DROPPED) {
+                        while (bluetoothMicrophoneRequested && state > state_.DROPPED &&
+                                !microphoneMuted) {
                             bluetoothMicrophoneSignal.WaitOne(250);
                             bool interfaceActive = endpoint.IsMicrophoneInterfaceActive();
                             if (interfaceActive != bluetoothMicrophoneStreaming) {
@@ -1220,15 +1245,17 @@ namespace BetterJoyForCemu {
 
         private void SetMicrophoneMuted(bool muted) {
             microphoneMuted = muted;
+            // Wakes BluetoothMicrophoneWorker immediately in both directions instead of leaving it
+            // to its own poll interval - unmuting lets it actually open the endpoint (and, only
+            // once something genuinely captures from it, the media transport); muting lets it tear
+            // both back down right away. Deliberately no longer eagerly calling
+            // EnsureBluetoothMediaTransport/setting bluetoothMicrophoneControlPending here the way
+            // this used to (to publish the LED before any app opened the endpoint) - that kept the
+            // controller in its mic-duplex report mode (see StartBluetoothMicrophone's comment) on
+            // every mute-button press, not just genuine capture. The mute LED still updates
+            // immediately below via the ordinary rumble/lightbar report instead.
+            bluetoothMicrophoneSignal.Set();
             lock (bluetoothAudioStateLock) {
-                // The mic button is useful even before an application opens the recording
-                // endpoint. Publish its LED/mute state through one FE media carrier, then release
-                // the temporary clock again if neither audio direction needs it.
-                if (bluetoothMicrophoneRequested && !isUSB &&
-                    state > state_.DROPPED) {
-                    EnsureBluetoothMediaTransport();
-                    bluetoothMicrophoneControlPending = true;
-                }
                 lock (outputReportLock)
                     bluetoothOutputStateDirty = true;
             }
@@ -2143,7 +2170,6 @@ namespace BetterJoyForCemu {
         private sealed class BluetoothAudioWritePool : IDisposable {
             private const int SlotCount = 32;
             private const int NativeBackingBufferLength = 640;
-            private const uint GenericRead = 0x80000000;
             private const uint GenericWrite = 0x40000000;
             private const uint FileShareRead = 0x00000001;
             private const uint FileShareWrite = 0x00000002;
@@ -2207,8 +2233,14 @@ namespace BetterJoyForCemu {
                     return null;
                 }
 
+                // Write-only: this pool only ever calls WriteFile. Requesting GENERIC_READ too
+                // used to leave a second read-capable handle sitting on the same Bluetooth HID
+                // device for as long as the media transport was active (on top of the primary
+                // handle and whatever else - a game - has it open), which correlated with
+                // duplicate input reports reaching other readers. Unverified as the actual
+                // mechanism, but this handle never reads, so the access it requests should match.
                 IntPtr nativeHandle = CreateFileW(devicePath,
-                    GenericRead | GenericWrite, FileShareRead | FileShareWrite,
+                    GenericWrite, FileShareRead | FileShareWrite,
                     IntPtr.Zero, OpenExisting, FileFlagOverlapped, IntPtr.Zero);
                 if (nativeHandle == IntPtr.Zero ||
                     nativeHandle == InvalidHandleValue) {

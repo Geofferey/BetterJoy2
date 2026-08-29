@@ -1386,7 +1386,6 @@ namespace BetterJoyForCemu {
         private sealed class BluetoothAudioWritePool : IDisposable {
             private const int SlotCount = 32;
             private const int NativeBackingBufferLength = 640;
-            private const uint GenericRead = 0x80000000;
             private const uint GenericWrite = 0x40000000;
             private const uint FileShareRead = 0x00000001;
             private const uint FileShareWrite = 0x00000002;
@@ -1451,8 +1450,11 @@ namespace BetterJoyForCemu {
                     return null;
                 }
 
+                // Write-only: this pool only ever calls WriteFile. See DualSense.cs's identical
+                // pool for why GENERIC_READ was dropped - unverified as the actual duplicate-input
+                // mechanism, but this handle never reads, so the access it requests should match.
                 IntPtr nativeHandle = CreateFileW(devicePath,
-                    GenericRead | GenericWrite, FileShareRead | FileShareWrite,
+                    GenericWrite, FileShareRead | FileShareWrite,
                     IntPtr.Zero, OpenExisting, FileFlagOverlapped, IntPtr.Zero);
                 if (nativeHandle == IntPtr.Zero ||
                     nativeHandle == InvalidHandleValue) {
