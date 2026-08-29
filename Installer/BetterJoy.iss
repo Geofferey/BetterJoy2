@@ -46,8 +46,11 @@ Name: "steammic"; Description: "Install the Steam Streaming Microphone driver (f
 
 [Files]
 ; Everything from the Release build, except runtime-generated state that shouldn't ship pre-populated
-; with whatever the machine that built it happened to have connected.
-Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Excludes: "settings,3rdPartyControllers,! Install the drivers in the Drivers folder"; Flags: ignoreversion recursesubdirs createallsubdirs
+; with whatever the machine that built it happened to have connected, and *.xml - every one of
+; these is a NuGet package's Visual Studio IntelliSense documentation file (Concentus.xml,
+; NAudio.xml, System.Memory.xml, ...), meaningful only to a developer referencing the DLL from
+; their own project. An installed end-user app never reads them - pure dead weight in every build.
+Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Excludes: "settings,3rdPartyControllers,! Install the drivers in the Drivers folder,*.xml"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

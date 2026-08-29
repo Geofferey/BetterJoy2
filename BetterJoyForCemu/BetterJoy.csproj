@@ -101,9 +101,6 @@
     <Reference Include="Crc32.NET, Version=1.0.0.0, Culture=neutral, PublicKeyToken=dc0b95cf99bf4e99, processorArchitecture=MSIL">
       <HintPath>..\packages\Crc32.NET.1.2.0\lib\net20\Crc32.NET.dll</HintPath>
     </Reference>
-    <Reference Include="JetBrains.Annotations, Version=2020.1.0.0, Culture=neutral, PublicKeyToken=1010a0d8d6380325, processorArchitecture=MSIL">
-      <HintPath>..\packages\JetBrains.Annotations.2020.1.0\lib\net20\JetBrains.Annotations.dll</HintPath>
-    </Reference>
     <Reference Include="Nefarius.Drivers.HidHide, Version=1.0.0.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>..\packages\Nefarius.Drivers.HidHide.1.12.2\lib\netstandard2.0\Nefarius.Drivers.HidHide.dll</HintPath>
     </Reference>
@@ -129,7 +126,6 @@
     <Reference Include="System.Configuration" />
     <Reference Include="System.Core" />
     <Reference Include="System.Drawing" />
-    <Reference Include="System.Net.Http" />
     <Reference Include="System.Numerics" />
     <Reference Include="System.ServiceProcess" />
     <Reference Include="System.Web.Extensions" />
@@ -280,27 +276,33 @@
     <Content Include="Icons\ultra.png" />
     <None Include="Properties\app.manifest" />
     <Content Include="Icons\betterjoyforcemu_icon.ico" />
-    <Content Include="x86\hidapi.dll">
+    <!-- EntryPoint.SetupDlls only ever adds ONE of x86\/x64\ to the DLL search path at runtime -
+         whichever matches the actual running process (Environment.Is64BitProcess). The other
+         architecture's natives are dead weight in that build's output, not just at install time,
+         so these are conditioned on the platform actually being built instead of always including
+         both - matches the "if it needs to be there, leave it; if it's only relevant to a
+         component this isn't, keep it out" bundling policy. -->
+    <Content Include="x86\hidapi.dll" Condition="'$(Platform)' == 'x86'">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-    <Content Include="x64\hidapi.dll">
+    <Content Include="x64\hidapi.dll" Condition="'$(Platform)' == 'x64'">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-    <Content Include="x86\libsbc.dll">
+    <Content Include="x86\libsbc.dll" Condition="'$(Platform)' == 'x86'">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-    <Content Include="x64\libsbc.dll">
+    <Content Include="x64\libsbc.dll" Condition="'$(Platform)' == 'x64'">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-    <Content Include="x86\samplerate.dll">
+    <Content Include="x86\samplerate.dll" Condition="'$(Platform)' == 'x86'">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-    <Content Include="x64\samplerate.dll">
+    <Content Include="x64\samplerate.dll" Condition="'$(Platform)' == 'x64'">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <!-- libVIIPER only ships amd64/arm64 Windows builds, no x86 - the VIIPER Xbox 360 output
          backend is simply unavailable when running as an x86 process. -->
-    <Content Include="x64\libVIIPER.dll">
+    <Content Include="x64\libVIIPER.dll" Condition="'$(Platform)' == 'x64'">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Icons\cross.png" />
@@ -344,4 +346,26 @@
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- Nefarius.Drivers.HidHide and Nefarius.Utilities.DeviceManagement have no .NET Framework
+       build at any published version, so NuGet resolves their netstandard2.0 build here instead
+       - which drags in ~35 .NET Standard compatibility facade assemblies (netstandard.dll,
+       System.Buffers.dll, System.Security.Cryptography.*.dll, ...) that exist only because of
+       those two packages, not because BetterJoy's own code needs them. Moves everything the
+       normal build/copy step puts in the output folder that ISN'T one of BetterJoy's real direct
+       dependencies into a Nefarius\ subfolder, so the install directory doesn't read as
+       "BetterJoy has 100 mystery DLLs". App.config's <probing privatePath="Nefarius"> is what
+       tells the CLR to actually look there at bind time. See DOCS/DLL-ORGANIZATION.md for the
+       full accounting.
+       Keep-list approach (move everything NOT explicitly kept) rather than an explicit list of
+       the ~35 facade names to move: the exact facade set NuGet resolves can shift slightly
+       between package version bumps, but BetterJoy's own direct references almost never do - a
+       keep-list is far less likely to silently go stale than a move-list would be. -->
+  <Target Name="OrganizeDependencyDlls" AfterTargets="Build">
+    <ItemGroup>
+      <NefariusDependencyDll Include="$(OutDir)*.dll"
+          Exclude="$(OutDir)Concentus.dll;$(OutDir)Crc32.NET.dll;$(OutDir)NAudio.dll;$(OutDir)Nefarius.Drivers.HidHide.dll;$(OutDir)Nefarius.Utilities.DeviceManagement.dll;$(OutDir)Nefarius.ViGEm.Client.dll;$(OutDir)WindowsInput.dll" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutDir)Nefarius" Condition="'@(NefariusDependencyDll)' != '' And !Exists('$(OutDir)Nefarius')" />
+    <Move SourceFiles="@(NefariusDependencyDll)" DestinationFolder="$(OutDir)Nefarius" Condition="'@(NefariusDependencyDll)' != ''" />
+  </Target>
 </Project>

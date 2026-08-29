@@ -7,7 +7,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -927,8 +926,6 @@ namespace BetterJoyForCemu {
                 return false;
             }
         }
-
-        private static readonly HttpClient client = new HttpClient();
 
         public static JoyconManager mgr;
 
