@@ -779,16 +779,26 @@ namespace BetterJoyForCemu {
         private Panel BuildBindingsPage() {
             Panel page = CreateProfilePage("Bindings",
                 "Choose what special inputs do and which input controls virtual Guide / PS.");
-            AddSectionHeading(page, "System controls", 96,
-                "Physical Home / PS behavior and virtual Guide / PS activation are independent.");
-            AddMappingRow(page, lbl_capture, btn_capture, "Capture button", 157, 24, 150, 430);
-            AddMappingRow(page, lbl_home, btn_home, "Home / PS button", 196, 24, 150, 430);
-            AddMappingRow(page, null, btn_guide, "Guide / PS output", 235, 24, 150, 430);
-            AddMappingRow(page, null, btn_mic_mute, "Microphone button", 274, 24, 150, 430);
-            AddMappingRow(page, lbl_shake, btn_shake, "Shake input", 313, 24, 150, 430);
+            var layout = new PageLayout(this, page, 96);
 
-            page.Controls.Add(CreateDivider(24, 349));
-            AddSectionHeading(page, "Controller functions", 366,
+            layout.Heading("Special controls",
+                "Physical Home / PS behavior and virtual Guide / PS activation are independent.");
+            // While held, suppresses this controller's virtual controller output (XInput/DS4/
+            // DualSense - see Controller.MapToXbox360Input/MapToDualShock4Input) and gyro mouse
+            // cursor movement (MoveGyroMouseBy) entirely, so it can be used purely as a chord
+            // modifier for other bindings without leaking button/stick state or mouse movement to
+            // the game/desktop while it's down. Raw button state (IsComboHeld) is untouched, so
+            // this button still participates normally in any other binding's own combo. Disabled
+            // (unbound) by default - see ControllerMappings' "0" default for a new Keys entry.
+            layout.Row(null, btn_modifier, "Modifier");
+            layout.Row(lbl_capture, btn_capture, "Capture button");
+            layout.Row(lbl_home, btn_home, "Home / PS button");
+            layout.Row(null, btn_guide, "Guide / PS output");
+            layout.Row(null, btn_mic_mute, "Microphone button");
+            layout.Row(lbl_shake, btn_shake, "Shake input");
+
+            layout.Divider();
+            layout.Heading("Controller functions",
                 "No controller has a dedicated button for these - bind any combo you like.");
             // AdjustControllerAudioVolumeOnPress/CycleOptionModeOnPress (Controller.cs) - the same
             // "any combo, one discrete step per press" model scroll_up/scroll_down (Gyro page) use,
@@ -801,34 +811,29 @@ namespace BetterJoyForCemu {
             // "Microphone button" above (which only remaps what pressing the physical mic-mute
             // button outputs elsewhere) - defaults to that same physical button alone
             // (ControllerMappings.LegacyValue), so nothing changes unless reassigned.
-            AddMappingRow(page, null, btn_volume_up, "Controller vol +", 427, 24, 150, 430);
-            AddMappingRow(page, null, btn_volume_down, "Controller vol -", 466, 24, 150, 430);
-            AddMappingRow(page, null, btn_lt_haptics, "LT haptics", 505, 24, 150, 430);
-            AddMappingRow(page, null, btn_rt_haptics, "RT haptics", 544, 24, 150, 430);
-            AddMappingRow(page, null, btn_toggle_haptics, "Toggle haptics", 583, 24, 150, 430);
-            AddMappingRow(page, null, btn_toggle_built_in_mic, "Toggle Built-in mic", 622, 24, 150, 430);
+            layout.Row(null, btn_volume_up, "Controller vol +");
+            layout.Row(null, btn_volume_down, "Controller vol -");
+            layout.Row(null, btn_lt_haptics, "LT haptics");
+            layout.Row(null, btn_rt_haptics, "RT haptics");
+            layout.Row(null, btn_toggle_haptics, "Toggle haptics");
+            layout.Row(null, btn_toggle_built_in_mic, "Toggle Built-in mic");
             // Sets the RGB lightbar to black instead of the configured Light color while off,
             // never touching that setting itself (ApplyControllerProfileLighting/LightingOff) -
             // nothing to save/restore, only to flip. DualSense/DualShock4 only, matching
             // ApplySelectedController's hasConfigurableLight.
-            AddMappingRow(page, null, btn_toggle_lighting, "Toggle lighting", 661, 24, 150, 430);
-            // While held, suppresses this controller's virtual controller output (XInput/DS4/
-            // DualSense - see Controller.MapToXbox360Input/MapToDualShock4Input) and gyro mouse
-            // cursor movement (MoveGyroMouseBy) entirely, so it can be used purely as a chord
-            // modifier for other bindings without leaking button/stick state or mouse movement to
-            // the game/desktop while it's down. Raw button state (IsComboHeld) is untouched, so
-            // this button still participates normally in any other binding's own combo. Disabled
-            // (unbound) by default - see ControllerMappings' "0" default for a new Keys entry.
-            AddMappingRow(page, null, btn_modifier, "Modifier", 700, 24, 150, 430);
+            layout.Row(null, btn_toggle_lighting, "Toggle lighting");
 
-            page.Controls.Add(CreateDivider(24, 749));
-            AddSectionHeading(page, "Joy-Con rail buttons", 766,
+            layout.Divider();
+            layout.Heading("Joy-Con rail buttons",
                 "Independent mappings for the SL and SR buttons on each Joy-Con.");
-            AddMappingRow(page, lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 827, 24, 145, 140);
-            AddMappingRow(page, lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 827, 315, 440, 154);
-            AddMappingRow(page, lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 868, 24, 145, 140);
-            AddMappingRow(page, lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 868, 315, 440, 154);
-            page.AutoScrollMinSize = new Size(0, 929);
+            layout.RowPair(
+                lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 24, 145, 140,
+                lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 315, 440, 154);
+            layout.RowPair(
+                lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 24, 145, 140,
+                lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 315, 440, 154);
+
+            page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
         }
 
@@ -1425,6 +1430,66 @@ namespace BetterJoyForCemu {
                 24, 974, ProfileMuted, false, 8.5F));
             page.AutoScrollMinSize = new Size(0, 1016);
             return page;
+        }
+
+        // Layout cursor for pages built from AddSectionHeading/AddMappingRow/CreateDivider -
+        // tracks the current Y position and advances it automatically after each element, using
+        // one standardized set of gaps instead of the hand-picked pixel literal every row used
+        // to need. Insert, remove, or reorder Heading/Row/Divider calls freely - nothing below
+        // ever needs its Y recomputed by hand again; that was the entire point of building this.
+        //
+        // Gap values match what most of Reassign.cs's existing page-building methods were already
+        // using (61px heading-to-first-row, 39px row-to-row, 17px divider-to-heading) -
+        // standardized rather than copied exactly everywhere they'd drifted: the old
+        // last-row-to-divider gap varied between 36px and 49px depending on which section had
+        // been hand-edited most recently. This always uses 36px, so migrating a page to this
+        // class is a "close enough to be a wash" visual change at every divider, not a pixel-
+        // identical port - confirm a migrated page still reads right rather than assuming it does.
+        private sealed class PageLayout {
+            private const int HeadingToRowGap = 61;
+            private const int RowGap = 39;
+            private const int RowToDividerGap = 46;
+            private const int DividerToHeadingGap = 17;
+
+            private readonly Reassign owner;
+            private readonly Panel page;
+
+            public int Y { get; private set; }
+
+            public PageLayout(Reassign owner, Panel page, int startY) {
+                this.owner = owner;
+                this.page = page;
+                Y = startY;
+            }
+
+            public void Heading(string title, string description) {
+                owner.AddSectionHeading(page, title, Y, description);
+                Y += HeadingToRowGap;
+            }
+
+            public void Row(Label label, SplitButton button, string text, int labelX = 24,
+                    int buttonX = 150, int buttonWidth = 430) {
+                owner.AddMappingRow(page, label, button, text, Y, labelX, buttonX, buttonWidth);
+                Y += RowGap;
+            }
+
+            // Two independent mapping rows sharing one Y (e.g. a left/right pair side by side)
+            // instead of stacking - advances Y once, not twice.
+            public void RowPair(Label labelA, SplitButton buttonA, string textA, int labelXA,
+                    int buttonXA, int buttonWidthA, Label labelB, SplitButton buttonB,
+                    string textB, int labelXB, int buttonXB, int buttonWidthB) {
+                owner.AddMappingRow(page, labelA, buttonA, textA, Y, labelXA, buttonXA, buttonWidthA);
+                owner.AddMappingRow(page, labelB, buttonB, textB, Y, labelXB, buttonXB, buttonWidthB);
+                Y += RowGap;
+            }
+
+            public void Divider() {
+                // The row just placed already advanced Y by the row-to-row gap; back off to the
+                // (smaller) row-to-divider gap instead of stacking both.
+                Y += RowToDividerGap - RowGap;
+                page.Controls.Add(owner.CreateDivider(24, Y));
+                Y += DividerToHeadingGap;
+            }
         }
 
         private void AddSectionHeading(Panel page, string title, int top, string description) {
