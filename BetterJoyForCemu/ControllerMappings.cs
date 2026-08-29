@@ -153,6 +153,13 @@ namespace BetterJoyForCemu {
         public const string UseAsDualShock4 = "dualshock4";
         public const string UseAsDualSenseViiper = "dualsense_viiper";
         public const string UseAsNone = "none";
+        // Same as UseAsNone (no virtual output) except the physical controller is also unhidden
+        // from HidHide instead of staying blocked from every other program - see
+        // VirtualControllerLifecycle.cs's CreateOutputControllers/ReconcileHidHideForProfile. Lets
+        // a native application (Steam Input, a game with real DualSense/Joy-Con support) use the
+        // controller directly under its own true identity, while BetterJoy still runs in the
+        // background for gyro/touchpad/audio/lighting - none of which need a virtual controller.
+        public const string UseAsPassthrough = "passthrough";
 
         private static readonly HashSet<string> AppConfigBackedKeys = new HashSet<string>(StringComparer.Ordinal) {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
@@ -563,11 +570,13 @@ namespace BetterJoyForCemu {
 
         public static bool AnyVirtualOutputEnabled() {
             EnsureLoaded();
-            if (LegacyOptionValue("UseAs") != UseAsNone)
+            string legacy = LegacyOptionValue("UseAs");
+            if (legacy != UseAsNone && legacy != UseAsPassthrough)
                 return true;
             return profiles.Values.Any(profile => {
                 string value;
-                return profile.TryGetValue("UseAs", out value) && value != UseAsNone;
+                return profile.TryGetValue("UseAs", out value) &&
+                    value != UseAsNone && value != UseAsPassthrough;
             });
         }
 

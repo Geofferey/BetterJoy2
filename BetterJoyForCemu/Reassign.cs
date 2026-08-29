@@ -1332,7 +1332,7 @@ namespace BetterJoyForCemu {
             useAsSelector = CreateProfileChoiceSelector(0, 0, 0);
             useAsSelector.Items.AddRange(new object[] {
                 "Xbox 360 controller", "Xbox 360 controller (VIIPER)", "DualShock 4 controller",
-                "DualSense controller (VIIPER)", "Disabled",
+                "DualSense controller (VIIPER)", "Passthrough", "Disabled",
             });
             useAsSelector.SelectedIndexChanged += ProfileOptionControlChanged;
             tip_reassign.SetToolTip(useAsSelector,
@@ -1341,7 +1341,18 @@ namespace BetterJoyForCemu {
                 "an alternative backend (experimental) using VIIPER/usbip-win2 instead - the " +
                 "same optional drivers bundled for the DualSense Bluetooth microphone. DualSense " +
                 "has no ViGEmBus equivalent at all - VIIPER is the only way to expose a real " +
-                "PS5-shaped virtual controller here.");
+                "PS5-shaped virtual controller here. Passthrough disables virtual output like " +
+                "Disabled, but also unhides the physical controller so other programs (Steam, a " +
+                "game with native DualSense/Joy-Con support) can use it directly under its true " +
+                "identity - BetterJoy keeps running in the background for gyro, touchpad, audio, " +
+                "and lighting, none of which need a virtual controller. If a game shows doubled " +
+                "button presses under Passthrough, disable Steam Input's PlayStation " +
+                "Configuration Support for that game (Steam > Controller Settings, or that " +
+                "game's own Controller Options) - Steam Input's own translation layer and the " +
+                "game's direct access both firing on the same real presses is the usual cause, " +
+                "not this feature. Disabled " +
+                "keeps the physical controller hidden from other programs with no virtual " +
+                "replacement, same as before.");
             // AddMappingRow's label top+7/button top+0 convention - the same one every other row
             // in the app uses - rather than this row's old one-off hand-placed offsets. Its fixed
             // 80px-minimum label width assumes a longer label than "Use as", so it's shrunk to fit
@@ -1785,6 +1796,7 @@ namespace BetterJoyForCemu {
                     case 1: value = ControllerMappings.UseAsXbox360Viiper; break;
                     case 2: value = ControllerMappings.UseAsDualShock4; break;
                     case 3: value = ControllerMappings.UseAsDualSenseViiper; break;
+                    case 4: value = ControllerMappings.UseAsPassthrough; break;
                     default: value = ControllerMappings.UseAsNone; break;
                 }
                 ControllerMappings.SetOptionValue(SelectedProfileId, "UseAs", value);
@@ -2159,8 +2171,10 @@ namespace BetterJoyForCemu {
                     useAsSelector.SelectedIndex = 2;
                 else if (useAs == ControllerMappings.UseAsDualSenseViiper)
                     useAsSelector.SelectedIndex = 3;
-                else
+                else if (useAs == ControllerMappings.UseAsPassthrough)
                     useAsSelector.SelectedIndex = 4;
+                else
+                    useAsSelector.SelectedIndex = 5;
                 autoPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "AutoPowerOff");
                 homeLongPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
@@ -2555,6 +2569,13 @@ namespace BetterJoyForCemu {
                             "This profile is connected without a virtual game controller output.";
                     if (gameControllersButton != null)
                         gameControllersButton.Text = "Open Game Controllers...";
+                } else if (useAs == ControllerMappings.UseAsPassthrough) {
+                    if (virtualControllerDetailLabel != null)
+                        virtualControllerDetailLabel.Text =
+                            "Passthrough: no virtual controller output. The physical controller " +
+                            "is unhidden so other programs can use it under its true identity.";
+                    if (gameControllersButton != null)
+                        gameControllersButton.Text = "Open Game Controllers...";
                 } else {
                     if (virtualControllerDetailLabel != null)
                         virtualControllerDetailLabel.Text =
@@ -2595,6 +2616,8 @@ namespace BetterJoyForCemu {
                 return "DualShock 4 virtual controller";
             if (useAs == ControllerMappings.UseAsDualSenseViiper)
                 return "DualSense virtual controller (VIIPER)";
+            if (useAs == ControllerMappings.UseAsPassthrough)
+                return "Passthrough (physical controller unhidden)";
             return "Virtual controller output disabled";
         }
 
@@ -2644,7 +2667,7 @@ namespace BetterJoyForCemu {
 
         private bool OpenSelectedVirtualController(ControllerProfileInfo selected) {
             string useAs = ControllerMappings.OptionValue(selected.ProfileId, "UseAs");
-            if (useAs == ControllerMappings.UseAsNone)
+            if (useAs == ControllerMappings.UseAsNone || useAs == ControllerMappings.UseAsPassthrough)
                 return false;
 
             VirtualGameControllerType controllerType;

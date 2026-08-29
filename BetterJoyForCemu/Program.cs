@@ -363,6 +363,49 @@ namespace BetterJoyForCemu {
             return instanceId != null;
         }
 
+        // Adds or removes jc's own HidHide block after the fact - the one case that needs this is
+        // a profile set to ControllerMappings.UseAsPassthrough, which wants its physical device
+        // visible to other programs again instead of staying exclusively blocked the way
+        // TryHideController leaves every newly-connected controller by default. Safe to call
+        // unconditionally from CreateOutputControllers on every pass (attach, profile change,
+        // AssignPadId, survivor restoration) - HidHide's block list is idempotent, so reasserting
+        // a state that's already correct is a harmless no-op.
+        private void ReconcileHidHideForController(Controller jc, bool wantHidden) {
+            if (!Program.useHidHide || Program.hidHide == null || String.IsNullOrEmpty(jc.path))
+                return;
+
+            string instanceId;
+            try {
+                instanceId = PnPDevice.GetInstanceIdFromInterfaceId(jc.path);
+            } catch {
+                return;
+            }
+
+            try {
+                if (wantHidden) {
+                    Program.hidHide.AddBlockedInstanceId(instanceId);
+                    lock (Program.hiddenInstanceIdsLock) {
+                        if (!Program.hiddenInstanceIds.Contains(instanceId))
+                            Program.hiddenInstanceIds.Add(instanceId);
+                    }
+                } else {
+                    Program.hidHide.RemoveBlockedInstanceId(instanceId);
+                    lock (Program.hiddenInstanceIdsLock) {
+                        Program.hiddenInstanceIds.Remove(instanceId);
+                    }
+                }
+            } catch { }
+        }
+
+        // A joined Joy-Con pair is two separate physical devices sharing one profile/logical
+        // controller - passthrough (or re-hiding out of it) needs to reach both halves, not just
+        // whichever one currently holds the ViGEm/VIIPER target.
+        private void ReconcileHidHideForProfile(Controller jc, bool wantHidden) {
+            ReconcileHidHideForController(jc, wantHidden);
+            if (jc.other != null && jc.other != jc)
+                ReconcileHidHideForController(jc.other, wantHidden);
+        }
+
         // Reads the DualSense's own Bluetooth MAC address over USB via HID feature report 0x09
         // ("pairing info"). hidapi's hid_get_feature_report convention: caller sets buf[0] to the
         // report ID before the call: the returned buffer still has the report ID at index 0

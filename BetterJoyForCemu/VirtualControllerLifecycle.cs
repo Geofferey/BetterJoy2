@@ -300,6 +300,13 @@ namespace BetterJoyForCemu {
             bool useXboxViiper = useAs == ControllerMappings.UseAsXbox360Viiper;
             bool useDs4 = useAs == ControllerMappings.UseAsDualShock4;
             bool useDualSenseViiper = useAs == ControllerMappings.UseAsDualSenseViiper;
+            bool usePassthrough = useAs == ControllerMappings.UseAsPassthrough;
+
+            // Passthrough is the one "UseAs" value that also reaches outside virtual-output
+            // creation - see ControllerMappings.UseAsPassthrough's comment. Every other value
+            // (including UseAsNone/Disabled) keeps the physical device HidHide-blocked, matching
+            // TryHideController's default at connect time.
+            ReconcileHidHideForProfile(jc, !usePassthrough);
 
             // A profile switching between the two Xbox 360 backends (or off) always tears down
             // whatever's currently there first - out_xbox is one field shared by both backends
