@@ -2705,9 +2705,16 @@ namespace BetterJoyForCemu {
         protected static OutputControllerXbox360InputState MapToXbox360Input(Controller input) {
             // A default struct is already the neutral/centered state here - every axis is a
             // signed short (0 = centered), every trigger/button already false/zero. See
-            // IsModifierHeld's own comment.
-            if (input.IsModifierHeld())
-                return new OutputControllerXbox360InputState();
+            // IsModifierHeld's own comment. Guide/PS is still resolved though: it's an explicit
+            // chord binding (ResolveVirtualGuideState), and the entire point of Modifier is to
+            // gate raw button/stick passthrough while letting chords that use it as a prefix
+            // still fire - defaultState is forced false so the *unbound* Home-passthrough rule
+            // stays suppressed, only an explicit "guide" mapping can still produce output here.
+            if (input.IsModifierHeld()) {
+                return new OutputControllerXbox360InputState {
+                    guide = input.ResolveVirtualGuideState(false),
+                };
+            }
 
             var output = new OutputControllerXbox360InputState();
 
@@ -2856,7 +2863,8 @@ namespace BetterJoyForCemu {
             // Unlike Xbox360's signed-short axes, DualShock4's are unsigned bytes centered at 128
             // - a bare default struct would report every stick fully deflected toward 0, not
             // centered, so the neutral state needs to say so explicitly. See IsModifierHeld's own
-            // comment.
+            // comment. ps is still resolved for the same reason MapToXbox360Input resolves guide -
+            // an explicit chord binding, not raw passthrough, so Modifier shouldn't block it.
             if (input.IsModifierHeld()) {
                 return new OutputControllerDualShock4InputState {
                     thumb_left_x = 128,
@@ -2864,6 +2872,7 @@ namespace BetterJoyForCemu {
                     thumb_right_x = 128,
                     thumb_right_y = 128,
                     dPad = DpadDirection.None,
+                    ps = input.ResolveVirtualGuideState(false),
                 };
             }
 
