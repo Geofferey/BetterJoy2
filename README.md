@@ -60,6 +60,14 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   Switch SNES/N64, DualShock 4, and DualSense share one controller pipeline with XInput or
   DualShock 4 virtual output. Sony support includes buttons, sticks, analog triggers, battery state,
   rumble, lightbars, touchpads, audio and calibrated gyro/accelerometer motion.
+* **Two virtual-controller backends, plus a Passthrough option** - the standard XInput/DualShock 4
+  output uses ViGEmBus, or profiles can instead use an alternative backend built on
+  [VIIPER](https://github.com/Alia5/VIIPER)/usbip-win2, which adds genuine DualSense virtual
+  output - ViGEmBus has no DualSense target at all, so VIIPER is the only way to expose a real
+  PS5-shaped virtual controller. A separate Passthrough mode skips virtual output entirely and
+  unhides the physical controller instead, so another program (Steam, a game with native
+  DualSense/Joy-Con support) can use it directly under its true identity while BetterJoy2 keeps
+  handling gyro, touchpad, audio, and lighting in the background.
 * **Clean physical/virtual device ownership** - integrated and automated HidHide management prevents 
   games and remappers from consuming both the physical controller and BetterJoy2's virtual output. 
   BetterJoy2 excludes its own virtual devices from discovery and can restore hidden controllers on exit.
@@ -87,10 +95,16 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   all service boundaries.
 * **Per-controller profiles** - matching profiles per physical controller cover virtual
   output, motion, touch, device behavior, and optional mappings. Bindings support physical-only
-  capture, button combinations, touch gestures, a mappable shake input, and reassignable virtual
-  Guide/PS output without mapped outputs or contaminating subsequent bind capture.
-* **Controller-owned hardware behavior** - profile-scoped rumble, lightbar colors (a fixed color
-  or an automatic Battery mode that shows charge as green/yellow/red bands instead), battery
+  capture, button combinations (chords are exact-match and order-sensitive, so a shorter combo
+  doesn't fire while a real superset is held, and HOME+A is a different binding from A+HOME), an
+  optional Modifier binding that inhibits ordinary output while held so a button can be used
+  purely as a chord prefix, touch gestures, a mappable shake input, and reassignable virtual
+  Guide/PS output without mapped outputs or button remaps contaminating subsequent bind capture.
+* **Controller-owned hardware behavior** - profile-scoped rumble, lightbar colors (a fixed color,
+  an automatic Battery mode that shows charge as green/yellow/red bands instead, a Default mode
+  that leaves lighting entirely untouched for another program or the controller's own power-on
+  default to control, or a Disabled mode that forces it off), an independent Player LED toggle for
+  the small player-number indicator LEDs (DualSense, Joy-Con, Pro, SNES, and N64), battery
   percentage/status, Bluetooth disconnect with a configurable hold-to-power-off duration,
   headphone-jack detection and routing, gyro recentering, and controller-specific calibration
   remain attached to the physical device rather than being reduced to generic remapping concepts.
@@ -109,14 +123,19 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   connected headsets over USB or Bluetooth, with automatic jack switching and headphone-gated
   startup. Multiple audio-capable controllers can stream over Bluetooth at once, each with its own
   independent capture pipeline - a DualShock 4 and a DualSense can play simultaneously without
-  interfering with each other. Bluetooth audio transport is experimental because timing and
-  reliability vary across Windows Bluetooth adapters and system load.
+  interfering with each other. DualSense's Bluetooth audio jitter buffer is tuned for low latency
+  by default (a synthetic-silence frame and a dedicated write pool absorb brief capture/write
+  stalls, so a deep buffer isn't needed to hide them). Bluetooth audio transport is experimental
+  because timing and reliability vary across Windows Bluetooth adapters and system load.
 * **DualSense microphone control** - a genuine hardware-level mute (the controller's own
   power-save bit, not just an LED) over USB and Bluetooth, an assignable mute-toggle binding, and
   a configurable mute-LED indicator (matches Sony's own behavior, inverted, always off, or only
   lit while the mic is disabled). The Bluetooth microphone is exposed as a real Windows recording
   device via VIIPER by default, with an optional fallback to Valve's Steam Streaming Microphone
-  driver for machines that would rather avoid VIIPER's dependencies.
+  driver for machines that would rather avoid VIIPER's dependencies. Choosing Enabled or Muted
+  doesn't touch the controller's Bluetooth report stream by itself - the recording endpoint only
+  actually opens, and the controller only switches into its mic-duplex reporting mode, once
+  something genuinely starts capturing from it.
 * **Optional virtual HID mouse backend** (via FakerInput) - lets gyro mouse work across elevated
   windows, the Windows sign-in screen, and service/session boundaries where the standard approach
   can't reach.
@@ -160,14 +179,9 @@ Go to the [BetterJoy2 Releases tab](https://github.com/Geofferey/BetterJoy2/rele
     1. If you don't want to do this for some reason, just have one input profile set up with *Wii U Gamepad* as the controller and enable "Also use for buttons/axes" under *GamePad motion source*. **This is no longer required as of version 3**
     2. Turn rumble up to 70-80% if you want rumble.
 
-* BetterJoy2's virtual XInput/DS4 output can be consumed directly by games or passed into Steam
-  Input and other remappers when their additional configuration is wanted.
-
 # More Info
 Check out the [wiki](https://github.com/Geofferey/BetterJoy2/wiki)! There, you'll find the
-changelog, app-setting descriptions, FAQ, and troubleshooting information. HidHide is recommended
-when creating a virtual controller: BetterJoy2 manages the physical device so games and Steam do
-not receive both physical and virtual input.
+changelog, app-setting descriptions, FAQ, and troubleshooting information.
 
 # Connecting and Disconnecting the Controller
 ## Bluetooth Mode
