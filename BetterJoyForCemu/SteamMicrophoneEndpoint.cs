@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -126,6 +127,118 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // The dedicated, purpose-built IPolicyConfig method for exactly this - not the
+        // IPropertyStore.SetValue(PKEY_AudioEngine_DeviceFormat) path (E_ACCESSDENIED, confirmed
+        // even elevated), and not a direct registry write either (tried against the runtime
+        // MMDevices\Audio\...\Properties key first - the write went through and read back
+        // correctly, but never visibly changed the Advanced tab, meaning that key isn't actually
+        // what this driver/Windows reads the Default Format from). SoundVolumeView's own
+        // /SetDefaultFormat switch almost certainly calls this same method. GUIDs/vtable order
+        // confirmed against three independent published ports (Sunshine's PolicyConfig.h,
+        // tartakynov/audioswitch, ThiefMaster/coreaudio-dotnet) - Windows 7+ IPolicyConfig/
+        // CPolicyConfigClient, not the older Vista-only IPolicyConfigVista pair. Fixes a real bug
+        // found on real hardware: Windows' own cached Default Format for this capture endpoint was
+        // stuck at 1 channel/44100 Hz, not matching what actually flows through the driver's
+        // render->capture loopback - anything listening on the capture side heard complete audio,
+        // no dropouts, just audibly slowed/deepened, exactly what a receiver assuming the wrong
+        // sample rate for otherwise-correct data sounds like. Manually changing the Advanced tab
+        // dropdown to 48000 Hz confirmed this is the right lever. Deliberately does NOT also touch
+        // endpoint visibility/enable state on this or the paired render endpoint - see git history
+        // for why (broke mic capture entirely on real hardware, reverted).
+        [ComImport, Guid("f8679f50-850a-41cf-9c72-430f290290c8"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IPolicyConfig {
+            [PreserveSig] int GetMixFormat(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, out IntPtr format);
+            [PreserveSig] int GetDeviceFormat(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, bool defaultFormat,
+                out IntPtr format);
+            [PreserveSig] int ResetDeviceFormat(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId);
+            [PreserveSig] int SetDeviceFormat(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr endpointFormat,
+                IntPtr mixFormat);
+            [PreserveSig] int GetProcessingPeriod(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, bool defaultPeriod,
+                out long defaultDevicePeriod, out long minimumDevicePeriod);
+            [PreserveSig] int SetProcessingPeriod(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, ref long devicePeriod);
+            [PreserveSig] int GetShareMode(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr shareMode);
+            [PreserveSig] int SetShareMode(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr shareMode);
+            [PreserveSig] int GetPropertyValue(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, bool fxStore, IntPtr key,
+                IntPtr value);
+            [PreserveSig] int SetPropertyValue(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, bool fxStore, IntPtr key,
+                IntPtr value);
+            [PreserveSig] int SetDefaultEndpoint(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId, int role);
+            [PreserveSig] int SetEndpointVisibility(
+                [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+                [MarshalAs(UnmanagedType.Bool)] bool visible);
+        }
+
+        private static readonly Guid KsDataFormatSubTypePcm =
+            new Guid("00000001-0000-0010-8000-00aa00389b71");
+
+        private static void TrySetCaptureDeviceFormat(MMDevice device) {
+            byte[] format = BuildWaveFormatExtensibleBytes();
+            IntPtr formatPtr = IntPtr.Zero;
+            object instance = null;
+            try {
+                formatPtr = Marshal.AllocHGlobal(format.Length);
+                Marshal.Copy(format, 0, formatPtr, format.Length);
+
+                instance = Activator.CreateInstance(
+                    Type.GetTypeFromCLSID(new Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")));
+                int hr = ((IPolicyConfig)instance).SetDeviceFormat(device.ID, formatPtr, formatPtr);
+                AudioDebugLog.Write("SteamMic",
+                    "SetCaptureDeviceFormat: SetDeviceFormat(" + device.ID + ") hr=0x" +
+                    hr.ToString("X8"));
+            } catch (Exception ex) {
+                AudioDebugLog.Write("SteamMic",
+                    "SetCaptureDeviceFormat failed for " + device.ID + ": " + ex);
+            } finally {
+                if (instance != null)
+                    Marshal.ReleaseComObject(instance);
+                if (formatPtr != IntPtr.Zero)
+                    Marshal.FreeHGlobal(formatPtr);
+            }
+        }
+
+        // Raw WAVEFORMATEXTENSIBLE (40 bytes, no PROPVARIANT/registry-blob framing - SetDeviceFormat
+        // takes a bare PWAVEFORMATEX pointer) for 2 channel/48000 Hz/32-bit integer PCM - "2
+        // channel, 32 bit, 48000 Hz (Studio Quality)" in the Sound Control Panel's own
+        // Advanced-tab wording (confirmed that dropdown's 32-bit options are integer PCM, not IEEE
+        // float, unlike the WASAPI float stream this class's own WriteMicrophonePcm produces for
+        // its render output - those are two independent format contracts, not required to match).
+        private static byte[] BuildWaveFormatExtensibleBytes() {
+            const short channels = 2;
+            const int sampleRate = 48000;
+            const short bitsPerSample = 32;
+            short blockAlign = (short)(channels * (bitsPerSample / 8));
+            int avgBytesPerSec = sampleRate * blockAlign;
+
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream)) {
+                // WAVEFORMATEX (18 bytes)
+                writer.Write(unchecked((short)0xFFFE)); // WAVE_FORMAT_EXTENSIBLE
+                writer.Write(channels);
+                writer.Write(sampleRate);
+                writer.Write(avgBytesPerSec);
+                writer.Write(blockAlign);
+                writer.Write(bitsPerSample);
+                writer.Write((short)22); // cbSize - the WAVEFORMATEXTENSIBLE tail below
+                // WAVEFORMATEXTENSIBLE tail (22 bytes)
+                writer.Write(bitsPerSample); // wValidBitsPerSample
+                writer.Write(3); // dwChannelMask: SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+                writer.Write(KsDataFormatSubTypePcm.ToByteArray()); // SubFormat
+                return stream.ToArray();
+            }
+        }
+
         public static SteamMicrophoneEndpoint Open() {
             if (!TryFindDevice(DataFlow.Render, out MMDevice device))
                 throw new InvalidOperationException(
@@ -133,8 +246,10 @@ namespace BetterJoyForCemu {
 
             TryRenameEndpoint(device, RenderDisplayName);
             if (TryFindDevice(DataFlow.Capture, out MMDevice captureDevice)) {
-                using (captureDevice)
+                using (captureDevice) {
                     TryRenameEndpoint(captureDevice, CaptureDisplayName);
+                    TrySetCaptureDeviceFormat(captureDevice);
+                }
             }
 
             try {
