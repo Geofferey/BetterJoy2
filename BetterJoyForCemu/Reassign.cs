@@ -131,6 +131,14 @@ namespace BetterJoyForCemu {
         private List<string> comboMembers;
         private HashSet<string> comboHeldNow;
         private Timer comboTimeout;
+        // Set when capture was started by a right-click (SplitButton.RightClickHandler, see the
+        // specialButtons loop in the constructor - the dropdown arrow still opens the
+        // specific-button Menu independently via its own left-click branch, so this doesn't lose
+        // that). The captured result is appended as a new ","-separated alternative onto the
+        // existing bind instead of replacing it (see Controller.IsComboHeld's own comment for the
+        // runtime OR-of-alternatives semantics this produces) - lets one action fire from either
+        // of two unrelated inputs/combos.
+        private bool comboCaptureAppend;
 
         // These actions only accept controller inputs at runtime. Keyboard/mouse capture is
         // intentionally rejected for them below, just as before profiles were introduced.
@@ -280,6 +288,11 @@ namespace BetterJoyForCemu {
                 c.Menu = IsActivationKey((string)c.Tag)
                     ? menu_gyro_activation
                     : menu_joy_buttons;
+                // The dropdown arrow already opens Menu on its own (SplitButton.OnMouseDown's
+                // left-click-on-splitRect branch) independent of this, so right-click is free to
+                // do something else instead of also duplicating that same menu - appending an
+                // alternative bind (Remap's own MouseButtons.Right case).
+                c.RightClickHandler = Remap;
                 c.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
             }
 
@@ -2986,7 +2999,7 @@ namespace BetterJoyForCemu {
             switch (e.Button) {
                 case MouseButtons.Left:
                     curAssignment = c;
-                    StartComboCapture(c);
+                    StartComboCapture(c, append: false);
                     break;
                 case MouseButtons.Middle:
                     CancelComboCapture();
@@ -2994,15 +3007,32 @@ namespace BetterJoyForCemu {
                     GetPrettyName(c);
                     break;
                 case MouseButtons.Right:
+                    // Reached via SplitButton.RightClickHandler, not the MouseDown event -
+                    // SplitButton.OnMouseDown checks RightClickHandler first and, if set, calls it
+                    // directly instead of showing Menu (see the specialButtons loop in the
+                    // constructor, and RightClickHandler's own comment on SplitButton). The
+                    // dropdown arrow still opens Menu on its own via a left-click, independent of
+                    // this - so freeing up right-click for this instead doesn't lose that.
+                    curAssignment = c;
+                    StartComboCapture(c, append: true);
                     break;
             }
         }
 
-        private void StartComboCapture(SplitButton c) {
+        // Appending onto one of the special sentinel values ("0"/unassigned, "default", "always")
+        // isn't a real alternative to join with "," - there's nothing meaningful there yet, so
+        // append behaves like a normal replace in that case instead of producing "0,joy_18".
+        private static bool IsAppendableBindValue(string value) {
+            return !String.IsNullOrEmpty(value) && value != "0" && value != "default" &&
+                value != "always";
+        }
+
+        private void StartComboCapture(SplitButton c, bool append) {
             BeginBindingCaptureSuppression();
             comboMembers = new List<string>();
             comboHeldNow = new HashSet<string>();
-            c.Text = "Press combo...";
+            comboCaptureAppend = append && IsAppendableBindValue(GetBindValue((string)c.Tag));
+            c.Text = comboCaptureAppend ? "Press combo to add..." : "Press combo...";
 
             // Button's own MouseDown handling grabs native Win32 mouse capture on press - normally
             // released on its matching MouseUp, but from here on WE'RE the ones deciding what
@@ -3038,6 +3068,7 @@ namespace BetterJoyForCemu {
             curAssignment = null;
             comboMembers = null;
             comboHeldNow = null;
+            comboCaptureAppend = false;
             EndBindingCaptureSuppression();
 
             if (target != null)
@@ -3069,7 +3100,8 @@ namespace BetterJoyForCemu {
                 if (!comboMembers.Contains(downPart))
                     comboMembers.Add(downPart);
                 comboHeldNow.Add(downPart);
-                curAssignment.Text = "Press combo... (" + comboMembers.Count + ")";
+                curAssignment.Text = (comboCaptureAppend ? "Press combo to add... (" : "Press combo... (") +
+                    comboMembers.Count + ")";
             }
 
             if (upPart != null) {
@@ -3087,12 +3119,17 @@ namespace BetterJoyForCemu {
             // Real press order now, not an alphabetical/canonical one - see comboMembers' own
             // comment for why that distinction actually matters at match time.
             string combo = String.Join("+", comboMembers);
+            if (comboCaptureAppend) {
+                string existing = GetBindValue((string)curAssignment.Tag);
+                combo = existing + "," + combo;
+            }
             SetBindValue((string)curAssignment.Tag, combo);
             GetPrettyName(curAssignment);
 
             curAssignment = null;
             comboMembers = null;
             comboHeldNow = null;
+            comboCaptureAppend = false;
             EndBindingCaptureSuppression();
         }
 
@@ -3248,7 +3285,9 @@ namespace BetterJoyForCemu {
                 tip_reassign.SetToolTip(c,
                     "Uses this controller layout's original Guide / PS behavior.\r\n\r\n" +
                     "Left-click to detect a replacement button or combo.\r\n" +
-                    "Middle-click to reset.\r\nRight-click for input options.");
+                    "Middle-click to reset.\r\nRight-click to detect a replacement input (same " +
+                    "as left-click - nothing to add an alternative to yet).\r\nClick the ▼ for " +
+                    "a specific-button menu.");
                 return;
             }
             if ((string)c.Tag == "touchpad_two_finger_tap" && val == "default") {
@@ -3256,7 +3295,9 @@ namespace BetterJoyForCemu {
                 tip_reassign.SetToolTip(c,
                     "Right click while touchpad mouse is active.\r\n\r\n" +
                     "Left-click to detect a replacement input.\r\n" +
-                    "Middle-click to reset.\r\nRight-click for input options.");
+                    "Middle-click to reset.\r\nRight-click to detect a replacement input (same " +
+                    "as left-click - nothing to add an alternative to yet).\r\nClick the ▼ for " +
+                    "a specific-button menu.");
                 return;
             }
             if ((string)c.Tag == "touchpad_two_finger_scroll_up" && val == "default") {
@@ -3264,7 +3305,9 @@ namespace BetterJoyForCemu {
                 tip_reassign.SetToolTip(c,
                     "Wheel up while touchpad mouse is active.\r\n\r\n" +
                     "Left-click to detect a replacement input.\r\n" +
-                    "Middle-click to reset.\r\nRight-click for input options.");
+                    "Middle-click to reset.\r\nRight-click to detect a replacement input (same " +
+                    "as left-click - nothing to add an alternative to yet).\r\nClick the ▼ for " +
+                    "a specific-button menu.");
                 return;
             }
             if ((string)c.Tag == "touchpad_two_finger_scroll_down" && val == "default") {
@@ -3272,25 +3315,32 @@ namespace BetterJoyForCemu {
                 tip_reassign.SetToolTip(c,
                     "Wheel down while touchpad mouse is active.\r\n\r\n" +
                     "Left-click to detect a replacement input.\r\n" +
-                    "Middle-click to reset.\r\nRight-click for input options.");
+                    "Middle-click to reset.\r\nRight-click to detect a replacement input (same " +
+                    "as left-click - nothing to add an alternative to yet).\r\nClick the ▼ for " +
+                    "a specific-button menu.");
                 return;
             }
             if (IsActivationKey((string)c.Tag) && val == "always") {
                 c.Text = "Always On";
                 tip_reassign.SetToolTip(c,
                     "Always on.\r\n\r\nLeft-click to detect input.\r\n" +
-                    "Middle-click to reset.\r\nRight-click for activation options.");
+                    "Middle-click to reset.\r\nRight-click to detect a replacement input (same " +
+                    "as left-click - nothing to add an alternative to yet).\r\nClick the ▼ for " +
+                    "a specific-button menu.");
                 return;
             }
             bool unassigned = val == "0";
 
             // A combo is "+"-joined parts (see Joycon.IsComboHeld) - a single-input bind is just
-            // a one-part combo, so this handles both uniformly.
+            // a one-part combo, so this handles both uniformly. A bind can also be several
+            // ","-separated alternative combos (either one triggers it, see IsComboHeld's own
+            // comment) - each alternative is described the same way and joined with " / ".
             bool explicitlyDisabled = unassigned &&
                 (IsActivationKey((string)c.Tag) || (string)c.Tag == "guide");
             string description = explicitlyDisabled
                 ? "(disabled)"
-                : (unassigned ? "(unassigned)" : String.Join("+", val.Split('+').Select(DescribeBindPart)));
+                : (unassigned ? "(unassigned)" : String.Join(" / ", val.Split(',').Select(alt =>
+                    String.Join("+", alt.Split('+').Select(DescribeBindPart)))));
             c.Text = explicitlyDisabled
                 ? "Disabled"
                 : (unassigned ? "" : description);
@@ -3298,7 +3348,10 @@ namespace BetterJoyForCemu {
             // Long combos can still run out of room on the button itself (see Reassign.Designer.cs
             // for the width these buttons get) - the tooltip always shows the full, untruncated
             // bind so it's never actually ambiguous what's assigned, just hover to check.
-            tip_reassign.SetToolTip(c, description + "\r\n\r\nLeft-click to detect input.\r\nMiddle-click to clear to default.\r\nRight-click to see more options.");
+            tip_reassign.SetToolTip(c, description +
+                "\r\n\r\nLeft-click to detect input.\r\nMiddle-click to clear to default.\r\n" +
+                "Right-click to add an alternative input - either one will trigger this.\r\n" +
+                "Click the ▼ for a specific-button menu.");
         }
 
         private static string DescribeBindPart(string part) {

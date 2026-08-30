@@ -1670,7 +1670,21 @@ namespace BetterJoyForCemu {
         // nothing extra per poll) - held keyboard/mouse input alongside a controller chord
         // doesn't disqualify it or need to slot into the same order, since those are a different
         // input domain with no equivalent per-key press-order tracking here.
-        protected bool IsComboHeld(string combo) {
+        //
+        // A mapping can also be several ","-separated alternative combos (Reassign.cs's
+        // right-click-to-add-an-alternative capture) - true if ANY of them is currently held,
+        // each checked independently by the same exact-match rules above (including "no other
+        // controller button held" - a two-alternative bind doesn't get to treat the other
+        // alternative's buttons as an allowed extra).
+        protected bool IsComboHeld(string mapping) {
+            foreach (string alternative in mapping.Split(',')) {
+                if (IsSingleComboHeld(alternative))
+                    return true;
+            }
+            return false;
+        }
+
+        private bool IsSingleComboHeld(string combo) {
             ulong comboButtonMask = 0;
             long previousDownTimestamp = long.MinValue;
             foreach (string part in combo.Split('+')) {
@@ -1829,7 +1843,11 @@ namespace BetterJoyForCemu {
                 if (value == "0")
                     continue;
 
-                foreach (string part in value.Split('+')) {
+                // "," separates alternative combos (see IsComboHeld's own comment) - every button
+                // from every alternative gets reserved here regardless of which one is actually
+                // currently held, matching how a single combo's buttons are already reserved
+                // whether-or-not that combo happens to be held on any given report.
+                foreach (string part in value.Split('+', ',')) {
                     if (!part.StartsWith("joy_"))
                         continue; // keyboard/mouse combo members never enter ViGEm
 
@@ -1859,7 +1877,8 @@ namespace BetterJoyForCemu {
                 if (String.IsNullOrEmpty(value) || value == "0")
                     continue;
 
-                foreach (string part in value.Split('+')) {
+                // See RefreshGyroOnlyButtonReservations' own comment on the "," alternatives split.
+                foreach (string part in value.Split('+', ',')) {
                     if (!part.StartsWith("joy_"))
                         continue;
 
@@ -2200,9 +2219,12 @@ namespace BetterJoyForCemu {
 
             // A controller button assigned to Guide/PS becomes Guide/PS instead of also leaking
             // its native virtual button. For chords, consume members only while the full chord is
-            // held; pressing one member alone keeps its ordinary output.
+            // held; pressing one member alone keeps its ordinary output. Every button from every
+            // "," alternative (see IsComboHeld's own comment) is a suppression candidate here,
+            // not just whichever one is actually satisfying customGuideHeld right now - harmless
+            // for the others since a button that isn't actually held has nothing to suppress.
             if (customGuideHeld) {
-                foreach (string part in guideMapping.Split('+')) {
+                foreach (string part in guideMapping.Split('+', ',')) {
                     if (!part.StartsWith("joy_"))
                         continue;
 
