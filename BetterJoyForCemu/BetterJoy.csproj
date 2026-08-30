@@ -200,6 +200,7 @@
     <Compile Include="SnesController.cs" />
     <Compile Include="N64Controller.cs" />
     <Compile Include="MadgwickAHRS.cs" />
+    <Compile Include="OpenRgbRescan.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>

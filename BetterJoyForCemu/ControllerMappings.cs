@@ -46,11 +46,15 @@ namespace BetterJoyForCemu {
         public const string MicIndicatorModeEnabledWhileDisabled = "enabled_while_disabled";
         // Default: BetterJoy never sends a lighting command at all for this profile - see
         // Program.cs's ApplyControllerProfileLighting. Disabled: same forced-black output as the
-        // LightingOff runtime toggle, but as a persistent saved mode instead.
+        // LightingOff runtime toggle, but as a persistent saved mode instead. OpenRGB: identical
+        // hands-off behavior to Default, plus BetterJoy asks a locally running OpenRGB to rescan
+        // for devices (OpenRgbRescan.cs) on connect and whenever HidHide visibility changes, so
+        // OpenRGB picks the controller up without the user manually clicking Rescan there.
         public const string LightingModeDefault = "default";
         public const string LightingModeUser = "user";
         public const string LightingModeBattery = "battery";
         public const string LightingModeDisabled = "disabled";
+        public const string LightingModeOpenRgb = "openrgb";
 
         // Single source of truth for every "cycle through the modes of a dropdown" binding
         // (lt_haptics/rt_haptics/toggle_haptics) as well as the dropdowns themselves
@@ -68,6 +72,7 @@ namespace BetterJoyForCemu {
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
             (LightingModeBattery, "Battery"), (LightingModeDisabled, "Disabled"),
+            (LightingModeOpenRgb, "OpenRGB"),
         };
         // The player-number indicator LEDs - DualSense's small ones below the touchpad
         // (DualSenseController.SetLEDByPlayerNum) and Joy-Con/Pro's SL/SR-adjacent ones
@@ -526,7 +531,19 @@ namespace BetterJoyForCemu {
                 return LightingModeDefault;
             if (String.Equals(value, LightingModeDisabled, StringComparison.OrdinalIgnoreCase))
                 return LightingModeDisabled;
+            if (String.Equals(value, LightingModeOpenRgb, StringComparison.OrdinalIgnoreCase))
+                return LightingModeOpenRgb;
             return LightingModeUser;
+        }
+
+        // Default and OpenRGB both mean BetterJoy never sends a single lighting command for this
+        // profile - OpenRGB additionally triggers OpenRgbRescan, but the "never touch the LED"
+        // behavior itself is identical, so every hands-off check (Program.cs's
+        // ApplyControllerProfileLighting, DualSenseController's own gating) shares this one
+        // predicate instead of repeating the same OR.
+        public static bool LightingModeIsHandsOff(string profileId) {
+            string mode = LightingMode(profileId);
+            return mode == LightingModeDefault || mode == LightingModeOpenRgb;
         }
 
         // Builds the per-mode Start/Secondary/Strength key for one trigger side - e.g.

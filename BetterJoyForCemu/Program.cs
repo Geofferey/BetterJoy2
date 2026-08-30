@@ -268,11 +268,12 @@ namespace BetterJoyForCemu {
         private static void ApplyControllerProfileLighting(Controller controller,
                                                             string profileId) {
             string lightingMode = ControllerMappings.LightingMode(profileId);
-            // Default means exactly that: BetterJoy never sends a single lighting command for
+            // Default and OpenRGB both mean BetterJoy never sends a single lighting command for
             // this profile: not the Home LED, RGB lightbar, player indicators, or a
-            // toggle_lighting press. This leaves firmware or another application as the sole
-            // lighting owner even if the profile's separate Player LED option is enabled.
-            if (lightingMode == ControllerMappings.LightingModeDefault)
+            // toggle_lighting press. This leaves firmware or another application (OpenRGB
+            // included) as the sole lighting owner even if the profile's separate Player LED
+            // option is enabled.
+            if (ControllerMappings.LightingModeIsHandsOff(profileId))
                 return;
 
             // Player LED (the small player-number indicator LEDs, DualSense only) is a separate
@@ -403,10 +404,18 @@ namespace BetterJoyForCemu {
                             Program.hiddenInstanceIds.Add(instanceId);
                     }
                 } else {
-                    Program.hidHide.RemoveBlockedInstanceId(instanceId);
+                    bool wasHidden;
                     lock (Program.hiddenInstanceIdsLock) {
-                        Program.hiddenInstanceIds.Remove(instanceId);
+                        wasHidden = Program.hiddenInstanceIds.Remove(instanceId);
                     }
+                    Program.hidHide.RemoveBlockedInstanceId(instanceId);
+                    // Only a real hidden-to-visible transition means OpenRGB's raw HID access
+                    // just changed - reasserting an already-visible device (the common,
+                    // idempotent reconciliation pass) has nothing new for it to see.
+                    if (wasHidden && ControllerMappings.LightingMode(
+                            ControllerMappings.ProfileIdFor(jc)) ==
+                            ControllerMappings.LightingModeOpenRgb)
+                        OpenRgbRescan.RequestRescan();
                 }
             } catch { }
         }
@@ -830,6 +839,12 @@ namespace BetterJoyForCemu {
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
                     ControllerMappings.EnsureProfileSaved(profileId);
+                    // Fresh connection: OpenRGB's own device list won't have this controller yet
+                    // unless it happens to already be running a scan - nudge it once it's had a
+                    // moment to see the HID device (OpenRgbRescan's own settle delay).
+                    if (ControllerMappings.LightingMode(profileId) ==
+                            ControllerMappings.LightingModeOpenRgb)
+                        OpenRgbRescan.RequestRescan();
 
                     jc.Begin();
                     if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {

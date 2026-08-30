@@ -1205,7 +1205,10 @@ namespace BetterJoyForCemu {
                 "show Light color. Battery: show the controller's current charge instead - green " +
                 "above 66%, yellow above 33%, red at or below 33% - updated only when the charge " +
                 "crosses into a different band, to avoid constant chatter with the controller " +
-                "over something that barely changes. Disabled: always off.");
+                "over something that barely changes. Disabled: always off. OpenRGB: same " +
+                "hands-off behavior as Default, and BetterJoy also asks a locally running " +
+                "OpenRGB to rescan for devices on connect and whenever it changes what's hidden " +
+                "from other programs.");
 
             playerLedLabel = CreateLabel("Player LED", 24, sectionTop + 45, ProfileText, false);
             page.Controls.Add(playerLedLabel);

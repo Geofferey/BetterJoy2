@@ -643,7 +643,7 @@ namespace BetterJoyForCemu {
                 // issue it here at all while Default is active. lightbarUpdatePending is
                 // deliberately left set (not cleared) so switching the profile away from Default
                 // later, even without a reconnect, still applies its assigned color once.
-                if (lightbarUpdatePending && !LightingModeIsDefault()) {
+                if (lightbarUpdatePending && !LightingModeIsHandsOff()) {
                     long lightbarNow = Stopwatch.GetTimestamp();
                     if (!connectionLightFlashStarted) {
                         // Confirm every new USB or Bluetooth connection with a short blue light,
@@ -1761,7 +1761,7 @@ namespace BetterJoyForCemu {
                 report[BtAudioStateOffset + 38] = 0;
             }
 
-            if (LightingModeIsDefault()) {
+            if (LightingModeIsHandsOff()) {
                 // A 0x36 carrier contains the complete DualSense output-state structure. Its
                 // default template asserts RGB and player-indicator controls in valid_flag1,
                 // plus lightbar setup and LED brightness in valid_flag2. Default delegates all
@@ -1958,10 +1958,10 @@ namespace BetterJoyForCemu {
 
         // Read once per report rather than cached on the instance - LightingMode can change at
         // any time via a live profile edit, and this needs to reflect whatever's current on every
-        // single write, not a stale snapshot from Attach.
-        private bool LightingModeIsDefault() {
-            return ControllerMappings.LightingMode(ControllerMappings.ProfileIdFor(this)) ==
-                ControllerMappings.LightingModeDefault;
+        // single write, not a stale snapshot from Attach. Default and OpenRGB share the same
+        // hands-off behavior here - see ControllerMappings.LightingModeIsHandsOff's own comment.
+        private bool LightingModeIsHandsOff() {
+            return ControllerMappings.LightingModeIsHandsOff(ControllerMappings.ProfileIdFor(this));
         }
 
         private void WriteRetainedRumbleAndTriggerState(byte[] report, int commonOffset,
@@ -1985,7 +1985,7 @@ namespace BetterJoyForCemu {
             // conditionally dropped so Lighting Mode: Default leaves the physical lightbar alone -
             // see that constant's own comment.
             byte validFlag1 = (byte)(0x55 | DualSensePowerSaveControlEnable);
-            if (LightingModeIsDefault())
+            if (LightingModeIsHandsOff())
                 validFlag1 &= unchecked((byte)~DualSenseValidLightingFlag1);
             report[commonOffset + 1] = validFlag1;
             report[commonOffset + 2] = rightMotor;
@@ -2187,7 +2187,7 @@ namespace BetterJoyForCemu {
                 // lighting, even when the separate Player LEDs option is enabled. Retain the
                 // desired state as pending so leaving Default can apply it without reconnecting,
                 // but do not publish any LED command while Default is active.
-                bool lightingDefault = LightingModeIsDefault();
+                bool lightingDefault = LightingModeIsHandsOff();
                 if (lightingDefault) {
                     lightbarUpdatePending = true;
                     return;
