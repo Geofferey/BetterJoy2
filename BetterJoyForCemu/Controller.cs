@@ -1011,6 +1011,18 @@ namespace BetterJoyForCemu {
             new string[TouchpadOnlyBindKeys.Length];
         protected readonly bool[] touchpadOnlyReservedButtons = new bool[ButtonCount];
         protected readonly bool[] vigemButtons = new bool[ButtonCount];
+        // SimulateContinous's joy_-to-joy_ remap output (e.g. "Touchpad click also acts as
+        // PLUS") - deliberately never written into buttons[] itself, which combo/chord capture
+        // and IsComboHeld/IsModifierHeld read as ground truth for what's actually physically
+        // held. A button remapped to another button was leaking into chord capture as an extra,
+        // never-pressed member (e.g. capturing HOME+TOUCHPAD as HOME+TOUCHPAD+PLUS when Touchpad
+        // was mapped to PLUS) - the same bug class f398640 fixed for key_/mse_ output, just for
+        // joy_-to-joy_ remaps, which never went through that fix's SimulateKeyClick/
+        // SimulateButtonClick suppression at all. Reset once per report at the top of
+        // DoThingsWithButtons, accumulated by every SimulateContinous call within that same
+        // report, then folded into vigemButtons (virtual-controller-output only) by
+        // GetButtonsForVigem - buttons[] itself is never touched.
+        protected readonly bool[] continuousRemapButtons = new bool[ButtonCount];
 
         // Controller definitions decode their own report offsets, then submit this canonical
         // contact shape to the shared activation/actions/pointer pipeline below. Sony touchpads
@@ -2151,10 +2163,24 @@ namespace BetterJoyForCemu {
             bool touchpadMouseConsumesButtons = touchpadMouseEnabledThisReport &&
                 ProfileBoolOption("TouchpadMouseInhibitButtons");
             bool customGuideHeld = TryGetHeldCustomGuideMapping(out string guideMapping);
-            if (!gyroMouseConsumesButtons && !touchpadMouseConsumesButtons && !customGuideHeld)
+            bool hasContinuousRemap = false;
+            for (int i = 0; i < continuousRemapButtons.Length; i++) {
+                if (continuousRemapButtons[i]) {
+                    hasContinuousRemap = true;
+                    break;
+                }
+            }
+            if (!gyroMouseConsumesButtons && !touchpadMouseConsumesButtons && !customGuideHeld &&
+                    !hasContinuousRemap)
                 return buttons;
 
             Array.Copy(buttons, vigemButtons, buttons.Length);
+            if (hasContinuousRemap) {
+                for (int i = 0; i < continuousRemapButtons.Length; i++) {
+                    if (continuousRemapButtons[i])
+                        vigemButtons[i] = true;
+                }
+            }
             if (gyroMouseConsumesButtons) {
                 for (int canonicalIndex = 0;
                      canonicalIndex < gyroOnlyReservedButtons.Length;
@@ -2276,11 +2302,13 @@ namespace BetterJoyForCemu {
 
         // For Joystick->Joystick inputs - s can likewise be a "+"-joined combo; every joy_ part
         // gets OR'd in (mse_/key_ parts are Simulate's job above, not this one's).
+        // Writes to continuousRemapButtons, not buttons[] - see that field's own comment for why:
+        // this is virtual-controller-output-only, not a real physical press.
         protected void SimulateContinous(int origin, string s) {
             foreach (string part in s.Split('+')) {
                 if (part.StartsWith("joy_")) {
                     int button = Int32.Parse(part.Substring(4));
-                    buttons[button] |= buttons[origin];
+                    continuousRemapButtons[button] |= buttons[origin];
                 }
             }
         }
@@ -2369,6 +2397,10 @@ namespace BetterJoyForCemu {
         protected virtual void DoDeviceSpecificButtonActions() { }
 
         protected void DoThingsWithButtons() {
+            // Fresh per report - every SimulateContinous call below accumulates into this same
+            // array for this one report, then GetButtonsForVigem folds it into vigemButtons.
+            Array.Clear(continuousRemapButtons, 0, continuousRemapButtons.Length);
+
             // Checked first and returns early like the other button-driven side effects below -
             // a face button doubling as "confirm" only ever matters while a calibration prompt
             // is actually showing (PendingConfirmController names this exact controller only
