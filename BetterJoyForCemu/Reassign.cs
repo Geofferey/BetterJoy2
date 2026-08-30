@@ -1216,8 +1216,8 @@ namespace BetterJoyForCemu {
             page.Controls.Add(playerLedSelector);
             tip_reassign.SetToolTip(playerLedSelector,
                 "The small player-number indicator LEDs - not available on DualShock 4. On " +
-                "DualSense this is a separate LED strip from the lightbar above, so it's " +
-                "independent of the Lighting Mode setting (including Default); DualSense " +
+                "DualSense this is a separate LED strip from the lightbar above. Lighting Mode " +
+                "Default leaves these untouched even when this option is Enabled. DualSense " +
                 "defaults to Disabled here since BetterJoy's own output reports already claimed " +
                 "control of these LEDs as an unavoidable side effect of setting rumble/mic-LED/" +
                 "trigger state, so before this existed they always silently went dark regardless " +

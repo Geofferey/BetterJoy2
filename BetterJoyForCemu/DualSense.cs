@@ -123,6 +123,17 @@ namespace BetterJoyForCemu {
         // driver exactly - this is what actually powers the mic capsule down at the hardware
         // level (see WriteRetainedRumbleAndTriggerState), not just the mute LED.
         private const byte DualSensePowerSaveControlEnable = 0x02; // DS_OUTPUT_VALID_FLAG1_POWER_SAVE_CONTROL_ENABLE
+        // Lightbar-related validity bits from dualsense_output_report_common. Bluetooth audio
+        // transports that structure inside report 0x36, so its lighting controls must be gated
+        // just like ordinary USB 0x02 / Bluetooth 0x31 output reports.
+        private const byte DualSenseValidLightbarControl = 0x04;
+        private const byte DualSenseValidPlayerIndicatorControl = 0x10;
+        private const byte DualSenseValidLightingFlag1 =
+            DualSenseValidLightbarControl | DualSenseValidPlayerIndicatorControl;
+        private const byte DualSenseValidLedBrightnessControl = 0x01;
+        private const byte DualSenseValidLightbarSetupControl = 0x02;
+        private const byte DualSenseValidLightingFlag2 =
+            DualSenseValidLedBrightnessControl | DualSenseValidLightbarSetupControl;
         private const byte DualSensePowerSaveMicMute = 0x10; // DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE
         // Both trade added latency for jitter tolerance - at ~10.67ms/frame the prior 8/12 values
         // baked in ~85-128ms of steady-state buffering, audible as lag. Trimmed down now that
@@ -625,7 +636,14 @@ namespace BetterJoyForCemu {
                         }
                     }
                 }
-                if (lightbarUpdatePending) {
+                // Lighting Mode: Default means never touch the LED, not even to confirm a fresh
+                // connection - relying on SendDualSenseLightbar's own internal bit-masking to make
+                // this call a no-op isn't good enough (today's BT-audio investigation showed that
+                // kind of masking can silently fail to gate what it's assumed to), so just never
+                // issue it here at all while Default is active. lightbarUpdatePending is
+                // deliberately left set (not cleared) so switching the profile away from Default
+                // later, even without a reconnect, still applies its assigned color once.
+                if (lightbarUpdatePending && !LightingModeIsDefault()) {
                     long lightbarNow = Stopwatch.GetTimestamp();
                     if (!connectionLightFlashStarted) {
                         // Confirm every new USB or Bluetooth connection with a short blue light,
@@ -1743,6 +1761,18 @@ namespace BetterJoyForCemu {
                 report[BtAudioStateOffset + 38] = 0;
             }
 
+            if (LightingModeIsDefault()) {
+                // A 0x36 carrier contains the complete DualSense output-state structure. Its
+                // default template asserts RGB and player-indicator controls in valid_flag1,
+                // plus lightbar setup and LED brightness in valid_flag2. Default delegates all
+                // lighting to firmware or another application, so strip every lighting ownership
+                // bit on every frame. Compatible vibration2 (valid_flag2 bit 2) remains intact.
+                report[BtAudioStateOffset + 1] &=
+                    unchecked((byte)~DualSenseValidLightingFlag1);
+                report[BtAudioStateOffset + 38] &=
+                    unchecked((byte)~DualSenseValidLightingFlag2);
+            }
+
             if (bluetoothOutputStateDirty || currentLeftMotor != 0 || currentRightMotor != 0) {
                 report[BtAudioStateOffset] |=
                     DualSenseValidCompatibleVibration | DualSenseValidHapticsSelect;
@@ -1770,6 +1800,7 @@ namespace BetterJoyForCemu {
             WriteAdaptiveTriggerState(report, BtAudioStateOffset,
                 bluetoothOutputStateDirty);
             report[BtAudioStateOffset + 37] = 0x0A;
+            report[BtAudioStateOffset + 43] = currentPlayerLeds;
             report[BtAudioStateOffset + 44] = lightbarRed;
             report[BtAudioStateOffset + 45] = lightbarGreen;
             report[BtAudioStateOffset + 46] = lightbarBlue;
@@ -1925,6 +1956,14 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Read once per report rather than cached on the instance - LightingMode can change at
+        // any time via a live profile edit, and this needs to reflect whatever's current on every
+        // single write, not a stale snapshot from Attach.
+        private bool LightingModeIsDefault() {
+            return ControllerMappings.LightingMode(ControllerMappings.ProfileIdFor(this)) ==
+                ControllerMappings.LightingModeDefault;
+        }
+
         private void WriteRetainedRumbleAndTriggerState(byte[] report, int commonOffset,
                                                         byte leftMotor, byte rightMotor) {
             // A rumble publication enables both compatibility-rumble bits and both trigger
@@ -1942,8 +1981,13 @@ namespace BetterJoyForCemu {
             // button's own mute state has never affected the mic hardware, on real hardware or in
             // any OS), power_save_control's DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE bit (BIT 4) is
             // the real thing - it's what actually powers the mic capsule down at the hardware
-            // level, the same control Sony's own driver uses.
-            report[commonOffset + 1] = 0x55 | DualSensePowerSaveControlEnable;
+            // level, the same control Sony's own driver uses. DualSenseValidLightbarControl is
+            // conditionally dropped so Lighting Mode: Default leaves the physical lightbar alone -
+            // see that constant's own comment.
+            byte validFlag1 = (byte)(0x55 | DualSensePowerSaveControlEnable);
+            if (LightingModeIsDefault())
+                validFlag1 &= unchecked((byte)~DualSenseValidLightingFlag1);
+            report[commonOffset + 1] = validFlag1;
             report[commonOffset + 2] = rightMotor;
             report[commonOffset + 3] = leftMotor;
             WriteMicrophoneMuteState(report, commonOffset, microphoneMuted);
@@ -2139,6 +2183,15 @@ namespace BetterJoyForCemu {
             lock (outputReportLock) {
                 bluetoothOutputStateDirty = true;
                 bool bt = !isUSB;
+                // This helper carries both RGB and player-indicator state. Default delegates all
+                // lighting, even when the separate Player LEDs option is enabled. Retain the
+                // desired state as pending so leaving Default can apply it without reconnecting,
+                // but do not publish any LED command while Default is active.
+                bool lightingDefault = LightingModeIsDefault();
+                if (lightingDefault) {
+                    lightbarUpdatePending = true;
+                    return;
+                }
                 if (!bt) {
                     const int len = 64;
                     byte[] buf = new byte[len];
@@ -2162,7 +2215,8 @@ namespace BetterJoyForCemu {
                 if (!lightbarControlReleased) {
                     byte[] setup = CreateDualSenseBluetoothLightbarReport();
                     const int commonOffset = 3;
-                    setup[commonOffset + 38] = 0x02; // lightbar setup control enable
+                    setup[commonOffset + 38] =
+                        DualSenseValidLightbarSetupControl;
                     setup[commonOffset + 41] = 0x02; // release startup animation ownership
                     WriteDualSenseBluetoothLightbarReport(setup);
                     lightbarControlReleased = true;
@@ -2173,7 +2227,9 @@ namespace BetterJoyForCemu {
                 // 0x04 lightbar control enable | 0x10 player-indicator control enable
                 // (DS_OUTPUT_VALID_FLAG1_PLAYER_INDICATOR_CONTROL_ENABLE) - without the latter the
                 // controller ignores player_leds below on this particular report.
-                color[colorCommonOffset + 1] = 0x04 | 0x10;
+                color[colorCommonOffset + 1] =
+                    DualSenseValidLightbarControl |
+                    DualSenseValidPlayerIndicatorControl;
                 color[colorCommonOffset + 43] = currentPlayerLeds;
                 color[colorCommonOffset + 44] = red;
                 color[colorCommonOffset + 45] = green;

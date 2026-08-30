@@ -267,22 +267,18 @@ namespace BetterJoyForCemu {
 
         private static void ApplyControllerProfileLighting(Controller controller,
                                                             string profileId) {
-            // Player LED (the small player-number indicator LEDs, DualSense only) is a separate
-            // physical LED strip from the RGB lightbar below, with its own independent Enable/
-            // Disable setting - deliberately not gated behind LightingMode/Default, so choosing
-            // hands-off for the lightbar doesn't also silently disable this. RequestLEDUpdate
-            // dedupes internally (DualSenseController.SetLEDByPlayerNum) so calling it on every
-            // reconciliation pass is cheap when nothing actually changed.
-            if (controller is DualSenseController dualSensePlayerLed)
-                dualSensePlayerLed.RequestLEDUpdate(dualSensePlayerLed.PadId);
-
             string lightingMode = ControllerMappings.LightingMode(profileId);
             // Default means exactly that: BetterJoy never sends a single lighting command for
-            // this profile, not the Home LED, not the lightbar, not even a toggle_lighting press -
-            // for whoever wants another program (or the controller's own power-on default) to own
-            // lighting instead of having it fought over every reconciliation pass.
+            // this profile: not the Home LED, RGB lightbar, player indicators, or a
+            // toggle_lighting press. This leaves firmware or another application as the sole
+            // lighting owner even if the profile's separate Player LED option is enabled.
             if (lightingMode == ControllerMappings.LightingModeDefault)
                 return;
+
+            // Player LED (the small player-number indicator LEDs, DualSense only) is a separate
+            // physical strip with its own Enable/Disable setting in every managed lighting mode.
+            if (controller is DualSenseController dualSensePlayerLed)
+                dualSensePlayerLed.RequestLEDUpdate(dualSensePlayerLed.PadId);
 
             controller.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
 
