@@ -82,6 +82,8 @@ namespace BetterJoyForCemu {
         private Button lightColorButton;
         private Label lightingModeLabel;
         private ProfileChoiceSelector lightingModeSelector;
+        private Label playerLedLabel;
+        private ProfileChoiceSelector playerLedSelector;
         private ProfileChoiceSelector controllerAudioEnabledSelector;
         private ProfileChoiceSelector controllerAudioVolumeSelector;
         private ProfileChoiceSelector controllerAudioEndpointSelector;
@@ -1198,11 +1200,30 @@ namespace BetterJoyForCemu {
             lightingModeSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
             page.Controls.Add(lightingModeSelector);
             tip_reassign.SetToolTip(lightingModeSelector,
-                "User: always show Light color. Battery: show the controller's current charge " +
-                "instead - green above 66%, yellow above 33%, red at or below 33% - updated only " +
-                "when the charge crosses into a different band, to avoid constant chatter with " +
-                "the controller over something that barely changes.");
-            layout.Advance(33);
+                "Default: BetterJoy never sends a lighting command at all - for another program " +
+                "or the controller's own power-on default to control it instead. User: always " +
+                "show Light color. Battery: show the controller's current charge instead - green " +
+                "above 66%, yellow above 33%, red at or below 33% - updated only when the charge " +
+                "crosses into a different band, to avoid constant chatter with the controller " +
+                "over something that barely changes. Disabled: always off.");
+
+            playerLedLabel = CreateLabel("Player LED", 24, sectionTop + 45, ProfileText, false);
+            page.Controls.Add(playerLedLabel);
+            playerLedSelector = CreateProfileChoiceSelector(114, sectionTop + 39, 140);
+            foreach (var mode in ControllerMappings.PlayerLedModes)
+                playerLedSelector.Items.Add(mode.Label);
+            playerLedSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
+            page.Controls.Add(playerLedSelector);
+            tip_reassign.SetToolTip(playerLedSelector,
+                "The small player-number indicator LEDs - not available on DualShock 4. On " +
+                "DualSense this is a separate LED strip from the lightbar above, so it's " +
+                "independent of the Lighting Mode setting (including Default); DualSense " +
+                "defaults to Disabled here since BetterJoy's own output reports already claimed " +
+                "control of these LEDs as an unavoidable side effect of setting rumble/mic-LED/" +
+                "trigger state, so before this existed they always silently went dark regardless " +
+                "of what the controller would otherwise show. Joy-Con, Pro, SNES, and N64 default " +
+                "to Enabled, matching how they've always behaved.");
+            layout.Advance(72);
 
             layout.Divider();
             layout.Heading("Haptics", "Control controller vibration for this profile.");
@@ -1314,8 +1335,7 @@ namespace BetterJoyForCemu {
 
             layout.Divider();
             layout.Heading("Orientation",
-                "Only applies when this Joy-Con is used solo with no partner - whether it " +
-                "defaults to horizontal (sideways) or vertical (self-paired) grip on connect.");
+                "Only applies when this Joy-Con is used solo with no partner");
             layout.Row(null, btn_default_orientation, "Default orientation", buttonX: 145, buttonWidth: 449);
 
             page.AutoScrollMinSize = new Size(0, layout.Y + 35);
@@ -2012,6 +2032,11 @@ namespace BetterJoyForCemu {
                 int index = lightingModeSelector.SelectedIndex;
                 ControllerMappings.SetOptionValue(SelectedProfileId, "LightingMode",
                     index >= 0 && index < modes.Length ? modes[index].Value : modes[0].Value);
+            } else if (sender == playerLedSelector) {
+                var modes = ControllerMappings.PlayerLedModes;
+                int index = playerLedSelector.SelectedIndex;
+                ControllerMappings.SetOptionValue(SelectedProfileId, "PlayerLedMode",
+                    index >= 0 && index < modes.Length ? modes[index].Value : modes[0].Value);
             }
             UpdateControllerAudioControlState();
         }
@@ -2124,7 +2149,8 @@ namespace BetterJoyForCemu {
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
                 swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
-                lightColorButton, lightingModeSelector, controllerAudioEnabledSelector, controllerAudioVolumeSelector,
+                lightColorButton, lightingModeSelector, playerLedSelector,
+                controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
                 controllerAudioUsbLoopbackSelector, controllerBluetoothMicrophoneSelector,
                 micIndicatorSelector,
@@ -2196,6 +2222,11 @@ namespace BetterJoyForCemu {
                 int lightingModeIndex = Array.FindIndex(ControllerMappings.LightingModes,
                     m => String.Equals(m.Value, lightingMode, StringComparison.OrdinalIgnoreCase));
                 lightingModeSelector.SelectedIndex = Math.Max(0, lightingModeIndex);
+                // DualSense's honest default is Disabled (see PlayerLedEnabled's own comment);
+                // every other type's is Enabled, matching what they've always actually done.
+                bool playerLedDefaultEnabled = SelectedProfile?.Kind != ControllerKind.DualSense;
+                playerLedSelector.SelectedIndex = ControllerMappings.PlayerLedEnabled(
+                    SelectedProfileId, playerLedDefaultEnabled) ? 1 : 0;
                 string audioMode = ControllerMappings.ControllerAudioMode(SelectedProfileId);
                 controllerAudioEnabledSelector.SelectedIndex =
                     audioMode == ControllerMappings.ModeEnable ? 0 :
@@ -2485,6 +2516,13 @@ namespace BetterJoyForCemu {
             bool hasConfigurableLight = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
+            // Player LED applies to DualSense (DualSenseController.SetLEDByPlayerNum) and every
+            // Nintendo-protocol device - Joy-Con, Pro, SNES, N64 (NintendoController's own
+            // override, shared by all of them) - everything except DualShock4, which doesn't get
+            // one here even though it has physically the same LED strip, since this hasn't been
+            // implemented for it.
+            bool hasPlayerLed = selected != null &&
+                selected.Kind != ControllerKind.DualShock4;
             // These controls intentionally share one occupied row. Unlike the capability
             // controls below, swapping them does not leave an unexplained layout gap.
             if (lightColorLabel != null)
@@ -2496,6 +2534,12 @@ namespace BetterJoyForCemu {
             if (lightingModeSelector != null) {
                 lightingModeSelector.Visible = hasConfigurableLight;
                 lightingModeSelector.Enabled = hasConfigurableLight;
+            }
+            if (playerLedLabel != null)
+                playerLedLabel.Visible = hasPlayerLed;
+            if (playerLedSelector != null) {
+                playerLedSelector.Visible = hasPlayerLed;
+                playerLedSelector.Enabled = hasPlayerLed;
             }
             if (homeLedCheckBox != null)
                 homeLedCheckBox.Visible = !hasConfigurableLight;

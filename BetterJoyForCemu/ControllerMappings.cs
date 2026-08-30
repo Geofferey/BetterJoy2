@@ -44,8 +44,13 @@ namespace BetterJoyForCemu {
         public const string MicIndicatorModeInverted = "inverted";
         public const string MicIndicatorModeEnabled = "enabled";
         public const string MicIndicatorModeEnabledWhileDisabled = "enabled_while_disabled";
+        // Default: BetterJoy never sends a lighting command at all for this profile - see
+        // Program.cs's ApplyControllerProfileLighting. Disabled: same forced-black output as the
+        // LightingOff runtime toggle, but as a persistent saved mode instead.
+        public const string LightingModeDefault = "default";
         public const string LightingModeUser = "user";
         public const string LightingModeBattery = "battery";
+        public const string LightingModeDisabled = "disabled";
 
         // Single source of truth for every "cycle through the modes of a dropdown" binding
         // (lt_haptics/rt_haptics/toggle_haptics) as well as the dropdowns themselves
@@ -61,7 +66,19 @@ namespace BetterJoyForCemu {
             (RumbleModeDisableWithGyro, "Disable with gyro"),
         };
         public static readonly (string Value, string Label)[] LightingModes = {
-            (LightingModeUser, "User"), (LightingModeBattery, "Battery"),
+            (LightingModeDefault, "Default"), (LightingModeUser, "User"),
+            (LightingModeBattery, "Battery"), (LightingModeDisabled, "Disabled"),
+        };
+        // The player-number indicator LEDs - DualSense's small ones below the touchpad
+        // (DualSenseController.SetLEDByPlayerNum) and Joy-Con/Pro's SL/SR-adjacent ones
+        // (NintendoController.SetLEDByPlayerNum). See PlayerLedEnabled's own comment for why the
+        // unset/never-touched default differs by controller family instead of one dropdown
+        // default applying everywhere: DualSense's have always been silently forced off (an
+        // unintended side effect of WriteRetainedRumbleAndTriggerState's own valid_flag1 byte
+        // claiming control of this field before this dropdown existed), while Nintendo
+        // controllers have always shown them.
+        public static readonly (string Value, string Label)[] PlayerLedModes = {
+            (ModeDisable, "Disabled"), (ModeEnable, "Enabled"),
         };
 
         // Shared by every mode-cycling binding - advances from whichever entry matches current
@@ -111,6 +128,7 @@ namespace BetterJoyForCemu {
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
             "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "LightingOff", "LightingMode",
+            "PlayerLedMode",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
             "GyroStickAxisXLeft", "GyroStickAxisXRight",
@@ -485,11 +503,30 @@ namespace BetterJoyForCemu {
             return MicIndicatorModeEnabled;
         }
 
+        // Shared by DualSense and Joy-Con/Pro (NintendoController.SetLEDByPlayerNum,
+        // DualSenseController.SetLEDByPlayerNum) - one setting, but their honest historical
+        // defaults are opposite: Nintendo controllers have always shown player-number LEDs
+        // unconditionally, while DualSense's have always been silently forced off as an
+        // unintended side effect of unrelated output writes (see PlayerLedModes' own comment).
+        // defaultEnabled lets each caller preserve its own real prior behavior for a profile that
+        // has never touched this dropdown, rather than picking one default that regresses the
+        // other family.
+        public static bool PlayerLedEnabled(string profileId, bool defaultEnabled) {
+            string value = OptionValue(profileId, "PlayerLedMode");
+            return String.IsNullOrEmpty(value) ? defaultEnabled : value == ModeEnable;
+        }
+
         public static string LightingMode(string profileId) {
             string value = OptionValue(profileId, "LightingMode");
-            return String.Equals(value, LightingModeBattery, StringComparison.OrdinalIgnoreCase)
-                ? LightingModeBattery
-                : LightingModeUser;
+            // Unset/unrecognized falls back to User, matching every profile's behavior before
+            // Default/Disabled existed - only an explicit choice opts into either of those.
+            if (String.Equals(value, LightingModeBattery, StringComparison.OrdinalIgnoreCase))
+                return LightingModeBattery;
+            if (String.Equals(value, LightingModeDefault, StringComparison.OrdinalIgnoreCase))
+                return LightingModeDefault;
+            if (String.Equals(value, LightingModeDisabled, StringComparison.OrdinalIgnoreCase))
+                return LightingModeDisabled;
+            return LightingModeUser;
         }
 
         // Builds the per-mode Start/Secondary/Strength key for one trigger side - e.g.

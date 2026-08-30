@@ -45,6 +45,11 @@ namespace BetterJoyForCemu {
         private byte lightbarRed;
         private byte lightbarGreen;
         private byte lightbarBlue = 255;
+        // The small player-number indicator LEDs below the touchpad - physically separate from
+        // the RGB lightbar above but packed into the same output report byte range (see
+        // SendDualSenseLightbar/WriteRetainedRumbleAndTriggerState). 0 (all off) by default,
+        // matching PlayerLedModes' own Disabled default - see SetLEDByPlayerNum.
+        private byte currentPlayerLeds;
         // Every DualSense HID write is serialized here. Bluetooth speaker audio uses the same
         // physical output endpoint as lightbar and rumble state, so those states are folded into
         // the audio carrier while streaming instead of allowing independent reports to collide.
@@ -459,6 +464,45 @@ namespace BetterJoyForCemu {
                     SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
                     lightbarUpdatePending = false;
                 }
+            }
+        }
+
+        // Sony's own player-LED convention (the player_ids table in the Linux kernel's
+        // hid-playstation.c dualsense_set_player_leds) - one of 5 patterns for the 5 small LEDs
+        // below the touchpad, growing from a single center LED for player 1 up to all five lit
+        // for player 5+. Same role as NintendoController.SetLEDByPlayerNum (called from the same
+        // RequestLEDUpdate plumbing whenever PadId changes), just Sony's own bit layout instead
+        // of Joy-Con's.
+        private static readonly byte[] PlayerLedPatterns = {
+            0x04, // player 1: center LED only               - BIT(2)
+            0x0A, // player 2: two LEDs either side of center - BIT(3)|BIT(1)
+            0x15, // player 3: three LEDs                     - BIT(4)|BIT(2)|BIT(0)
+            0x1B, // player 4: four LEDs                      - BIT(4)|BIT(3)|BIT(1)|BIT(0)
+            0x1F, // player 5+: all five LEDs
+        };
+
+        public override void SetLEDByPlayerNum(int id) {
+            // false: before this dropdown existed, DualSense's player LEDs were always silently
+            // off (see PlayerLedEnabled's own comment) - unlike Joy-Con/Pro, an unset profile
+            // should not suddenly start lighting them.
+            byte desired = ControllerMappings.PlayerLedEnabled(
+                    ControllerMappings.ProfileIdFor(this), false)
+                ? PlayerLedPatterns[Math.Max(0, Math.Min(PlayerLedPatterns.Length - 1, id))]
+                : (byte)0;
+
+            lock (outputReportLock) {
+                if (currentPlayerLeds == desired)
+                    return;
+
+                currentPlayerLeds = desired;
+                bluetoothOutputStateDirty = true;
+                // Reuses the exact same "not yet known, retry once ReceiveRaw confirms transport"
+                // path SetLightColor already relies on - SendDualSenseLightbar publishes both the
+                // lightbar color and currentPlayerLeds together in one report either way.
+                if (lightbarTransportKnown)
+                    SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
+                else
+                    lightbarUpdatePending = true;
             }
         }
 
@@ -1904,6 +1948,12 @@ namespace BetterJoyForCemu {
             report[commonOffset + 3] = leftMotor;
             WriteMicrophoneMuteState(report, commonOffset, microphoneMuted);
             WriteAdaptiveTriggerState(report, commonOffset, true);
+            // 0x55 above already includes bit 4 (DS_OUTPUT_VALID_FLAG1_PLAYER_INDICATOR_CONTROL_
+            // ENABLE), claiming authority over player_leds on every report through this shared
+            // path (rumble, adaptive triggers) the same way it already does for mute_button_led -
+            // omitting this write would silently blank the player-number LEDs on the next rumble
+            // or trigger update, the same class of bug that motivated writing mute_button_led here.
+            report[commonOffset + 43] = currentPlayerLeds;
             report[commonOffset + 44] = lightbarRed;
             report[commonOffset + 45] = lightbarGreen;
             report[commonOffset + 46] = lightbarBlue;
@@ -2076,12 +2126,15 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Sets the DualSense's lightbar to the profile's solid RGB color via an output report.
-        // Layout matches SendDualSenseRumble; rumble flags are left at "not in use" since this
-        // report isn't rumble-related. RGB offsets (45/46/47 USB, 46/47/48 BT) and the fact that
-        // no separate
-        // "enable lightbar" bit is needed beyond the same 0x55 feature-flags byte the rumble report
-        // already sets - both confirmed via DS4Windows's DualSenseDevice.cs.
+        // Sets the DualSense's lightbar to the profile's solid RGB color, plus the current player-
+        // number indicator LEDs (currentPlayerLeds - see SetLEDByPlayerNum), via one output
+        // report. Layout matches SendDualSenseRumble; rumble flags are left at "not in use" since
+        // this report isn't rumble-related. RGB offsets (45/46/47 USB, 46/47/48 BT) and the fact
+        // that no separate "enable lightbar" bit is needed beyond the same 0x55 feature-flags byte
+        // the rumble report already sets - both confirmed via DS4Windows's DualSenseDevice.cs.
+        // player_leds sits at USB offset 44 / BT commonOffset+43 (one byte before lightbar red) -
+        // confirmed against the Linux kernel's hid-playstation.c dualsense_output_report_common
+        // struct, cross-checked against this same function's own already-working RGB offsets.
         private void SendDualSenseLightbar(byte red, byte green, byte blue) {
             lock (outputReportLock) {
                 bluetoothOutputStateDirty = true;
@@ -2093,6 +2146,7 @@ namespace BetterJoyForCemu {
                     buf[1] = DualSenseValidRightTrigger | DualSenseValidLeftTrigger;
                     buf[2] = 0x55;
                     WriteAdaptiveTriggerState(buf, 1, true);
+                    buf[44] = currentPlayerLeds;
                     buf[45] = red;
                     buf[46] = green;
                     buf[47] = blue;
@@ -2116,7 +2170,11 @@ namespace BetterJoyForCemu {
 
                 byte[] color = CreateDualSenseBluetoothLightbarReport();
                 const int colorCommonOffset = 3;
-                color[colorCommonOffset + 1] = 0x04; // lightbar control enable
+                // 0x04 lightbar control enable | 0x10 player-indicator control enable
+                // (DS_OUTPUT_VALID_FLAG1_PLAYER_INDICATOR_CONTROL_ENABLE) - without the latter the
+                // controller ignores player_leds below on this particular report.
+                color[colorCommonOffset + 1] = 0x04 | 0x10;
+                color[colorCommonOffset + 43] = currentPlayerLeds;
                 color[colorCommonOffset + 44] = red;
                 color[colorCommonOffset + 45] = green;
                 color[colorCommonOffset + 46] = blue;

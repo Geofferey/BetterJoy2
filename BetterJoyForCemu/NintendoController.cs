@@ -108,6 +108,16 @@ namespace BetterJoyForCemu {
         public override void SetLEDByPlayerNum(int id) {
             if (!UsesNintendoProtocol)
                 return;
+
+            // true: Joy-Con/Pro have always shown player-number LEDs unconditionally before this
+            // dropdown existed (see ControllerMappings.PlayerLedEnabled's own comment) - unlike
+            // DualSense, a profile that's never touched this setting should keep showing them.
+            if (!ControllerMappings.PlayerLedEnabled(ControllerMappings.ProfileIdFor(this), true)) {
+                LED = 0x0;
+                SetPlayerLED(LED);
+                return;
+            }
+
             if (id > 3) {
                 // No support for any higher than 3 (4 Joycons/Controllers supported in the application normally)
                 id = 3;

@@ -267,17 +267,35 @@ namespace BetterJoyForCemu {
 
         private static void ApplyControllerProfileLighting(Controller controller,
                                                             string profileId) {
+            // Player LED (the small player-number indicator LEDs, DualSense only) is a separate
+            // physical LED strip from the RGB lightbar below, with its own independent Enable/
+            // Disable setting - deliberately not gated behind LightingMode/Default, so choosing
+            // hands-off for the lightbar doesn't also silently disable this. RequestLEDUpdate
+            // dedupes internally (DualSenseController.SetLEDByPlayerNum) so calling it on every
+            // reconciliation pass is cheap when nothing actually changed.
+            if (controller is DualSenseController dualSensePlayerLed)
+                dualSensePlayerLed.RequestLEDUpdate(dualSensePlayerLed.PadId);
+
+            string lightingMode = ControllerMappings.LightingMode(profileId);
+            // Default means exactly that: BetterJoy never sends a single lighting command for
+            // this profile, not the Home LED, not the lightbar, not even a toggle_lighting press -
+            // for whoever wants another program (or the controller's own power-on default) to own
+            // lighting instead of having it fought over every reconciliation pass.
+            if (lightingMode == ControllerMappings.LightingModeDefault)
+                return;
+
             controller.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
 
             byte red, green, blue;
             // LightingOff (toggle_lighting binding) never touches the user's actual LightColor
             // setting or Lighting mode - it's a separate flag applied on top of whichever of those
             // is otherwise in effect, so what was there before is always still there to go back to
-            // the instant it's toggled back on, nothing to save/restore.
-            if (ControllerMappings.BoolOption(profileId, "LightingOff")) {
+            // the instant it's toggled back on, nothing to save/restore. Disabled is the same
+            // black output but as a persistent saved mode instead of a runtime toggle.
+            if (lightingMode == ControllerMappings.LightingModeDisabled ||
+                    ControllerMappings.BoolOption(profileId, "LightingOff")) {
                 red = green = blue = 0;
-            } else if (ControllerMappings.LightingMode(profileId) ==
-                    ControllerMappings.LightingModeBattery) {
+            } else if (lightingMode == ControllerMappings.LightingModeBattery) {
                 (red, green, blue) = BatteryLightColor(controller.batteryPercent);
             } else {
                 ControllerMappings.GetLightColor(profileId, out red, out green, out blue);
