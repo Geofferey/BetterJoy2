@@ -1131,6 +1131,10 @@ namespace BetterJoyForCemu {
         // updates per second stays smooth while avoiding one HID lighting write for every 250 Hz
         // touch report (especially important when Bluetooth audio is sharing the controller).
         protected const double TouchpadColorWheelUpdatesPerSecond = 30.0;
+        // A fingertip's reported centroid cannot reliably reach the touch sensor's mathematical
+        // perimeter. Pull full saturation inward so pure red/green/blue are comfortably
+        // selectable while keeping the center-to-edge progression and hue angles unchanged.
+        protected const double TouchpadColorWheelSaturationScale = 1.35;
 
         protected static TouchContact ReadPackedTouchContact(byte[] report, int offset) {
             byte status = report[offset];
@@ -1228,7 +1232,8 @@ namespace BetterJoyForCemu {
             double hue = Math.Atan2(y, x) * 180.0 / Math.PI;
             if (hue < 0.0)
                 hue += 360.0;
-            double saturation = Math.Min(1.0, Math.Sqrt(x * x + y * y));
+            double saturation = Math.Min(1.0,
+                Math.Sqrt(x * x + y * y) * TouchpadColorWheelSaturationScale);
             HsvToRgb(hue, saturation, out byte red, out byte green, out byte blue);
 
             if (!touchpadColorWheelHasSelection || red != touchpadColorWheelRed ||
