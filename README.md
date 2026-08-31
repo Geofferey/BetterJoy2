@@ -122,6 +122,16 @@ This fork (BetterJoy²) builds heavily on the original BetterJoy - see
   percentage/status, Bluetooth disconnect with a configurable hold-to-power-off duration,
   headphone-jack detection and routing, gyro recentering, and controller-specific calibration
   remain attached to the physical device rather than being reduced to generic remapping concepts.
+* **Native OpenRGB SDK server and lighting effects** - BetterJoy² can present itself as one stable
+  OpenRGB gamepad on the loopback-only `127.0.0.1:6743` endpoint. Add it to OpenRGB's SDK Client
+  list, or point a compatible lighting application such as Artemis directly at BetterJoy² without
+  requiring OpenRGB to be installed or running. The virtual device remains present while physical
+  controllers connect and disconnect, then fans colors and effects out to every connected
+  DualShock 4 or DualSense profile using Lighting Mode: OpenRGB. Direct color streaming, stepped
+  **Rainbow Puke**, customizable smooth **Color Shift**, and per-controller **Battery** gradient
+  modes expose their real speed, palette, and brightness controls through the standard OpenRGB UI.
+  Optional caching preserves the last color, active effect, and its parameters across service or
+  machine restarts.
 * **DualSense adaptive triggers** - assign independent, profile-scoped L2 and R2 resistance,
   weapon-wall, or vibration effects, each with its own separate start/secondary/strength values so
   switching effects never overwrites another effect's tuning. Effects work over USB or Bluetooth
@@ -155,6 +165,56 @@ This fork (BetterJoy²) builds heavily on the original BetterJoy - see
   windows, the Windows sign-in screen, and service/session boundaries where the standard approach
   can't reach.
 * **Controller blacklist** - block specific controllers from being auto-added over USB/Bluetooth.
+
+## OpenRGB integration and lighting effects
+
+BetterJoy² includes a native implementation of the OpenRGB SDK protocol. This is not a
+BetterJoy-specific plugin bridge: OpenRGB and other applications that already speak the OpenRGB
+protocol can connect to BetterJoy² as though it were an RGB device server.
+
+The built-in server deliberately exposes one fixed **BetterJoy2** gamepad rather than adding and
+removing a device for every controller connection. A color or effect is applied to all currently
+connected DualShock 4 and DualSense profiles whose lighting mode is **OpenRGB**; a controller that
+connects later immediately receives the current state. Keeping the advertised device stable also
+prevents downstream lighting applications from losing it when a controller disconnects or appears
+after startup.
+
+### Connect through OpenRGB
+
+1. In BetterJoy², open **Global options** and set **OpenRGB SDK server** to **Enabled** or
+   **Enabled with cache**.
+2. On each controller profile that should participate, open **Device behavior** and set its
+   lighting **Mode** to **OpenRGB**.
+3. In OpenRGB, open **Settings > SDK Client**, add `127.0.0.1` with port `6743`, and save the
+   connection. This is BetterJoy²'s endpoint, separate from OpenRGB's own default server on port
+   `6742`.
+4. Select the **BetterJoy2** gamepad in OpenRGB and choose a color or one of its effect modes.
+
+OpenRGB remembers saved SDK Client connections and reconnects on launch, allowing the BetterJoy2
+device to be present before downstream OpenRGB consumers inspect the device list. **Enabled with
+cache** additionally makes BetterJoy² remember the last direct color, selected effect, and effect
+settings across restarts.
+
+### Connect a compatible application directly
+
+An application or plugin that accepts a custom OpenRGB SDK address can connect straight to
+`127.0.0.1:6743`. For example, Artemis can use its OpenRGB plugin with BetterJoy²'s address and port
+instead of OpenRGB's default endpoint. In that arrangement BetterJoy² is the OpenRGB-compatible
+server; the OpenRGB application itself is not required.
+
+### Built-in modes
+
+| Mode | Behavior | OpenRGB controls |
+| --- | --- | --- |
+| **Direct** | Applies static colors or real-time color frames sent by any connected SDK client. | Color or application-driven animation |
+| **Rainbow Puke** | Steps through evenly spaced, full-saturation hues for a deliberately chunky rainbow cycle. | Speed and 2–8 color steps |
+| **Color Shift** | Smoothly crossfades through the exact custom color swatches selected in OpenRGB. | Speed and 2–8 editable colors |
+| **Battery** | Gives each eligible controller its own continuous red-to-yellow-to-green color based on its actual charge. | Brightness |
+
+BetterJoy² also retains its raw-device OpenRGB path. Lighting Mode: **OpenRGB** leaves ordinary
+profile lighting hands-off and can ask a locally running OpenRGB server on its default port `6742`
+to rescan when a controller becomes visible. The raw-device path and BetterJoy²'s SDK server can be
+used independently or together, depending on which application should own the hardware.
 
 If anyone would like to donate (for whatever reason), [you can do so here](https://www.paypal.me/DavidKhachaturov/5). 
 
