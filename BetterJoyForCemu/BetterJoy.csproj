@@ -201,6 +201,7 @@
     <Compile Include="N64Controller.cs" />
     <Compile Include="MadgwickAHRS.cs" />
     <Compile Include="OpenRgbRescan.cs" />
+    <Compile Include="OpenRgbServer.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>

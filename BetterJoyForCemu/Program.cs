@@ -262,6 +262,11 @@ namespace BetterJoyForCemu {
                     CreateOutputControllers(active);
                 }
                 form.RefreshControllerState();
+                // The OpenRGB SDK server exposes one fixed device regardless of what's connected
+                // (see OpenRgbServer's own comment on why), so there's no device list to notify
+                // about here - just resync any controller that's newly eligible (just connected,
+                // or Lighting Mode just changed to OpenRGB) to whatever color was last set.
+                OpenRgbServer.ApplyCachedColorToEligibleControllers();
             });
         }
 
@@ -1110,6 +1115,8 @@ namespace BetterJoyForCemu {
             server.form = form;
 
             server.Start(IPAddress.Parse(ConfigurationManager.AppSettings["IP"]), Int32.Parse(ConfigurationManager.AppSettings["Port"]));
+
+            OpenRgbServer.SyncEnabledState();
 
             // Global keyboard/mouse hooks need an interactive desktop - fine in GUI mode, but
             // Session 0 (where a Windows Service runs) has none, so this would throw/do nothing

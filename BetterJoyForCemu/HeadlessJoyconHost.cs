@@ -1091,6 +1091,7 @@ namespace BetterJoyForCemu {
                 Config.ReloadSettingsOnly();
                 ControllerMappings.Reload();
                 ConfigurationManager.RefreshSection("appSettings");
+                OpenRgbServer.SyncEnabledState();
 
                 // Program.thirdPartyCons/blacklistedCons are plain Lists a scan pass iterates
                 // directly - rebuilding them (Clear()+AddRange()) outside the scan lock could

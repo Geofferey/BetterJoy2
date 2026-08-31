@@ -14,6 +14,7 @@ namespace BetterJoyForCemu {
                 "UseHidHide", "UnhideOnExit", "AutoCalDebugLogging",
                 "DualSenseDebugLogging", "DualShock4DebugLogging", "DebugLogging", "GyroMouseDebugLogging",
                 "GyroStickDebugLogging", "UseViiperForDualSenseMicrophone",
+                "OpenRgbServerEnabled",
             };
 
         public static bool IsGlobalOption(string key) {

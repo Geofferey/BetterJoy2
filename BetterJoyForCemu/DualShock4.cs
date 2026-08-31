@@ -184,6 +184,10 @@ namespace BetterJoyForCemu {
             }
         }
 
+        public override (byte Red, byte Green, byte Blue) GetLightColor() {
+            return (lightbarRed, lightbarGreen, lightbarBlue);
+        }
+
         // If the same DS4 appears over USB while its Bluetooth HID connection is still present,
         // the shared MAC-based duplicate retirement stops BetterJoy from using the old entry.
         // Drop the underlying radio link as well so Windows does not rediscover that stale entry

@@ -42,6 +42,7 @@ namespace BetterJoyForCemu {
         private const int DualSenseMaxReportLen = 78; // Bluetooth report length; USB (64) fits the same buffer
         private bool lightbarTransportKnown;
         private bool lightbarUpdatePending = true;
+        private bool openRgbLightbarUpdatePending;
         private byte lightbarRed;
         private byte lightbarGreen;
         private byte lightbarBlue = 255;
@@ -456,6 +457,15 @@ namespace BetterJoyForCemu {
         }
 
         public override void SetLightColor(byte red, byte green, byte blue) {
+            SetTrackedLightColor(red, green, blue, false);
+        }
+
+        public override void SetOpenRgbLightColor(byte red, byte green, byte blue) {
+            SetTrackedLightColor(red, green, blue, true);
+        }
+
+        private void SetTrackedLightColor(byte red, byte green, byte blue,
+                                          bool fromOpenRgbServer) {
             lock (outputReportLock) {
                 // Profile reconciliation reapplies controller options on every scan pass. Once
                 // this exact color has reached an initialized transport, another 0x31 report is
@@ -471,11 +481,26 @@ namespace BetterJoyForCemu {
                 lightbarBlue = blue;
                 lightbarUpdatePending = true;
                 bluetoothOutputStateDirty = true;
+                if (fromOpenRgbServer)
+                    openRgbLightbarUpdatePending = true;
                 if (lightbarTransportKnown) {
-                    SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
-                    lightbarUpdatePending = false;
+                    bool mediaOwnsOutput = !isUSB &&
+                        (bluetoothAudioStreaming || bluetoothMicrophoneStreaming ||
+                         bluetoothMicrophoneDisablePending ||
+                         bluetoothMicrophoneControlPending);
+                    if (!mediaOwnsOutput) {
+                        SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue,
+                            fromOpenRgbServer);
+                        lightbarUpdatePending = false;
+                        if (fromOpenRgbServer)
+                            openRgbLightbarUpdatePending = false;
+                    }
                 }
             }
+        }
+
+        public override (byte Red, byte Green, byte Blue) GetLightColor() {
+            return (lightbarRed, lightbarGreen, lightbarBlue);
         }
 
         // Sony's own player-LED convention (the player_ids table in the Linux kernel's
@@ -643,7 +668,11 @@ namespace BetterJoyForCemu {
                 // issue it here at all while Default is active. lightbarUpdatePending is
                 // deliberately left set (not cleared) so switching the profile away from Default
                 // later, even without a reconnect, still applies its assigned color once.
-                if (lightbarUpdatePending && !LightingModeIsHandsOff()) {
+                if (lightbarUpdatePending && openRgbLightbarUpdatePending) {
+                    SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue, true);
+                    lightbarUpdatePending = false;
+                    openRgbLightbarUpdatePending = false;
+                } else if (lightbarUpdatePending && !LightingModeIsHandsOff()) {
                     long lightbarNow = Stopwatch.GetTimestamp();
                     if (!connectionLightFlashStarted) {
                         // Confirm every new USB or Bluetooth connection with a short blue light,
@@ -1589,6 +1618,9 @@ namespace BetterJoyForCemu {
                     if (submitted) {
                         bluetoothOutputStateDirty = false;
                         adaptiveTriggerUpdatePending = false;
+                        if (openRgbLightbarUpdatePending)
+                            lightbarUpdatePending = false;
+                        openRgbLightbarUpdatePending = false;
                     } else {
                         // Building a carrier reserves both protocol sequence values. A saturated
                         // native pool did not publish it, so preserve contiguous wire sequences for
@@ -1771,6 +1803,14 @@ namespace BetterJoyForCemu {
                     unchecked((byte)~DualSenseValidLightingFlag1);
                 report[BtAudioStateOffset + 38] &=
                     unchecked((byte)~DualSenseValidLightingFlag2);
+                if (openRgbLightbarUpdatePending) {
+                    // Publish an explicit OpenRGB transition through the media carrier that owns
+                    // Bluetooth output, without claiming player indicators or LED brightness.
+                    report[BtAudioStateOffset + 1] |= DualSenseValidLightbarControl;
+                    report[BtAudioStateOffset + 38] |=
+                        DualSenseValidLightbarSetupControl;
+                    report[BtAudioStateOffset + 41] = 0x02;
+                }
             }
 
             if (bluetoothOutputStateDirty || currentLeftMotor != 0 || currentRightMotor != 0) {
@@ -2179,7 +2219,8 @@ namespace BetterJoyForCemu {
         // player_leds sits at USB offset 44 / BT commonOffset+43 (one byte before lightbar red) -
         // confirmed against the Linux kernel's hid-playstation.c dualsense_output_report_common
         // struct, cross-checked against this same function's own already-working RGB offsets.
-        private void SendDualSenseLightbar(byte red, byte green, byte blue) {
+        private void SendDualSenseLightbar(byte red, byte green, byte blue,
+                                           bool fromOpenRgbServer = false) {
             lock (outputReportLock) {
                 bluetoothOutputStateDirty = true;
                 bool bt = !isUSB;
@@ -2188,7 +2229,7 @@ namespace BetterJoyForCemu {
                 // desired state as pending so leaving Default can apply it without reconnecting,
                 // but do not publish any LED command while Default is active.
                 bool lightingDefault = LightingModeIsHandsOff();
-                if (lightingDefault) {
+                if (lightingDefault && !fromOpenRgbServer) {
                     lightbarUpdatePending = true;
                     return;
                 }
@@ -2197,7 +2238,9 @@ namespace BetterJoyForCemu {
                     byte[] buf = new byte[len];
                     buf[0] = 0x02;
                     buf[1] = DualSenseValidRightTrigger | DualSenseValidLeftTrigger;
-                    buf[2] = 0x55;
+                    buf[2] = fromOpenRgbServer
+                        ? (byte)(0x55 & ~DualSenseValidPlayerIndicatorControl)
+                        : (byte)0x55;
                     WriteAdaptiveTriggerState(buf, 1, true);
                     buf[44] = currentPlayerLeds;
                     buf[45] = red;
@@ -2227,9 +2270,10 @@ namespace BetterJoyForCemu {
                 // 0x04 lightbar control enable | 0x10 player-indicator control enable
                 // (DS_OUTPUT_VALID_FLAG1_PLAYER_INDICATOR_CONTROL_ENABLE) - without the latter the
                 // controller ignores player_leds below on this particular report.
-                color[colorCommonOffset + 1] =
-                    DualSenseValidLightbarControl |
-                    DualSenseValidPlayerIndicatorControl;
+                color[colorCommonOffset + 1] = fromOpenRgbServer
+                    ? DualSenseValidLightbarControl
+                    : (byte)(DualSenseValidLightbarControl |
+                             DualSenseValidPlayerIndicatorControl);
                 color[colorCommonOffset + 43] = currentPlayerLeds;
                 color[colorCommonOffset + 44] = red;
                 color[colorCommonOffset + 45] = green;

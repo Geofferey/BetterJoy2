@@ -680,6 +680,21 @@ namespace BetterJoyForCemu {
         // one profile color generically without importing device protocol details.
         public virtual void SetLightColor(byte red, byte green, byte blue) { }
 
+        // Explicit color received through BetterJoy's OpenRGB SDK server. Most controllers can
+        // use their normal lightbar path; DualSense overrides this because its OpenRGB profile is
+        // otherwise intentionally hands-off and its Bluetooth media carrier owns output state.
+        public virtual void SetOpenRgbLightColor(byte red, byte green, byte blue) {
+            SetLightColor(red, green, blue);
+        }
+
+        // Paired getter for SetLightColor - lets a caller (OpenRgbServer's device descriptor)
+        // report the actual current color generically, without needing each controller type's
+        // own private lightbarRed/Green/Blue tracking fields. Black for controllers without
+        // configurable RGB lighting, matching SetLightColor's own no-op default.
+        public virtual (byte Red, byte Green, byte Blue) GetLightColor() {
+            return (0, 0, 0);
+        }
+
 
         // The canonical per-report button state every subclass's report parser populates (see
         // the Button enum above) - protected, not public, since nothing outside a Controller

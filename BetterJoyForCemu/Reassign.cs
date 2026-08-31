@@ -1476,6 +1476,25 @@ namespace BetterJoyForCemu {
             layout.Advance(50);
 
             layout.Divider();
+            layout.Heading("OpenRGB SDK server",
+                "Expose a fixed BetterJoy2 device to OpenRGB - always present, loopback-only.");
+            sectionTop = layout.Y;
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Enable OpenRGB SDK server", 24, sectionTop, "OpenRgbServerEnabled"));
+            tip_reassign.SetToolTip(globalOptionCheckBoxes["OpenRgbServerEnabled"],
+                "Listens on 127.0.0.1:6743 only - never any other network interface. Point " +
+                "OpenRGB's own Settings > SDK Client tab at that address and OpenRGB will pick " +
+                "it up automatically on every launch from then on, before any other program " +
+                "queries OpenRGB's device list. Always exposes exactly one fixed device " +
+                "regardless of what's connected - a color set there applies to whichever " +
+                "controller(s) currently have Lighting Mode: OpenRGB, so nothing ever appears " +
+                "or disappears from OpenRGB's list mid-session. Coexists with the OpenRGB " +
+                "Lighting Mode's existing rescan-on-connect behavior (which instead needs the " +
+                "controller's raw HID device exposed to OpenRGB directly) - enable either, both, " +
+                "or neither depending on your setup.");
+            layout.Advance(50);
+
+            layout.Divider();
             layout.Heading("Microphone backend",
                 "Which Windows device the DualSense's built-in Bluetooth microphone is presented as");
             sectionTop = layout.Y;
