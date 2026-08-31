@@ -1952,18 +1952,32 @@ namespace BetterJoyForCemu {
         // one extra rule the user asked for explicitly: it only counts if the modifier's own
         // buttons were ALL already down before anything else currently held - joining an
         // in-progress press doesn't retroactively turn it into "the modifier led this chord".
-        // Reuses buttons_down_timestamp the same way IsComboHeld's own ordering does.
+        // Reuses buttons_down_timestamp the same way IsComboHeld's own ordering does. Like every
+        // other bind captured by Reassign, "," separates alternatives; each alternative must be
+        // evaluated independently so adding a second Modifier bind cannot turn the entire value
+        // into one malformed joy_ index and break gyro-mouse movement after activation.
         protected bool IsModifierHeld() {
-            string combo = MappingValue("modifier");
-            if (String.IsNullOrEmpty(combo) || combo == "0")
+            string mapping = MappingValue("modifier");
+            if (String.IsNullOrEmpty(mapping) || mapping == "0")
                 return false;
 
+            foreach (string alternative in mapping.Split(',')) {
+                if (IsSingleModifierHeld(alternative))
+                    return true;
+            }
+            return false;
+        }
+
+        private bool IsSingleModifierHeld(string combo) {
             ulong comboButtonMask = 0;
             long latestModifierDownTimestamp = long.MinValue;
             foreach (string part in combo.Split('+')) {
                 if (!part.StartsWith("joy_"))
                     return false; // Modifier is controller-button-only - see Reassign.cs's menu.
-                int i = Int32.Parse(part.Substring(4));
+                int i;
+                if (!Int32.TryParse(part.Substring(4), out i) ||
+                        i < 0 || i >= ButtonCount)
+                    return false;
                 bool heldHere = buttons[i];
                 bool heldByPartner = other != null && other != this && other.buttons[i];
                 if (!(heldHere || heldByPartner))
