@@ -136,11 +136,13 @@ namespace BetterJoyForCemu {
         private const byte DualSenseValidLightingFlag2 =
             DualSenseValidLedBrightnessControl | DualSenseValidLightbarSetupControl;
         private const byte DualSensePowerSaveMicMute = 0x10; // DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE
-        private const int BtAudioPrimeFrameCount = 8;
-        // Bound latency as well as memory. With the capture/media clocks matched this remains near
-        // the eight-frame prime; twelve frames leaves jitter margin but can never hide ~1 second
-        // of stale audio the way the former 64-frame ceiling could.
-        private const int BtAudioMaximumQueuedFrames = 12;
+        // Three frames keep startup latency near 32 ms while still absorbing ordinary capture/IPC
+        // jitter. A transient underrun is handled below by withholding the missing speaker report
+        // instead of inserting a hard-silence Opus packet into otherwise continuous audio.
+        private const int BtAudioPrimeFrameCount = 3;
+        // Bound latency as well as memory without allowing a delayed producer burst to rebuild a
+        // large stale-audio queue behind the low-latency target.
+        private const int BtAudioMaximumQueuedFrames = 6;
         private const double BtAudioFrameCadenceMs = 10.0 + (2.0 / 3.0);
         private static readonly byte[] DefaultBluetoothAudioState = {
             0xFD, 0xF7, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
@@ -184,6 +186,9 @@ namespace BetterJoyForCemu {
         private double bluetoothAudioLastDiagnosticMs;
         private long bluetoothAudioSyntheticSilenceFrames;
         private long bluetoothAudioLastSummarySyntheticSilenceFrames;
+        private long bluetoothAudioSpeakerStarvations;
+        private long bluetoothAudioLastSummarySpeakerStarvations;
+        private bool bluetoothAudioSpeakerStarved;
         private int bluetoothAudioSendsSinceSummary;
         private int bluetoothAudioMinimumPending;
         private int bluetoothAudioMaximumPending;
@@ -1403,6 +1408,9 @@ namespace BetterJoyForCemu {
             bluetoothAudioLastDiagnosticMs = 0;
             bluetoothAudioSyntheticSilenceFrames = 0;
             bluetoothAudioLastSummarySyntheticSilenceFrames = 0;
+            bluetoothAudioSpeakerStarvations = 0;
+            bluetoothAudioLastSummarySpeakerStarvations = 0;
+            bluetoothAudioSpeakerStarved = false;
             bluetoothAudioSendsSinceSummary = 0;
             bluetoothAudioMinimumPending = Int32.MaxValue;
             bluetoothAudioMaximumPending = 0;
@@ -1587,8 +1595,25 @@ namespace BetterJoyForCemu {
                 if (nowMs < bluetoothAudioNextSendDeadlineMs)
                     return;
 
-                bool syntheticSilence = !speakerActive || !bluetoothSpeakerPrimed ||
+                // The original low-latency transport simply withheld a speaker report when a
+                // real frame was momentarily unavailable. Replacing that missing report with an
+                // encoded all-zero Opus frame creates an abrupt live-audio -> digital-silence ->
+                // live-audio transition, heard as a short blip on real hardware. Let the
+                // controller bridge the missing presentation interval and send the next real frame
+                // immediately when it arrives. Mic-only mode still needs encoded silence because
+                // its inbound microphone lane shares and depends on this outbound media clock.
+                bool speakerStarved = speakerActive && bluetoothSpeakerPrimed &&
                     bluetoothAudioPending.Count == 0;
+                if (speakerStarved) {
+                    if (!bluetoothAudioSpeakerStarved) {
+                        bluetoothAudioSpeakerStarved = true;
+                        bluetoothAudioSpeakerStarvations++;
+                    }
+                    return;
+                }
+                bluetoothAudioSpeakerStarved = false;
+
+                bool syntheticSilence = !speakerActive || !bluetoothSpeakerPrimed;
                 byte[] frame = syntheticSilence
                     ? bluetoothAudioSilenceFrame
                     : bluetoothAudioPending[0];
@@ -1662,6 +1687,8 @@ namespace BetterJoyForCemu {
                         ref bluetoothAudioFramesEnqueued, 0);
                     long intervalSilence = bluetoothAudioSyntheticSilenceFrames -
                         bluetoothAudioLastSummarySyntheticSilenceFrames;
+                    long intervalStarvations = bluetoothAudioSpeakerStarvations -
+                        bluetoothAudioLastSummarySpeakerStarvations;
                     AudioDebugLog.Write("DualSenseSend", "sends=" +
                         bluetoothAudioSendsSinceSummary +
                         " maxGapMs=" + bluetoothAudioMaximumSendGapMs.ToString("F2") +
@@ -1677,6 +1704,8 @@ namespace BetterJoyForCemu {
                         (enqueueGapTicks * 1000.0 / Stopwatch.Frequency).ToString("F2") +
                         " silence=" + intervalSilence + "/" +
                         bluetoothAudioSyntheticSilenceFrames +
+                        " speakerStarved=" + intervalStarvations + "/" +
+                        bluetoothAudioSpeakerStarvations +
                         (bluetoothAudioWritePool != null
                             ? " hidPending=" + hidStatus.PendingWrites +
                               " hidOldestMs=" + hidStatus.OldestPendingMs.ToString("F2") +
@@ -1689,6 +1718,8 @@ namespace BetterJoyForCemu {
                     bluetoothAudioLastDiagnosticMs = nowMs;
                     bluetoothAudioLastSummarySyntheticSilenceFrames =
                         bluetoothAudioSyntheticSilenceFrames;
+                    bluetoothAudioLastSummarySpeakerStarvations =
+                        bluetoothAudioSpeakerStarvations;
                     bluetoothAudioMaximumSendGapMs = 0;
                     bluetoothAudioMaximumLatenessMs = 0;
                     bluetoothAudioMaximumSubmitMs = 0;
