@@ -136,13 +136,13 @@ namespace BetterJoyForCemu {
         private const byte DualSenseValidLightingFlag2 =
             DualSenseValidLedBrightnessControl | DualSenseValidLightbarSetupControl;
         private const byte DualSensePowerSaveMicMute = 0x10; // DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE
-        // Three frames keep startup latency near 32 ms while still absorbing ordinary capture/IPC
-        // jitter. A transient underrun is handled below by withholding the missing speaker report
+        // Two frames keep startup latency near 21 ms while retaining one frame of capture/IPC
+        // cushion. A transient underrun is handled below by withholding the missing speaker report
         // instead of inserting a hard-silence Opus packet into otherwise continuous audio.
-        private const int BtAudioPrimeFrameCount = 3;
+        private const int BtAudioPrimeFrameCount = 2;
         // Bound latency as well as memory without allowing a delayed producer burst to rebuild a
         // large stale-audio queue behind the low-latency target.
-        private const int BtAudioMaximumQueuedFrames = 6;
+        private const int BtAudioMaximumQueuedFrames = 4;
         private const double BtAudioFrameCadenceMs = 10.0 + (2.0 / 3.0);
         private static readonly byte[] DefaultBluetoothAudioState = {
             0xFD, 0xF7, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
