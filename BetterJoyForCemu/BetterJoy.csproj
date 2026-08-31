@@ -7,7 +7,7 @@
     <ProjectGuid>{1BF709E9-C133-41DF-933A-C9FF3F664C7B}</ProjectGuid>
     <OutputType>WinExe</OutputType>
     <RootNamespace>BetterJoyForCemu</RootNamespace>
-    <AssemblyName>BetterJoyForCemu</AssemblyName>
+    <AssemblyName>BetterJoy2</AssemblyName>
     <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>

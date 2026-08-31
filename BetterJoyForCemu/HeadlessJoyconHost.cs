@@ -22,7 +22,7 @@ namespace BetterJoyForCemu {
     // that has deferred hardware ownership here can still show live controller status and
     // trigger rumble test/join-split/calibration.
     public class HeadlessJoyconHost : IJoyconHost {
-        private const string EventSource = "BetterJoy";
+        private const string EventSource = "BetterJoy2";
 
         private readonly object pipeLock = new object();
         private NamedPipeServerStream pipe;
@@ -1052,7 +1052,7 @@ namespace BetterJoyForCemu {
         // ---------------------------------------------------------------------------------
 
         private static readonly HashSet<string> WatchedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
-            "settings", "BetterJoyForCemu.exe.config", ControllerMappings.FileName,
+            "settings", "BetterJoy2.exe.config", ControllerMappings.FileName,
             "3rdPartyControllers", "BlacklistedControllers",
         };
 

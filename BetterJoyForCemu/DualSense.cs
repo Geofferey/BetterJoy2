@@ -1139,7 +1139,7 @@ namespace BetterJoyForCemu {
 
             bluetoothMicrophoneThread = new Thread(BluetoothMicrophoneWorker) {
                 IsBackground = true,
-                Name = "BetterJoyDualSenseMicrophone"
+                Name = "BetterJoy2DualSenseMicrophone"
             };
             bluetoothMicrophoneThread.Start();
         }

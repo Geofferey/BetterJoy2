@@ -67,10 +67,10 @@ namespace BetterJoyForCemu {
             // notifyIcon
             // 
             this.notifyIcon.BalloonTipText = "Double click the tray icon to maximise!";
-            this.notifyIcon.BalloonTipTitle = "BetterJoy";
+            this.notifyIcon.BalloonTipTitle = "BetterJoy2";
             this.notifyIcon.ContextMenuStrip = this.contextMenu;
             this.notifyIcon.Icon = ((System.Drawing.Icon)(resources.GetObject("notifyIcon.Icon")));
-            this.notifyIcon.Text = "BetterJoy";
+            this.notifyIcon.Text = "BetterJoy2";
             this.notifyIcon.Visible = true;
             this.notifyIcon.MouseDoubleClick += new System.Windows.Forms.MouseEventHandler(this.notifyIcon_MouseDoubleClick);
             // 
@@ -321,7 +321,7 @@ namespace BetterJoyForCemu {
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.MaximizeBox = false;
             this.Name = "MainForm";
-            this.Text = "BetterJoy";
+            this.Text = "BetterJoy2";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.MainForm_FormClosing);
             this.Load += new System.EventHandler(this.MainForm_Load);
             this.Resize += new System.EventHandler(this.MainForm_Resize);

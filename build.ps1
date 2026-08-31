@@ -51,7 +51,7 @@ Write-Host "==> Building $solution (Release|x64)..."
 & $msbuild $solution -p:Configuration=Release -p:Platform=x64 -t:Rebuild -m -v:minimal
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
-Write-Host "==> Build succeeded: BetterJoyForCemu\bin\x64\Release\BetterJoyForCemu.exe"
+Write-Host "==> Build succeeded: BetterJoyForCemu\bin\x64\Release\BetterJoy2.exe"
 
 $iscc = Find-Iscc
 if ($iscc) {

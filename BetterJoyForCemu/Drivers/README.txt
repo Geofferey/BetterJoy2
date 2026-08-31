@@ -1,9 +1,9 @@
 Driver installer provided for convenience.
 
 FakerInput (https://github.com/Ryochan7/FakerInput) is an optional signed virtual
-keyboard/mouse driver. BetterJoy uses its mouse interface when available so gyro mouse
+keyboard/mouse driver. BetterJoy2 uses its mouse interface when available so gyro mouse
 movement and controller clicks continue to work in elevated applications and on the UAC
-desktop, where Windows blocks ordinary SendInput injection. When BetterJoy runs as a service,
+desktop, where Windows blocks ordinary SendInput injection. When BetterJoy2 runs as a service,
 the same virtual mouse also works before login and after logoff. Select it in BetterJoy Setup,
 or run FakerInput_Setup_0.1.1_x64.msi manually. Set UseFakerInput=false to keep using the
 legacy input path even when the driver is installed. Its MIT license is included in
@@ -15,7 +15,7 @@ DualSense Bluetooth microphone capture requires two optional components. VIIPER
 (https://github.com/Alia5/VIIPER) presents a virtual DualSense USB audio device and
 usbip-win2 (https://github.com/vadimgrn/usbip-win2) supplies its signed virtual USB host
 controller. Select "Install the Bluetooth microphone backend" in BetterJoy Setup; a
-restart may be requested after the driver is installed. BetterJoy starts the bundled
+restart may be requested after the driver is installed. BetterJoy2 starts the bundled
 VIIPER server only while its microphone bridge needs it. Controller speaker/headset
 audio remains available when this optional backend is not installed.
 
@@ -33,7 +33,7 @@ If you're on Win7, please read the instructions on the page.
 
 HidHide (https://github.com/nefarius/HidHide) hides the Pro Controller/Joycons from
 other programs entirely (they won't even see the device), which avoids conflicts with
-programs like Steam that fight BetterJoy over the raw HID device the moment they start.
+programs like Steam that fight BetterJoy2 over the raw HID device the moment they start.
 It's optional - enable it with the "UseHidHide" setting (off by default) and run
 HidHide_1.5.230_x64.exe in this folder.
 

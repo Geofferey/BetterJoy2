@@ -89,7 +89,7 @@ namespace BetterJoyForCemu {
     }
 
     public static class InputIpc {
-        public const string PipeNamePrefix = "BetterJoyInputHelper_";
+        public const string PipeNamePrefix = "BetterJoy2InputHelper_";
 
         // The pipe crosses session boundaries (service in Session 0, helper/GUI in the
         // interactive session), so the default ACL - which for a SYSTEM-created pipe would not

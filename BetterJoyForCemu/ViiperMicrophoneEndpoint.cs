@@ -37,7 +37,7 @@ namespace BetterJoyForCemu {
 
             drainThread = new Thread(DrainFeedback) {
                 IsBackground = true,
-                Name = "BetterJoyViiperFeedback"
+                Name = "BetterJoy2ViiperFeedback"
             };
             drainThread.Start();
         }

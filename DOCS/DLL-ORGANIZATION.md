@@ -30,7 +30,7 @@ real engineering effort replacing a working, actively-used dependency (HidHide i
 BetterJoy hide the physical controller from other programs like Steam - genuinely load-bearing,
 not something to drop), the facade set is kept but organized:
 
-- **App root**: `BetterJoyForCemu.exe` plus its real, direct dependencies -
+- **App root**: `BetterJoy2.exe` plus its real, direct dependencies -
   `Concentus.dll`, `Crc32.NET.dll`, `NAudio.dll`, `Nefarius.Drivers.HidHide.dll`,
   `Nefarius.Utilities.DeviceManagement.dll`, `Nefarius.ViGEm.Client.dll`, `WindowsInput.dll`.
   Anyone looking at the root sees exactly BetterJoy's own dependency list, nothing else.

@@ -156,7 +156,7 @@ namespace BetterJoyForCemu {
     public static class ServiceControlIpc {
         // Fixed and well-known (unlike the per-session input-helper pipe) - the GUI needs to
         // find this without being told a name, since it isn't the one that launched the service.
-        public const string PipeName = "BetterJoyServiceControl";
+        public const string PipeName = "BetterJoy2ServiceControl";
 
         public static void WriteSnapshot(BinaryWriter writer, List<ControllerRecord> records) {
             writer.Write((byte)ControlMessageType.ControllerSnapshot);

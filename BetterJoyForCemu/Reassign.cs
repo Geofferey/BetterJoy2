@@ -1685,7 +1685,7 @@ namespace BetterJoyForCemu {
             } catch (ConfigurationErrorsException ex) {
                 LoadGlobalOptions();
                 MessageBox.Show("Unable to save global setting: " + ex.Message,
-                    "BetterJoy", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "BetterJoy2", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -2076,7 +2076,7 @@ namespace BetterJoyForCemu {
             }
             if (String.IsNullOrEmpty(endpointId)) {
                 MessageBox.Show(this,
-                    "BetterJoy could not automatically find this controller's Windows audio " +
+                    "BetterJoy2 could not automatically find this controller's Windows audio " +
                     "device. Pick it manually from the dropdown instead of Default.",
                     "Controller audio", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -2093,7 +2093,7 @@ namespace BetterJoyForCemu {
                 await ControllerAudio.PlayTestToneAsync(endpointId, volume);
             } catch (Exception ex) {
                 MessageBox.Show(this,
-                    "BetterJoy could not play through that controller endpoint.\r\n\r\n" + ex.Message,
+                    "BetterJoy2 could not play through that controller endpoint.\r\n\r\n" + ex.Message,
                     "Controller audio", MessageBoxButtons.OK, MessageBoxIcon.Error);
             } finally {
                 controllerAudioTestButton.Text = oldText;

@@ -12,7 +12,10 @@ namespace BetterJoyForCemu {
         private HeadlessJoyconHost host;
 
         public BetterJoyService() {
-            ServiceName = "BetterJoy";
+            // Must match Installer/BetterJoy.iss's sc.exe create name exactly, and
+            // MainForm.cs's ServiceController("BetterJoy2") lookup - the SCM associates a
+            // running process with its registered service entry by this name.
+            ServiceName = "BetterJoy2";
             CanHandleSessionChangeEvent = true;
         }
 

@@ -1165,7 +1165,7 @@ namespace BetterJoyForCemu {
         public static void Main(string[] args) {
             using (Mutex mutex = new Mutex(false, "Global\\" + appGuid)) {
                 if (!mutex.WaitOne(0, false)) {
-                    MessageBox.Show("Instance already running.", "BetterJoy");
+                    MessageBox.Show("Instance already running.", "BetterJoy2");
                     return;
                 }
 

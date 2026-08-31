@@ -23,8 +23,11 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private static string PerUserDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BetterJoy");
-        private static string SharedDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BetterJoy");
+        private static string PerUserDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BetterJoy2");
+        private static string SharedDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BetterJoy2");
+        // Pre-v7.3.0 installs used "BetterJoy" instead of "BetterJoy2" for this folder name.
+        private static string LegacyPerUserDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BetterJoy");
+        private static string LegacySharedDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BetterJoy");
 
         // Must run once, before anything else touches DataDir (EntryPoint.Main does this first,
         // before even redirecting the config file). isServiceProcess is passed in explicitly
@@ -33,12 +36,28 @@ namespace BetterJoyForCemu {
         // file under %AppData%" wouldn't find anything meaningful for it anyway; a service always
         // uses the shared location unconditionally.
         public static void Initialize(bool isServiceProcess) {
+            MigrateLegacyDir(LegacyPerUserDir, PerUserDir);
+            MigrateLegacyDir(LegacySharedDir, SharedDir);
+
             bool useShared = isServiceProcess || File.Exists(Path.Combine(PerUserDir, ServiceModeFlagFileName));
             dataDir = useShared ? SharedDir : PerUserDir;
             Directory.CreateDirectory(dataDir);
 
             if (useShared)
                 EnsureSharedDirWritableByUsers(dataDir);
+        }
+
+        // Moves a pre-v7.3.0 "BetterJoy" data folder to its "BetterJoy2" replacement in place, so
+        // an upgrading user's settings/profiles/calibration/logs aren't left behind under the old
+        // name. Best-effort: if this fails (in use, permissions, whatever), just leave the legacy
+        // folder where it is and let the caller create a fresh one under the new name - not worth
+        // blocking startup over.
+        private static void MigrateLegacyDir(string legacyDir, string newDir) {
+            try {
+                if (Directory.Exists(legacyDir) && !Directory.Exists(newDir))
+                    Directory.Move(legacyDir, newDir);
+            } catch {
+            }
         }
 
         public static bool ServiceModeEnabled => File.Exists(Path.Combine(PerUserDir, ServiceModeFlagFileName));

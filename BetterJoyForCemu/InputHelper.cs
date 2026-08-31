@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace BetterJoyForCemu {
-    // Runs as a separate BetterJoyForCemu.exe -inputhelper <pipeName> process, launched by
+    // Runs as a separate BetterJoy2.exe -inputhelper <pipeName> process, launched by
     // BetterJoyService (via SessionLauncher) into whichever session is currently active. Its only
     // job is the desktop-bound half of keyboard/mouse remap that Session 0 can't do itself:
     // capture global key/mouse events and forward them to the service, and execute Simulate

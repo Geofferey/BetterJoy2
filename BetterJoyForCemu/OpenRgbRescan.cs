@@ -20,7 +20,7 @@ namespace BetterJoyForCemu {
         private const int Port = 6742;
         private const uint PacketIdSetClientName = 50;
         private const uint PacketIdRequestRescan = 140;
-        private const string ClientName = "BetterJoy";
+        private const string ClientName = "BetterJoy2";
 
         private static int inFlight;
 

@@ -202,7 +202,7 @@ namespace BetterJoyForCemu {
                 MessageBox.Show(
                     "The BetterJoy service appears to be running, but this window couldn't reach its status connection.\r\n\r\n" +
                     "Restart BetterJoy (or the service) to retry.",
-                    "BetterJoy");
+                    "BetterJoy2");
             } else {
                 // Not installed, or installed but not running - either way, there is no local
                 // pipeline to fall back to anymore. The installer sets the service to start
@@ -212,7 +212,7 @@ namespace BetterJoyForCemu {
                 MessageBox.Show(
                     "The BetterJoy service isn't running, so this window has nothing to show or control.\r\n\r\n" +
                     "Start the BetterJoy service (via Services.msc, or by reinstalling BetterJoy), then reopen this window.",
-                    "BetterJoy");
+                    "BetterJoy2");
             }
 
             console.Visible = !Boolean.Parse(ConfigurationManager.AppSettings["HideStatus"]);
@@ -342,7 +342,7 @@ namespace BetterJoyForCemu {
         // answer leads to; BetterJoy always runs as the service now.
         private static bool IsBetterJoyServiceRunning() {
             try {
-                using (var sc = new ServiceController("BetterJoy")) {
+                using (var sc = new ServiceController("BetterJoy2")) {
                     return sc.Status == ServiceControllerStatus.Running;
                 }
             } catch {
@@ -861,7 +861,7 @@ namespace BetterJoyForCemu {
         // and has its own separate profile.
         private void btn_enableServiceMode_Click(object sender, EventArgs e) {
             if (AppPaths.ServiceModeEnabled) {
-                MessageBox.Show("Configuration is already shared with the Windows Service.", "BetterJoy");
+                MessageBox.Show("Configuration is already shared with the Windows Service.", "BetterJoy2");
                 return;
             }
 
@@ -882,10 +882,10 @@ namespace BetterJoyForCemu {
                 MessageBox.Show(
                     "Done - restart BetterJoy for this to take effect. If the Windows Service " +
                     "isn't installed yet, run this from an elevated PowerShell/cmd:\r\n\r\n" +
-                    "sc create BetterJoy binPath= \"\\\"" + Application.ExecutablePath + "\\\" -service\" start= auto",
-                    "BetterJoy");
+                    "sc create BetterJoy2 binPath= \"\\\"" + Application.ExecutablePath + "\\\" -service\" start= auto",
+                    "BetterJoy2");
             } catch (Exception ex) {
-                MessageBox.Show("Failed to sync configuration: " + ex.Message, "BetterJoy");
+                MessageBox.Show("Failed to sync configuration: " + ex.Message, "BetterJoy2");
             }
         }
 

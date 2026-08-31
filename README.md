@@ -2,7 +2,7 @@
   <img src="title.png">
 </p>
 
-# BetterJoy2 v7.2.1
+# BetterJoy2 v7.3.0
 
 **BetterJoy2 is a free, [MIT-licensed](LICENSE), system-wide controller compatibility layer for
 Windows.** It
@@ -167,7 +167,7 @@ Go to the [BetterJoy2 Releases tab](https://github.com/Geofferey/BetterJoy2/rele
        enables **Use HidHide** automatically when the driver is detected, then manages each
        physical controller's visibility so games see only the selected virtual output. If HidHide
        is installed later, enable it under **Global** options and restart BetterJoy2.
-2. Run *BetterJoyForCemu.exe* 
+2. Run *BetterJoy2.exe* 
     1. Run as Administrator if your keyboard/mouse button mappings don't work
 3. Connect your controllers.
 4. For normal PC games, select XInput or DualShock 4 as the profile's virtual-controller output,

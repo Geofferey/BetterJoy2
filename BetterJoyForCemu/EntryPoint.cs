@@ -64,7 +64,7 @@ namespace BetterJoyForCemu {
             CultureInfo.CurrentCulture = new CultureInfo("en-US", false);
             SetupDlls();
 
-            // "-service" is how the SCM launches BetterJoyForCemu.exe as a Windows Service (see
+            // "-service" is how the SCM launches BetterJoy2.exe as a Windows Service (see
             // Installer/BetterJoy.iss's sc.exe create binPath) - runs the same core pipeline
             // headlessly instead of the normal WinForms GUI. Not something a user passes by hand.
             bool runAsService = Array.Exists(args, arg => arg.Equals("-service", StringComparison.OrdinalIgnoreCase));
@@ -98,7 +98,17 @@ namespace BetterJoyForCemu {
         }
 
         private static void RedirectConfigToAppData() {
-            string userConfigPath = Path.Combine(AppPaths.DataDir, "BetterJoyForCemu.exe.config");
+            string userConfigPath = Path.Combine(AppPaths.DataDir, "BetterJoy2.exe.config");
+
+            // Pre-v7.3.0 installs shipped as BetterJoyForCemu.exe, so their redirected config
+            // lives under that old filename - rename it in place before the fresh-install check
+            // below, so an upgrading user's real settings/profiles/calibration aren't silently
+            // mistaken for a first run and overwritten with the bundled defaults just because
+            // nothing exists yet under the new name.
+            string legacyConfigPath = Path.Combine(AppPaths.DataDir, "BetterJoyForCemu.exe.config");
+            if (!File.Exists(userConfigPath) && File.Exists(legacyConfigPath))
+                File.Move(legacyConfigPath, userConfigPath);
+
             bool isFreshInstall = !File.Exists(userConfigPath);
 
             if (isFreshInstall) {

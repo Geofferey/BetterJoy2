@@ -6,7 +6,7 @@ namespace BetterJoyForCemu {
     // Creates/binds BetterJoy's own root-enumerated Steam Streaming Microphone device instance -
     // called from EntryPoint.cs via the "-installsteammic" flag, launched by Installer/BetterJoy.iss.
     //
-    // This has to run from BetterJoyForCemu.exe itself (a native x64 build) rather than directly
+    // This has to run from BetterJoy2.exe itself (a native x64 build) rather than directly
     // from the Inno Setup script: Setup.exe is always a 32-bit (WOW64) process regardless of
     // ArchitecturesInstallIn64BitMode (confirmed by inspecting its actual PE header), so SetupAPI
     // calls made from Pascal Script hit the WOW64-redirected 32-bit copies of setupapi.dll/
@@ -23,7 +23,9 @@ namespace BetterJoyForCemu {
     internal static class SteamMicrophoneInstaller {
         public const string HardwareId = @"ROOT\SteamStreamingMicrophone";
         public const string DeviceName = "SteamStreamingMicrophone";
-        public const string OwnerMarker = "BetterJoy Microphone";
+        // No migration for an already-installed devnode still carrying the old marker - if that
+        // ever matters again, re-run the "steammic" installer task to recreate it under this one.
+        public const string OwnerMarker = "BetterJoy2 Microphone";
 
         private const uint DIGCF_PRESENT = 0x00000002;
         private const uint DICD_GENERATE_ID = 0x00000001;
