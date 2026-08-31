@@ -446,6 +446,13 @@ namespace BetterJoyForCemu {
             }
         }
 
+        public override void PrepareLongPressPowerOff() {
+            if (state > state_.DROPPED && !isUSB && PrefersBluetoothTransport()) {
+                Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(
+                    ControllerMappings.ProfileIdFor(this));
+            }
+        }
+
         public override void SetLightColor(byte red, byte green, byte blue) {
             SetTrackedLightColor(red, green, blue, false);
         }

@@ -159,6 +159,13 @@ namespace BetterJoyForCemu {
             }
         }
 
+        public override void PrepareLongPressPowerOff() {
+            if (state > state_.DROPPED && !isUSB && PrefersBluetoothTransport()) {
+                Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(
+                    ControllerMappings.ProfileIdFor(this));
+            }
+        }
+
         // Program.cs's periodic ApplyControllerProfileOptions only reaches attached controllers,
         // so a mid-stream disconnect would otherwise leave the stream worker thread parked in
         // BlockingCollection.Take forever and the input helper's WASAPI capture running with

@@ -690,6 +690,11 @@ namespace BetterJoyForCemu {
         // HOME-long-press and power-off-on-inactivity.
         public virtual void PowerOff() { }
 
+        // Long-press shutdown can require preparation which must not run for inactivity or
+        // application-exit power-off. Sony controllers use this boundary to preserve a
+        // Bluetooth-preferred, charge-only USB quarantine while their firmware changes state.
+        public virtual void PrepareLongPressPowerOff() { }
+
         // No-op by default; Joycon overrides this with Nintendo's actual LED-set subcommand -
         // already self-guards on UsesNintendoProtocol today, kept as a hook (rather than promoted
         // outright) so that guard stays exactly where the rest of Joycon's Nintendo-only output
@@ -2742,10 +2747,13 @@ namespace BetterJoyForCemu {
                 // moot for those controllers specifically.
                 int holdSeconds = Math.Max(1, Math.Min(10, ProfileIntOption("HomeLongPowerOffHoldSeconds", 2)));
                 if ((timestamp - buttons_down_timestamp[powerOffButton]) / 10000 > holdSeconds * 1000.0) {
-                    if (other != null)
+                    if (other != null) {
+                        other.PrepareLongPressPowerOff();
                         other.PowerOff();
+                    }
 
                     ReleaseGyroMouseActions();
+                    PrepareLongPressPowerOff();
                     PowerOff();
                     return;
                 }

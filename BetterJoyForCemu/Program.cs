@@ -81,6 +81,25 @@ namespace BetterJoyForCemu {
         readonly object suppressedUsbControllerLock = new object();
         readonly Dictionary<string, string> suppressedUsbControllerProfiles =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, long> suppressedUsbPowerOffGraceUntil =
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+        // Sony firmware can briefly remove and recreate its wired HID interface while an active
+        // Bluetooth connection is intentionally shut down. Keep the already charge-only path
+        // quarantined across several scan passes so BetterJoy does not wake the USB interface
+        // and steal the firmware-owned orange charging indication.
+        public void PreserveChargeOnlyUsbAfterLongPressPowerOff(string profileId) {
+            if (String.IsNullOrEmpty(profileId))
+                return;
+
+            long graceUntil = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 10L;
+            lock (suppressedUsbControllerLock) {
+                foreach (KeyValuePair<string, string> entry in suppressedUsbControllerProfiles) {
+                    if (String.Equals(entry.Value, profileId, StringComparison.Ordinal))
+                        suppressedUsbPowerOffGraceUntil[entry.Key] = graceUntil;
+                }
+            }
+        }
 
         public void SuppressUsbControllerForBluetoothPreference(
                 string devicePath, string profileId) {
@@ -105,15 +124,30 @@ namespace BetterJoyForCemu {
                     return true;
 
                 suppressedUsbControllerProfiles.Remove(devicePath);
+                suppressedUsbPowerOffGraceUntil.Remove(devicePath);
                 return false;
             }
         }
 
         private void ReleaseRemovedUsbControllerSuppressions(HashSet<string> enumeratedPaths) {
+            long now = Stopwatch.GetTimestamp();
             lock (suppressedUsbControllerLock) {
-                foreach (string path in suppressedUsbControllerProfiles.Keys
-                        .Where(path => !enumeratedPaths.Contains(path)).ToList())
+                foreach (string path in suppressedUsbControllerProfiles.Keys.ToList()) {
+                    if (enumeratedPaths.Contains(path))
+                        continue;
+
+                    if (suppressedUsbPowerOffGraceUntil.TryGetValue(path,
+                            out long graceUntil) && now < graceUntil)
+                        continue;
+
                     suppressedUsbControllerProfiles.Remove(path);
+                    suppressedUsbPowerOffGraceUntil.Remove(path);
+                }
+
+                foreach (string path in suppressedUsbPowerOffGraceUntil.Keys
+                        .Where(path => !suppressedUsbControllerProfiles.ContainsKey(path) ||
+                            now >= suppressedUsbPowerOffGraceUntil[path]).ToList())
+                    suppressedUsbPowerOffGraceUntil.Remove(path);
             }
         }
 
