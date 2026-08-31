@@ -414,8 +414,10 @@ namespace BetterJoyForCemu {
                     // idempotent reconciliation pass) has nothing new for it to see.
                     if (wasHidden && ControllerMappings.LightingMode(
                             ControllerMappings.ProfileIdFor(jc)) ==
-                            ControllerMappings.LightingModeOpenRgb)
+                            ControllerMappings.LightingModeOpenRgb) {
+                        DebugLog.Write("OpenRgbRescan: triggered from HidHide hidden->visible, instanceId=" + instanceId);
                         OpenRgbRescan.RequestRescan();
+                    }
                 }
             } catch { }
         }
@@ -843,8 +845,10 @@ namespace BetterJoyForCemu {
                     // unless it happens to already be running a scan - nudge it once it's had a
                     // moment to see the HID device (OpenRgbRescan's own settle delay).
                     if (ControllerMappings.LightingMode(profileId) ==
-                            ControllerMappings.LightingModeOpenRgb)
+                            ControllerMappings.LightingModeOpenRgb) {
+                        DebugLog.Write("OpenRgbRescan: triggered from Attach, profileId=" + profileId);
                         OpenRgbRescan.RequestRescan();
+                    }
 
                     jc.Begin();
                     if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
