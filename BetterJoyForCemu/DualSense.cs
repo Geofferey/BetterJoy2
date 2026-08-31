@@ -136,17 +136,11 @@ namespace BetterJoyForCemu {
         private const byte DualSenseValidLightingFlag2 =
             DualSenseValidLedBrightnessControl | DualSenseValidLightbarSetupControl;
         private const byte DualSensePowerSaveMicMute = 0x10; // DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE
-        // Both trade added latency for jitter tolerance - at ~10.67ms/frame the prior 8/12 values
-        // baked in ~85-128ms of steady-state buffering, audible as lag. Trimmed down now that
-        // SendQueuedBluetoothAudioIfAny's synthetic-silence frame (see below) already absorbs a
-        // brief capture stall without needing a deep prime to hide it, and the dedicated
-        // OVERLAPPED write pool (see BluetoothAudioWritePool) already absorbs write-side stalls
-        // independently of this queue. Revisit upward only if real hardware shows audible
-        // stutter/underrun at these depths - see AudioDebugLog's "DualSenseSend" pendingMinMax/
-        // silence counters.
-        private const int BtAudioPrimeFrameCount = 3;
-        // Bound latency as well as memory - see BtAudioPrimeFrameCount's comment above.
-        private const int BtAudioMaximumQueuedFrames = 6;
+        private const int BtAudioPrimeFrameCount = 8;
+        // Bound latency as well as memory. With the capture/media clocks matched this remains near
+        // the eight-frame prime; twelve frames leaves jitter margin but can never hide ~1 second
+        // of stale audio the way the former 64-frame ceiling could.
+        private const int BtAudioMaximumQueuedFrames = 12;
         private const double BtAudioFrameCadenceMs = 10.0 + (2.0 / 3.0);
         private static readonly byte[] DefaultBluetoothAudioState = {
             0xFD, 0xF7, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
