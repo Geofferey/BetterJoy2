@@ -272,7 +272,7 @@ namespace BetterJoyForCemu {
 
         internal static void ApplyControllerProfileLighting(Controller controller,
                                                              string profileId) {
-            // While the held color-wheel binding owns the touchpad, its live preview is the
+            // While either color-wheel activation style is active, its live preview is the
             // lighting source of truth. Reapplying the last persisted profile color from this
             // periodic reconciliation pass would make the lightbar jump backward mid-swipe.
             if (controller.TouchpadColorWheelActive)

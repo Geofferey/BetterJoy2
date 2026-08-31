@@ -1102,6 +1102,8 @@ namespace BetterJoyForCemu {
         protected long touchpadTwoFingerScrollDownInputUntilTimestamp;
         protected volatile bool touchpadColorWheelActiveThisReport;
         public bool TouchpadColorWheelActive => touchpadColorWheelActiveThisReport;
+        private bool touchpadColorWheelToggled;
+        private bool touchpadColorWheelExclusiveThisReport;
         private bool touchpadColorWheelAwaitingContactRelease;
         private bool touchpadColorWheelHasSelection;
         private bool touchpadColorWheelPublishPending;
@@ -1170,23 +1172,34 @@ namespace BetterJoyForCemu {
             touchpadMovementRemainderY = 0.0f;
         }
 
-        // Wheel mode is deliberately split into a saved lighting mode and a held binding. The
-        // mode says how the profile's LightColor is managed; the binding decides when this pad is
-        // temporarily owned by the invisible wheel. Angle chooses hue, distance from center
-        // chooses saturation, and value stays at full brightness so the full RGB wheel is usable.
+        // Wheel modes are deliberately split into a saved lighting mode and one binding. Wheel
+        // owns the pad only while that binding is held. Wheel (toggle) latches the color-wheel
+        // overlay on each rising edge but stays non-exclusive: every touch still reaches normal
+        // mouse, gesture, click, and stick processing while also choosing a color. Angle chooses
+        // hue, distance from center chooses saturation, and value stays at full brightness.
         private void UpdateTouchpadColorWheel() {
             bool supported = HasTouchpad &&
                 TouchpadMaximumX > 0 && TouchpadMaximumY > 0 &&
                 (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4);
             if (mappingProfileId == null)
                 mappingProfileId = ControllerMappings.ProfileIdFor(this);
-            bool wheelMode = supported && ControllerMappings.LightingMode(mappingProfileId) ==
-                ControllerMappings.LightingModeWheel;
-            bool held = UpdateDesktopActionComboHeld("color_wheel", wheelMode,
+            string lightingMode = ControllerMappings.LightingMode(mappingProfileId);
+            bool holdMode = supported && lightingMode == ControllerMappings.LightingModeWheel;
+            bool toggleMode = supported &&
+                lightingMode == ControllerMappings.LightingModeWheelToggle;
+            bool held = UpdateDesktopActionComboHeld("color_wheel", holdMode || toggleMode,
                 out bool wasHeld);
 
-            if (!held) {
-                if (wasHeld)
+            if (toggleMode && held && !wasHeld)
+                touchpadColorWheelToggled = !touchpadColorWheelToggled;
+            else if (!toggleMode)
+                touchpadColorWheelToggled = false;
+
+            bool active = holdMode ? held : toggleMode && touchpadColorWheelToggled;
+            bool wasActive = touchpadColorWheelActiveThisReport;
+
+            if (!active) {
+                if (wasActive)
                     FinishTouchpadColorWheel();
                 else
                     touchpadColorWheelActiveThisReport = false;
@@ -1203,19 +1216,22 @@ namespace BetterJoyForCemu {
                 return;
             }
             touchpadColorWheelActiveThisReport = true;
+            touchpadColorWheelExclusiveThisReport = holdMode;
             touchpadColorWheelAwaitingContactRelease = false;
 
-            if (!wasHeld) {
+            if (!wasActive) {
                 touchpadColorWheelHasSelection = false;
                 touchpadColorWheelPublishPending = false;
                 touchpadColorWheelLastPublishTimestamp = 0;
-                // If the mechanical pad click is part of the activation chord, it belongs to the
-                // wheel for this hold rather than also leaving its ordinary mapped key/mouse
-                // output down. Gesture pulses and any existing tap-and-drag hold are consumed too.
-                if (buttons[(int)Button.TOUCHPAD])
-                    ReleaseMappedHold(MappingValue("touchpad_click"));
-                ResetTouchpadGestureState();
-                ReleaseTouchpadMouseActions();
+                if (holdMode) {
+                    // Exclusive held mode consumes its activation chord and any in-progress
+                    // gesture. Toggle mode deliberately skips all of this so color selection can
+                    // run alongside ordinary touchpad mouse/click/gesture behavior.
+                    if (buttons[(int)Button.TOUCHPAD])
+                        ReleaseMappedHold(MappingValue("touchpad_click"));
+                    ResetTouchpadGestureState();
+                    ReleaseTouchpadMouseActions();
+                }
             }
 
             TouchContact contact = touchpadFirstContact.Active
@@ -1296,8 +1312,10 @@ namespace BetterJoyForCemu {
         // keeps controller_mappings.xml off the high-rate touch-report path while ensuring the
         // color survives reconnects and application restarts.
         private void FinishTouchpadColorWheel() {
+            touchpadColorWheelToggled = false;
             if (!touchpadColorWheelHasSelection) {
                 touchpadColorWheelActiveThisReport = false;
+                touchpadColorWheelExclusiveThisReport = false;
                 return;
             }
 
@@ -1316,12 +1334,14 @@ namespace BetterJoyForCemu {
             touchpadColorWheelPublishPending = false;
             touchpadColorWheelLastPublishTimestamp = 0;
             touchpadColorWheelAwaitingContactRelease =
-                touchpadFirstContact.Active || touchpadSecondContact.Active;
+                touchpadColorWheelExclusiveThisReport &&
+                (touchpadFirstContact.Active || touchpadSecondContact.Active);
             touchpadColorWheelActiveThisReport = false;
+            touchpadColorWheelExclusiveThisReport = false;
         }
 
         private bool TouchpadColorWheelConsumesTouchpad =>
-            touchpadColorWheelActiveThisReport || touchpadColorWheelAwaitingContactRelease;
+            touchpadColorWheelExclusiveThisReport || touchpadColorWheelAwaitingContactRelease;
 
         // A mouse-button binding (mse_N, alone or as part of a chord) on Tap fires on every
         // accidental brush of a touchpad the user has said is "so sensitive it's easy to fire
@@ -1807,7 +1827,9 @@ namespace BetterJoyForCemu {
             touchpadLeftStickEnabledThisReport = false;
             touchpadRightStickEnabledThisReport = false;
             touchpadColorWheelActiveThisReport = false;
+            touchpadColorWheelExclusiveThisReport = false;
             touchpadColorWheelAwaitingContactRelease = false;
+            touchpadColorWheelToggled = false;
             ResetTouchpadGestureState();
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;

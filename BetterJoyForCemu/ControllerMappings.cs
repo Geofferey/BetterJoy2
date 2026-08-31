@@ -53,6 +53,7 @@ namespace BetterJoyForCemu {
         public const string LightingModeDefault = "default";
         public const string LightingModeUser = "user";
         public const string LightingModeWheel = "wheel";
+        public const string LightingModeWheelToggle = "wheel_toggle";
         public const string LightingModeBattery = "battery";
         public const string LightingModeDisabled = "disabled";
         public const string LightingModeOpenRgb = "openrgb";
@@ -72,7 +73,7 @@ namespace BetterJoyForCemu {
         };
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
-            (LightingModeWheel, "Wheel"),
+            (LightingModeWheel, "Wheel"), (LightingModeWheelToggle, "Wheel (toggle)"),
             (LightingModeBattery, "Battery"), (LightingModeDisabled, "Disabled"),
             (LightingModeOpenRgb, "OpenRGB"),
         };
@@ -533,6 +534,8 @@ namespace BetterJoyForCemu {
                 return LightingModeBattery;
             if (String.Equals(value, LightingModeWheel, StringComparison.OrdinalIgnoreCase))
                 return LightingModeWheel;
+            if (String.Equals(value, LightingModeWheelToggle, StringComparison.OrdinalIgnoreCase))
+                return LightingModeWheelToggle;
             if (String.Equals(value, LightingModeDefault, StringComparison.OrdinalIgnoreCase))
                 return LightingModeDefault;
             if (String.Equals(value, LightingModeDisabled, StringComparison.OrdinalIgnoreCase))

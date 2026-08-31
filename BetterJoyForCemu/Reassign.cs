@@ -849,8 +849,9 @@ namespace BetterJoyForCemu {
             layout.Row(null, btn_toggle_lighting, "Toggle lighting");
             layout.Row(null, btn_color_wheel, "Color wheel");
             tip_reassign.SetToolTip(btn_color_wheel,
-                "While Lighting Mode is Wheel, hold this binding and slide a finger on the " +
-                "touchpad to choose the controller's light color.");
+                "In Lighting Mode Wheel, hold this binding and slide a finger on the touchpad. " +
+                "In Wheel (toggle), press it once to run the color wheel alongside normal " +
+                "touchpad actions and again to disable the wheel.");
             layout.Row(null, btn_brightness_up, "Brightness +");
             layout.Row(null, btn_brightness_down, "Brightness -");
             const string brightnessTip =
@@ -1237,7 +1238,10 @@ namespace BetterJoyForCemu {
                 "Default: BetterJoy never sends a lighting command at all - for another program " +
                 "or the controller's own power-on default to control it instead. User: always " +
                 "show Light color. Wheel: hold the Color wheel binding and use the touchpad to " +
-                "choose Light color. Battery: show the controller's current charge instead - green " +
+                "choose Light color. Wheel (toggle): press the binding once to give the touchpad " +
+                "a non-exclusive color-wheel overlay while normal touchpad mouse and actions " +
+                "continue, then press it again to disable the wheel. Battery: show the " +
+                "controller's current charge instead - green " +
                 "above 66%, yellow above 33%, red at or below 33% - updated only when the charge " +
                 "crosses into a different band, to avoid constant chatter with the controller " +
                 "over something that barely changes. Disabled: always off. OpenRGB: same " +
