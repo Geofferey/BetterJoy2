@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Configuration;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
@@ -67,6 +68,9 @@ namespace BetterJoyForCemu {
         private const uint ZoneTypeSingle = 0;
         private const uint ModeFlagHasPerLedColor = 1u << 5;
         private const uint ModeColorsPerLed = 1;
+        private const uint ModeFlagHasSpeed = 1u << 0;
+        private const uint ModeFlagHasModeSpecificColor = 1u << 6;
+        private const uint ModeColorsModeSpecific = 2;
 
         private const uint PacketIdRequestControllerCount = 0;
         private const uint PacketIdRequestControllerData = 1;
@@ -74,6 +78,20 @@ namespace BetterJoyForCemu {
         private const uint PacketIdRgbControllerUpdateLeds = 1050;
         private const uint PacketIdRgbControllerUpdateZoneLeds = 1051;
         private const uint PacketIdRgbControllerUpdateSingleLed = 1052;
+        private const uint PacketIdRgbControllerUpdateMode = 1101;
+        private const uint PacketIdRgbControllerSaveMode = 1102;
+
+        // The two modes BetterJoy2 advertises - Direct (index 0, unchanged) and Rainbow Puke
+        // (index 1, a discrete step-and-hold hue cycle: rainbowColorCount evenly-spaced
+        // full-saturation hues, holding at each for 1/rainbowColorCount of a full cycle before
+        // jumping to the next - not a smooth sweep, so "colors" visibly changes how chunky the
+        // cycle looks, not just cosmetic default swatches).
+        private const int ModeIndexDirect = 0;
+        private const int ModeIndexRainbow = 1;
+        private const uint RainbowSpeedMin = 1;
+        private const uint RainbowSpeedMax = 100;
+        private const uint RainbowColorsMin = 2;
+        private const uint RainbowColorsMax = 8;
 
         private sealed class ConnectedClient {
             public TcpClient Client;
@@ -96,6 +114,18 @@ namespace BetterJoyForCemu {
         // SetCachedColor runs on a client socket thread and only needs the latest value, not
         // exclusion with Start/Stop.
         private static volatile bool cachingEnabled;
+
+        // Which advertised mode is active, and Rainbow Puke's own parameters - session-only,
+        // never persisted (unlike cachedColor above): an animation mid-cycle has no single
+        // "current color" worth remembering across a restart the way a static Direct color does.
+        // All three read/written via Volatile.Read/Write, matching cachedColor's own convention.
+        private static int activeMode = ModeIndexDirect;
+        private static uint rainbowSpeed = 50;
+        private static int rainbowColorCount = 6;
+
+        private static Thread animationThread;
+        private static volatile bool animationRunning;
+        private static readonly Stopwatch animationClock = Stopwatch.StartNew();
 
         // Called at startup and after every shared-config reload (HeadlessJoyconHost's config
         // watcher) - starts or stops the listener, and turns caching on/off, to match the
@@ -153,6 +183,14 @@ namespace BetterJoyForCemu {
                 listener = new TcpListener(IPAddress.Loopback, Port);
                 listener.Start();
                 new Thread(AcceptLoop) { IsBackground = true, Name = "OpenRgbServerAccept" }.Start();
+
+                animationRunning = true;
+                animationThread = new Thread(AnimationLoop) {
+                    IsBackground = true,
+                    Name = "OpenRgbServerAnimation",
+                };
+                animationThread.Start();
+
                 DebugLog.Write("OpenRgbServer: listening on 127.0.0.1:" + Port);
             } catch (Exception ex) {
                 listener = null;
@@ -165,6 +203,7 @@ namespace BetterJoyForCemu {
                 listener?.Stop();
             } catch { }
             listener = null;
+            animationRunning = false;
 
             lock (clientsLock) {
                 foreach (ConnectedClient c in clients) {
@@ -181,6 +220,9 @@ namespace BetterJoyForCemu {
         // only the ones that happened to be eligible the moment OpenRGB last sent a color. Cheap:
         // Controller.SetLightColor already dedupes an unchanged color internally.
         public static void ApplyCachedColorToEligibleControllers() {
+            if (Volatile.Read(ref activeMode) != ModeIndexDirect)
+                return; // Rainbow Puke's own animation loop owns output while it's active.
+
             int color = Volatile.Read(ref cachedColor);
             if (color < 0)
                 return;
@@ -214,6 +256,65 @@ namespace BetterJoyForCemu {
                 // listener.Stop() breaks AcceptTcpClient() out with an exception - expected
                 // shutdown path, nothing to log.
             }
+        }
+
+        // Drives Rainbow Puke while it's the active mode; a cheap idle sleep loop otherwise.
+        // Re-derives the eligible controller list only twice a second rather than every step -
+        // GetEligibleControllers logs one line per controller, and at the fastest speed/highest
+        // color count this loop can step every 25ms, so calling it per-step would flood the log
+        // and redo the profile/lighting-mode lookup far more often than useful.
+        private static void AnimationLoop() {
+            int lastStepIndex = -1;
+            List<Controller> eligible = new List<Controller>();
+            long nextEligibilityRefresh = 0;
+
+            while (animationRunning) {
+                if (Volatile.Read(ref activeMode) != ModeIndexRainbow) {
+                    lastStepIndex = -1;
+                    Thread.Sleep(200);
+                    continue;
+                }
+
+                long now = animationClock.ElapsedMilliseconds;
+                if (now >= nextEligibilityRefresh) {
+                    eligible = GetEligibleControllers();
+                    nextEligibilityRefresh = now + 500;
+                }
+
+                int colorCount = Volatile.Read(ref rainbowColorCount);
+                long stepDurationMs =
+                    Math.Max(20, CycleDurationMs(Volatile.Read(ref rainbowSpeed)) / colorCount);
+                int stepIndex = (int)((now / stepDurationMs) % colorCount);
+                if (stepIndex != lastStepIndex) {
+                    lastStepIndex = stepIndex;
+                    (byte r, byte g, byte b) = HsvToRgb(360f * stepIndex / colorCount);
+                    foreach (Controller c in eligible)
+                        c.SetOpenRgbLightColor(r, g, b);
+                }
+
+                Thread.Sleep(20);
+            }
+        }
+
+        // speed 1 (slowest) -> 10s per full cycle, speed 100 (fastest) -> 200ms per full cycle.
+        // No real device convention to match here - Rainbow Puke is BetterJoy2's own mode, not
+        // mirroring anything from OpenRGB's own source.
+        private static long CycleDurationMs(uint speed) {
+            uint clamped = Math.Min(RainbowSpeedMax, Math.Max(RainbowSpeedMin, speed));
+            double t = (clamped - RainbowSpeedMin) / (double)(RainbowSpeedMax - RainbowSpeedMin);
+            return (long)(10000 - t * 9800);
+        }
+
+        // Standard full-saturation, full-value HSV-to-RGB conversion, hue in [0, 360).
+        private static (byte R, byte G, byte B) HsvToRgb(float hue) {
+            const float c = 255f;
+            float x = c * (1 - Math.Abs(hue / 60f % 2 - 1));
+            if (hue < 60) return ((byte)c, (byte)x, 0);
+            if (hue < 120) return ((byte)x, (byte)c, 0);
+            if (hue < 180) return (0, (byte)c, (byte)x);
+            if (hue < 240) return (0, (byte)x, (byte)c);
+            if (hue < 300) return ((byte)x, 0, (byte)c);
+            return ((byte)c, 0, (byte)x);
         }
 
         private static void ClientLoop(ConnectedClient connected) {
@@ -293,6 +394,14 @@ namespace BetterJoyForCemu {
                     if (devId == 0)
                         ApplyUpdateSingleLed(payload);
                     break;
+                // SAVEMODE and UPDATEMODE carry an identical payload (NetworkServer.cpp routes
+                // both through the same handler, one flag apart) - this class has no real
+                // persistent "saved mode slot" concept, so both just switch/apply the same way.
+                case PacketIdRgbControllerUpdateMode:
+                case PacketIdRgbControllerSaveMode:
+                    if (devId == 0)
+                        ApplyUpdateMode(payload);
+                    break;
                 default:
                     // SET_CLIENT_NAME and everything else this class doesn't implement: no
                     // response needed.
@@ -345,6 +454,55 @@ namespace BetterJoyForCemu {
 
             uint rgbColor = BitConverter.ToUInt32(payload, 4);
             SetCachedColor(rgbColor);
+        }
+
+        // Confirmed against NetworkServer.cpp's ProcessRequest_RGBController_UpdateSaveMode and
+        // RGBController.cpp's SetModeDescription (protocol version 1): self-referential 4-byte
+        // size, mode_idx(4), then the full mode description this class's own GetModeDescriptionData
+        // equivalent (WriteDirectMode/WriteRainbowMode) writes - name, value, flags, speed_min,
+        // speed_max, colors_min, colors_max, speed, direction, color_mode, num_colors, colors[].
+        // Only mode_idx/speed/num_colors matter here - name/flags/min/max/direction/color_mode
+        // are this class's own fixed shape per mode, not something OpenRGB can redefine, and the
+        // actual color VALUES are skipped too: Rainbow Puke derives its own palette purely from
+        // colorCount (see HsvToRgb in AnimationLoop), not from whatever OpenRGB's mode editor
+        // happened to show as swatches.
+        private static void ApplyUpdateMode(byte[] payload) {
+            try {
+                using (var stream = new MemoryStream(payload))
+                using (var r = new BinaryReader(stream)) {
+                    r.ReadUInt32();                  // self-referential size - unused
+                    int modeIndex = r.ReadInt32();
+                    if (modeIndex != ModeIndexDirect && modeIndex != ModeIndexRainbow)
+                        return;
+
+                    ushort nameLen = r.ReadUInt16();
+                    r.ReadBytes(nameLen);             // name - unused, this class names its own modes
+                    r.ReadInt32();                    // mode value - unused, present for < v6
+                    r.ReadUInt32();                   // flags - unused, fixed per mode
+                    r.ReadUInt32();                   // speed_min - unused, fixed per mode
+                    r.ReadUInt32();                   // speed_max - unused, fixed per mode
+                    r.ReadUInt32();                   // colors_min - unused, fixed per mode
+                    r.ReadUInt32();                   // colors_max - unused, fixed per mode
+                    uint speed = r.ReadUInt32();
+                    r.ReadUInt32();                   // direction - unused
+                    r.ReadUInt32();                   // color_mode - unused, fixed per mode
+                    ushort numColors = r.ReadUInt16();
+
+                    Volatile.Write(ref activeMode, modeIndex);
+                    if (modeIndex == ModeIndexRainbow) {
+                        Volatile.Write(ref rainbowSpeed,
+                            Math.Min(RainbowSpeedMax, Math.Max(RainbowSpeedMin, speed)));
+                        Volatile.Write(ref rainbowColorCount, (int)Math.Min(RainbowColorsMax,
+                            Math.Max(RainbowColorsMin, (uint)numColors)));
+                    }
+                    DebugLog.Write("OpenRgbServer: mode set to " +
+                        (modeIndex == ModeIndexRainbow
+                            ? "Rainbow Puke speed=" + rainbowSpeed + " colors=" + rainbowColorCount
+                            : "Direct"));
+                }
+            } catch (EndOfStreamException) {
+                // Malformed/truncated payload - ignore rather than crash the client thread.
+            }
         }
 
         private static void SetCachedColor(uint rgbColor) {
@@ -402,9 +560,10 @@ namespace BetterJoyForCemu {
                 WriteString(w, "betterjoy2-openrgb-server");
                 WriteString(w, "BetterJoy2");
 
-                w.Write((ushort)1); // num_modes
-                w.Write(0);         // active_mode
+                w.Write((ushort)2); // num_modes
+                w.Write(Volatile.Read(ref activeMode));
                 WriteDirectMode(w);
+                WriteRainbowMode(w);
 
                 w.Write((ushort)1); // num_zones
                 WriteSingleZone(w);
@@ -437,6 +596,28 @@ namespace BetterJoyForCemu {
                                                    // controller itself for MODE_COLORS_PER_LED
         }
 
+        // Colors written here are just OpenRGB mode-editor preview swatches (evenly-spaced hues
+        // matching what the cycle actually shows) - AnimationLoop derives its own palette from
+        // rainbowColorCount alone at animation time, never reads these back.
+        private static void WriteRainbowMode(BinaryWriter w) {
+            WriteString(w, "Rainbow Puke");
+            w.Write(0);                                        // mode_value - unused, present for < v6
+            w.Write(ModeFlagHasSpeed | ModeFlagHasModeSpecificColor); // mode_flags
+            w.Write(RainbowSpeedMin);
+            w.Write(RainbowSpeedMax);
+            w.Write(RainbowColorsMin);
+            w.Write(RainbowColorsMax);
+            w.Write(Volatile.Read(ref rainbowSpeed));
+            w.Write(0u);                                       // direction (MODE_DIRECTION_LEFT)
+            w.Write(ModeColorsModeSpecific);                    // color_mode
+            int colorCount = Volatile.Read(ref rainbowColorCount);
+            w.Write((ushort)colorCount);                        // mode_num_colors
+            for (int i = 0; i < colorCount; i++) {
+                (byte r, byte g, byte b) = HsvToRgb(360f * i / colorCount);
+                w.Write(ToRgbColor(r, g, b));
+            }
+        }
+
         private static void WriteSingleZone(BinaryWriter w) {
             WriteString(w, "Lightbar");
             w.Write(ZoneTypeSingle);
@@ -458,6 +639,13 @@ namespace BetterJoyForCemu {
             w.Write((ushort)(bytes.Length + 1));
             w.Write(bytes);
             w.Write((byte)0);
+        }
+
+        // Confirmed against RGBControllerInterface.h: typedef unsigned int RGBColor; #define
+        // ToRGBColor(r, g, b) ((RGBColor)((b << 16) | (g << 8) | (r))) - matches the packing
+        // SetCachedColor/ApplyCachedColorToEligibleControllers already unpack cachedColor with.
+        private static uint ToRgbColor(byte r, byte g, byte b) {
+            return (uint)((b << 16) | (g << 8) | r);
         }
 
         private static bool ReadExact(NetworkStream stream, byte[] buffer, int count) {
