@@ -597,6 +597,7 @@ namespace BetterJoyForCemu {
             // a button-down whose corresponding physical controller can no longer report up.
             ReleaseGyroMouseActions();
             ReleaseTouchpadMouseActions();
+            FinishTouchpadColorWheel();
             if (HasTouchpad)
                 ReleaseMappedHold(MappingValue("touchpad_click"));
             ResetTouchpadGestureState();
@@ -928,6 +929,10 @@ namespace BetterJoyForCemu {
         public abstract bool HasDualSticks { get; }        // has two physical sticks/thumb-stick-click buttons on one unit
         public abstract bool HasGyro { get; }               // currently populates real gyr_g/acc_g data
         public virtual bool HasTouchpad => false;
+        // Native coordinate extents belong to each controller definition even though gesture and
+        // pointer behavior is shared. They are only consumed when HasTouchpad is true.
+        protected virtual int TouchpadMaximumX => 0;
+        protected virtual int TouchpadMaximumY => 0;
         public abstract bool HasAnalogTriggers { get; }     // triggers report a real analog value, not just a digital button bit
         public abstract bool UsesNintendoProtocol { get; }  // speaks the Joy-Con SPI/subcommand protocol (LED, rumble encoding, handshake)
 
@@ -1095,6 +1100,15 @@ namespace BetterJoyForCemu {
         protected long touchpadTwoFingerTapInputUntilTimestamp;
         protected long touchpadTwoFingerScrollUpInputUntilTimestamp;
         protected long touchpadTwoFingerScrollDownInputUntilTimestamp;
+        protected volatile bool touchpadColorWheelActiveThisReport;
+        public bool TouchpadColorWheelActive => touchpadColorWheelActiveThisReport;
+        private bool touchpadColorWheelAwaitingContactRelease;
+        private bool touchpadColorWheelHasSelection;
+        private bool touchpadColorWheelPublishPending;
+        private byte touchpadColorWheelRed;
+        private byte touchpadColorWheelGreen;
+        private byte touchpadColorWheelBlue;
+        private long touchpadColorWheelLastPublishTimestamp;
 
         // Both Sony pads use roughly 1,920 horizontal coordinate units. This permits normal
         // fingertip jitter while rejecting a deliberate drag before it can become a tap action.
@@ -1113,6 +1127,10 @@ namespace BetterJoyForCemu {
         // than a fixed absolute region on the controller.
         protected const float TouchpadStickFullDeflectionUnits = 320.0f;
         protected const float TouchpadStickDeadzoneUnits = 16.0f;
+        // A lightbar update is real controller output, not just local pointer math. Thirty visual
+        // updates per second stays smooth while avoiding one HID lighting write for every 250 Hz
+        // touch report (especially important when Bluetooth audio is sharing the controller).
+        protected const double TouchpadColorWheelUpdatesPerSecond = 30.0;
 
         protected static TouchContact ReadPackedTouchContact(byte[] report, int offset) {
             byte status = report[offset];
@@ -1147,6 +1165,153 @@ namespace BetterJoyForCemu {
             touchpadMovementRemainderX = 0.0f;
             touchpadMovementRemainderY = 0.0f;
         }
+
+        // Wheel mode is deliberately split into a saved lighting mode and a held binding. The
+        // mode says how the profile's LightColor is managed; the binding decides when this pad is
+        // temporarily owned by the invisible wheel. Angle chooses hue, distance from center
+        // chooses saturation, and value stays at full brightness so the full RGB wheel is usable.
+        private void UpdateTouchpadColorWheel() {
+            bool supported = HasTouchpad &&
+                TouchpadMaximumX > 0 && TouchpadMaximumY > 0 &&
+                (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4);
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+            bool wheelMode = supported && ControllerMappings.LightingMode(mappingProfileId) ==
+                ControllerMappings.LightingModeWheel;
+            bool held = UpdateDesktopActionComboHeld("color_wheel", wheelMode,
+                out bool wasHeld);
+
+            if (!held) {
+                if (wasHeld)
+                    FinishTouchpadColorWheel();
+                else
+                    touchpadColorWheelActiveThisReport = false;
+
+                // A finger that selected a color still belongs to that wheel gesture until it
+                // lifts. Without this drain state, releasing the activation binding first makes
+                // the same still-down contact look like a brand-new tap/drag to normal touchpad
+                // mouse handling.
+                if (touchpadColorWheelAwaitingContactRelease &&
+                        !touchpadFirstContact.Active && !touchpadSecondContact.Active) {
+                    touchpadColorWheelAwaitingContactRelease = false;
+                    ResetTouchpadGestureState();
+                }
+                return;
+            }
+            touchpadColorWheelActiveThisReport = true;
+            touchpadColorWheelAwaitingContactRelease = false;
+
+            if (!wasHeld) {
+                touchpadColorWheelHasSelection = false;
+                touchpadColorWheelPublishPending = false;
+                touchpadColorWheelLastPublishTimestamp = 0;
+                // If the mechanical pad click is part of the activation chord, it belongs to the
+                // wheel for this hold rather than also leaving its ordinary mapped key/mouse
+                // output down. Gesture pulses and any existing tap-and-drag hold are consumed too.
+                if (buttons[(int)Button.TOUCHPAD])
+                    ReleaseMappedHold(MappingValue("touchpad_click"));
+                ResetTouchpadGestureState();
+                ReleaseTouchpadMouseActions();
+            }
+
+            TouchContact contact = touchpadFirstContact.Active
+                ? touchpadFirstContact : touchpadSecondContact;
+            if (!contact.Active)
+                return;
+
+            double halfWidth = TouchpadMaximumX / 2.0;
+            double halfHeight = TouchpadMaximumY / 2.0;
+            double x = (Math.Max(0, Math.Min(TouchpadMaximumX, contact.X)) - halfWidth) /
+                halfWidth;
+            double y = (halfHeight - Math.Max(0, Math.Min(TouchpadMaximumY, contact.Y))) /
+                halfHeight;
+            double hue = Math.Atan2(y, x) * 180.0 / Math.PI;
+            if (hue < 0.0)
+                hue += 360.0;
+            double saturation = Math.Min(1.0, Math.Sqrt(x * x + y * y));
+            HsvToRgb(hue, saturation, out byte red, out byte green, out byte blue);
+
+            if (!touchpadColorWheelHasSelection || red != touchpadColorWheelRed ||
+                    green != touchpadColorWheelGreen || blue != touchpadColorWheelBlue) {
+                touchpadColorWheelRed = red;
+                touchpadColorWheelGreen = green;
+                touchpadColorWheelBlue = blue;
+                touchpadColorWheelHasSelection = true;
+                touchpadColorWheelPublishPending = true;
+            }
+
+            long timestamp = Stopwatch.GetTimestamp();
+            if (touchpadColorWheelPublishPending &&
+                    (touchpadColorWheelLastPublishTimestamp == 0 ||
+                     (timestamp - touchpadColorWheelLastPublishTimestamp) /
+                         (double)Stopwatch.Frequency >=
+                         1.0 / TouchpadColorWheelUpdatesPerSecond)) {
+                SetLightColor(touchpadColorWheelRed, touchpadColorWheelGreen,
+                    touchpadColorWheelBlue);
+                touchpadColorWheelPublishPending = false;
+                touchpadColorWheelLastPublishTimestamp = timestamp;
+            }
+        }
+
+        private static void HsvToRgb(double hue, double saturation,
+                out byte red, out byte green, out byte blue) {
+            double chroma = saturation;
+            double hueSection = hue / 60.0;
+            double secondary = chroma * (1.0 - Math.Abs(hueSection % 2.0 - 1.0));
+            double redBase = 0.0;
+            double greenBase = 0.0;
+            double blueBase = 0.0;
+            if (hueSection < 1.0) {
+                redBase = chroma; greenBase = secondary;
+            } else if (hueSection < 2.0) {
+                redBase = secondary; greenBase = chroma;
+            } else if (hueSection < 3.0) {
+                greenBase = chroma; blueBase = secondary;
+            } else if (hueSection < 4.0) {
+                greenBase = secondary; blueBase = chroma;
+            } else if (hueSection < 5.0) {
+                redBase = secondary; blueBase = chroma;
+            } else {
+                redBase = chroma; blueBase = secondary;
+            }
+
+            double match = 1.0 - chroma;
+            red = (byte)Math.Round((redBase + match) * Byte.MaxValue);
+            green = (byte)Math.Round((greenBase + match) * Byte.MaxValue);
+            blue = (byte)Math.Round((blueBase + match) * Byte.MaxValue);
+        }
+
+        // The latest preview is flushed and persisted exactly once at the end of the hold. This
+        // keeps controller_mappings.xml off the high-rate touch-report path while ensuring the
+        // color survives reconnects and application restarts.
+        private void FinishTouchpadColorWheel() {
+            if (!touchpadColorWheelHasSelection) {
+                touchpadColorWheelActiveThisReport = false;
+                return;
+            }
+
+            SetLightColor(touchpadColorWheelRed, touchpadColorWheelGreen,
+                touchpadColorWheelBlue);
+            string color = String.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}",
+                touchpadColorWheelRed, touchpadColorWheelGreen, touchpadColorWheelBlue);
+            ControllerMappings.SetOptionValue(mappingProfileId, "LightColor", color);
+            try {
+                ControllerMappings.Save();
+            } catch (IOException) {
+                form?.AppendTextBox("Could not save the touchpad color-wheel selection.\r\n");
+            } catch (UnauthorizedAccessException) {
+                form?.AppendTextBox("Could not save the touchpad color-wheel selection.\r\n");
+            }
+            touchpadColorWheelHasSelection = false;
+            touchpadColorWheelPublishPending = false;
+            touchpadColorWheelLastPublishTimestamp = 0;
+            touchpadColorWheelAwaitingContactRelease =
+                touchpadFirstContact.Active || touchpadSecondContact.Active;
+            touchpadColorWheelActiveThisReport = false;
+        }
+
+        private bool TouchpadColorWheelConsumesTouchpad =>
+            touchpadColorWheelActiveThisReport || touchpadColorWheelAwaitingContactRelease;
 
         // A mouse-button binding (mse_N, alone or as part of a chord) on Tap fires on every
         // accidental brush of a touchpad the user has said is "so sensitive it's easy to fire
@@ -1605,6 +1770,7 @@ namespace BetterJoyForCemu {
 
             ReleaseGyroMouseActions();
             ReleaseTouchpadMouseActions();
+            FinishTouchpadColorWheel();
             if (HasTouchpad)
                 ReleaseMappedHold(MappingValue("touchpad_click"));
             ReleaseMappedHold(MappingValue(isLeft ? "sl_l" : "sl_r"));
@@ -1630,6 +1796,8 @@ namespace BetterJoyForCemu {
             touchpadMouseEnabledThisReport = false;
             touchpadLeftStickEnabledThisReport = false;
             touchpadRightStickEnabledThisReport = false;
+            touchpadColorWheelActiveThisReport = false;
+            touchpadColorWheelAwaitingContactRelease = false;
             ResetTouchpadGestureState();
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
@@ -2204,8 +2372,8 @@ namespace BetterJoyForCemu {
                     break;
                 }
             }
-            if (!gyroMouseConsumesButtons && !touchpadMouseConsumesButtons && !customGuideHeld &&
-                    !hasContinuousRemap)
+            if (!gyroMouseConsumesButtons && !touchpadMouseConsumesButtons &&
+                    !TouchpadColorWheelConsumesTouchpad && !customGuideHeld && !hasContinuousRemap)
                 return buttons;
 
             Array.Copy(buttons, vigemButtons, buttons.Length);
@@ -2230,6 +2398,13 @@ namespace BetterJoyForCemu {
                     if (touchpadOnlyReservedButtons[buttonIndex])
                         vigemButtons[buttonIndex] = false;
                 }
+            }
+            if (TouchpadColorWheelConsumesTouchpad) {
+                vigemButtons[(int)Button.TOUCHPAD] = false;
+                vigemButtons[(int)Button.TOUCHPAD_TAP] = false;
+                vigemButtons[(int)Button.TOUCHPAD_TWO_FINGER_TAP] = false;
+                vigemButtons[(int)Button.TOUCHPAD_TWO_FINGER_SCROLL_UP] = false;
+                vigemButtons[(int)Button.TOUCHPAD_TWO_FINGER_SCROLL_DOWN] = false;
             }
 
             // A controller button assigned to Guide/PS becomes Guide/PS instead of also leaking
@@ -2539,9 +2714,10 @@ namespace BetterJoyForCemu {
             // there's nothing to save/restore, only to flip.
             if (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4)
                 ToggleBoolOptionOnPress("toggle_lighting", "LightingOff");
+            UpdateTouchpadColorWheel();
             DoDeviceSpecificButtonActions();
 
-            if (HasTouchpad) {
+            if (HasTouchpad && !TouchpadColorWheelConsumesTouchpad) {
                 if (buttons_down[(int)Button.TOUCHPAD])
                     Simulate(MappingValue("touchpad_click"), false, false);
                 if (buttons_up[(int)Button.TOUCHPAD])
@@ -2618,7 +2794,7 @@ namespace BetterJoyForCemu {
             if (HasTouchpad)
                 RefreshTouchpadOnlyButtonReservations();
 
-            if (HasTouchpad)
+            if (HasTouchpad && !TouchpadColorWheelConsumesTouchpad)
                 ProcessTouchpadGestures();
 
             bool ownsGyroMouse = OwnsGyroMouse();
@@ -2753,8 +2929,13 @@ namespace BetterJoyForCemu {
                                       gyroMouseActionsEnabled);
             SimulateMouseActionScroll("scroll_up", true, gyroMouseActionsEnabled);
             SimulateMouseActionScroll("scroll_down", false, gyroMouseActionsEnabled);
-            ProcessTouchpadStick();
-            ProcessTouchpadMouse();
+            if (TouchpadColorWheelConsumesTouchpad) {
+                touchpadStickContactActive = false;
+                ReleaseTouchpadMouseActions();
+            } else {
+                ProcessTouchpadStick();
+                ProcessTouchpadMouse();
+            }
         }
 
         protected static short CastStickValue(float stick_value) {

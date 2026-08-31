@@ -272,6 +272,12 @@ namespace BetterJoyForCemu {
 
         private static void ApplyControllerProfileLighting(Controller controller,
                                                             string profileId) {
+            // While the held color-wheel binding owns the touchpad, its live preview is the
+            // lighting source of truth. Reapplying the last persisted profile color from this
+            // periodic reconciliation pass would make the lightbar jump backward mid-swipe.
+            if (controller.TouchpadColorWheelActive)
+                return;
+
             string lightingMode = ControllerMappings.LightingMode(profileId);
             // Default and OpenRGB both mean BetterJoy never sends a single lighting command for
             // this profile: not the Home LED, RGB lightbar, player indicators, or a

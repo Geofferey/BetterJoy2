@@ -52,6 +52,7 @@ namespace BetterJoyForCemu {
         // OpenRGB picks the controller up without the user manually clicking Rescan there.
         public const string LightingModeDefault = "default";
         public const string LightingModeUser = "user";
+        public const string LightingModeWheel = "wheel";
         public const string LightingModeBattery = "battery";
         public const string LightingModeDisabled = "disabled";
         public const string LightingModeOpenRgb = "openrgb";
@@ -71,6 +72,7 @@ namespace BetterJoyForCemu {
         };
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
+            (LightingModeWheel, "Wheel"),
             (LightingModeBattery, "Battery"), (LightingModeDisabled, "Disabled"),
             (LightingModeOpenRgb, "OpenRGB"),
         };
@@ -99,7 +101,8 @@ namespace BetterJoyForCemu {
         public static readonly string[] Keys = {
             "capture", "home", "guide", "mic_mute", "toggle_built_in_mic",
             "volume_up", "volume_down",
-            "lt_haptics", "rt_haptics", "toggle_haptics", "toggle_lighting", "modifier",
+            "lt_haptics", "rt_haptics", "toggle_haptics", "toggle_lighting", "color_wheel",
+            "modifier",
             "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
@@ -527,6 +530,8 @@ namespace BetterJoyForCemu {
             // Default/Disabled existed - only an explicit choice opts into either of those.
             if (String.Equals(value, LightingModeBattery, StringComparison.OrdinalIgnoreCase))
                 return LightingModeBattery;
+            if (String.Equals(value, LightingModeWheel, StringComparison.OrdinalIgnoreCase))
+                return LightingModeWheel;
             if (String.Equals(value, LightingModeDefault, StringComparison.OrdinalIgnoreCase))
                 return LightingModeDefault;
             if (String.Equals(value, LightingModeDisabled, StringComparison.OrdinalIgnoreCase))

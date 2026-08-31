@@ -32,6 +32,8 @@ namespace BetterJoyForCemu {
         public override bool HasDualSticks => true;
         public override bool HasGyro => true;
         public override bool HasTouchpad => true;
+        protected override int TouchpadMaximumX => 1919;
+        protected override int TouchpadMaximumY => 941;
         public override bool HasAnalogTriggers => true;
         public override bool UsesNintendoProtocol => false;
         public override ControllerKind Kind => ControllerKind.DualShock4;
