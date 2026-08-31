@@ -61,7 +61,7 @@ namespace BetterJoyForCemu {
         public const string LightingModeOpenRgb = "openrgb";
 
         // Single source of truth for every "cycle through the modes of a dropdown" binding
-        // (lt_haptics/rt_haptics/toggle_haptics) as well as the dropdowns themselves
+        // (lt_haptics/rt_haptics/toggle_haptics/cycle_lighting) as well as the dropdowns themselves
         // (Reassign.cs populates .Items from these instead of a separately hand-written list) -
         // adding, removing, or reordering an entry here is the only place that needs to change
         // for both the UI and the binding's cycle order to pick it up.
@@ -108,7 +108,8 @@ namespace BetterJoyForCemu {
         public static readonly string[] Keys = {
             "capture", "home", "guide", "mic_mute", "toggle_built_in_mic",
             "volume_up", "volume_down",
-            "lt_haptics", "rt_haptics", "toggle_haptics", "toggle_lighting", "color_wheel",
+            "lt_haptics", "rt_haptics", "toggle_haptics", "cycle_lighting",
+            "toggle_lighting", "color_wheel",
             "brightness_up", "brightness_down", "modifier",
             "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the

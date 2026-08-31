@@ -278,7 +278,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_toggle_haptics, btn_toggle_lighting, btn_color_wheel, btn_brightness_up, btn_brightness_down, btn_modifier, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_toggle_haptics, btn_cycle_lighting, btn_toggle_lighting, btn_color_wheel, btn_brightness_up, btn_brightness_down, btn_modifier, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -324,6 +324,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_lt_haptics;
         private SplitButton btn_rt_haptics;
         private SplitButton btn_toggle_haptics;
+        private SplitButton btn_cycle_lighting;
         private SplitButton btn_toggle_lighting;
         private SplitButton btn_color_wheel;
         private SplitButton btn_brightness_up;
@@ -433,6 +434,7 @@ namespace BetterJoyForCemu {
             btn_lt_haptics = new SplitButton { Name = "btn_lt_haptics" };
             btn_rt_haptics = new SplitButton { Name = "btn_rt_haptics" };
             btn_toggle_haptics = new SplitButton { Name = "btn_toggle_haptics" };
+            btn_cycle_lighting = new SplitButton { Name = "btn_cycle_lighting" };
             btn_toggle_lighting = new SplitButton { Name = "btn_toggle_lighting" };
             btn_color_wheel = new SplitButton { Name = "btn_color_wheel" };
             btn_brightness_up = new SplitButton { Name = "btn_brightness_up" };
@@ -844,6 +846,10 @@ namespace BetterJoyForCemu {
             layout.Row(null, btn_rt_haptics, "RT haptics");
             layout.Row(null, btn_toggle_haptics, "Toggle haptics");
             layout.Row(null, btn_toggle_built_in_mic, "Toggle Built-in mic");
+            layout.Row(null, btn_cycle_lighting, "Cycle lighting");
+            tip_reassign.SetToolTip(btn_cycle_lighting,
+                "Advance Mode through the same choices shown under Device behavior > Lighting. " +
+                "The cycle automatically includes modes added to that dropdown.");
             // Sets the RGB lightbar to black instead of the configured Light color while off,
             // never touching that setting itself (ApplyControllerProfileLighting/LightingOff) -
             // nothing to save/restore, only to flip. DualSense/DualShock4 only, matching
@@ -2724,6 +2730,7 @@ namespace BetterJoyForCemu {
             // a real capability, not just any connected controller.
             btn_lt_haptics.Enabled = hasController && hasAdaptiveTriggers;
             btn_rt_haptics.Enabled = hasController && hasAdaptiveTriggers;
+            btn_cycle_lighting.Enabled = hasController && hasConfigurableLight;
             btn_toggle_lighting.Enabled = hasController && hasConfigurableLight;
             btn_color_wheel.Enabled = hasController && hasTouchpad && hasConfigurableLight;
             btn_brightness_up.Enabled = hasController && hasConfigurableLight;

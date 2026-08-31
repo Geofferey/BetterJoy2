@@ -2678,17 +2678,18 @@ namespace BetterJoyForCemu {
         // validating accessor the option already has (e.g. ControllerMappings.RumbleMode, which
         // still needs to migrate old plain-bool EnableRumble values) rather than a raw OptionValue
         // read, and is only called once an actual press is confirmed.
-        private void CycleOptionModeOnPress(string configKey, string optionKey,
+        private bool CycleOptionModeOnPress(string configKey, string optionKey,
                 Func<string, string> currentValue, (string Value, string Label)[] modes) {
             bool held = UpdateDesktopActionComboHeld(configKey, true, out bool wasHeld);
             if (!held || wasHeld)
-                return;
+                return false;
 
             if (mappingProfileId == null)
                 mappingProfileId = ControllerMappings.ProfileIdFor(this);
 
             string next = ControllerMappings.NextCycleValue(modes, currentValue(mappingProfileId));
             ControllerMappings.SetOptionValue(mappingProfileId, optionKey, next);
+            return true;
         }
 
         // Plain on/off flip, for bindings that toggle a bool option rather than cycle through a
@@ -2814,11 +2815,34 @@ namespace BetterJoyForCemu {
             CycleOptionModeOnPress("toggle_haptics", "EnableRumble",
                 ControllerMappings.RumbleMode, ControllerMappings.RumbleModes);
             // RGB lightbar - DualSense/DualShock4 only, matching Reassign.cs's own
-            // hasConfigurableLight check. LightingOff never touches the user's actual LightColor
-            // setting (see ApplyControllerProfileLighting) - just a flag applied on top, so
-            // there's nothing to save/restore, only to flip.
-            if (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4)
+            // hasConfigurableLight check. Cycle lighting reads the exact same LightingModes array
+            // as the Device behavior dropdown, then immediately applies the new selection. If it
+            // enters OpenRGB, resync both supported ownership paths: the built-in SDK server's
+            // cached state and the existing raw-HID rescan nudge. LightingOff never touches the
+            // user's actual LightColor setting (see ApplyControllerProfileLighting) - just a flag
+            // applied on top, so there's nothing to save/restore, only to flip.
+            if (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4) {
+                if (CycleOptionModeOnPress("cycle_lighting", "LightingMode",
+                        ControllerMappings.LightingMode, ControllerMappings.LightingModes)) {
+                    // This binding changes the profile's actual lighting mode, not a temporary
+                    // effect override. Persist the discrete press before the GUI/service config
+                    // watcher can reload the old saved mode and let User color take over again.
+                    try {
+                        ControllerMappings.Save();
+                    } catch (IOException) {
+                        form?.AppendTextBox("Could not save the controller lighting mode.\r\n");
+                    } catch (UnauthorizedAccessException) {
+                        form?.AppendTextBox("Could not save the controller lighting mode.\r\n");
+                    }
+                    JoyconManager.ApplyControllerProfileLighting(this, mappingProfileId);
+                    if (ControllerMappings.LightingMode(mappingProfileId) ==
+                            ControllerMappings.LightingModeOpenRgb) {
+                        OpenRgbServer.ApplyCachedColorToEligibleControllers();
+                        OpenRgbRescan.RequestRescan();
+                    }
+                }
                 ToggleBoolOptionOnPress("toggle_lighting", "LightingOff");
+            }
             AdjustLightBrightnessOnPress("brightness_up", 10);
             AdjustLightBrightnessOnPress("brightness_down", -10);
             UpdateTouchpadColorWheel();
