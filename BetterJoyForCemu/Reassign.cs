@@ -72,6 +72,8 @@ namespace BetterJoyForCemu {
         private CheckBox autoPowerOffCheckBox;
         private CheckBox homeLongPowerOffCheckBox;
         private TextBox homeLongPowerOffHoldInput;
+        private Label preferredTransportLabel;
+        private ProfileChoiceSelector preferredTransportSelector;
         private ProfileChoiceSelector rumbleModeSelector;
         private Label rumbleModeLabel;
         private CheckBox dragToggleCheckBox;
@@ -1151,7 +1153,7 @@ namespace BetterJoyForCemu {
 
         private Panel BuildDeviceBehaviorPage() {
             Panel page = CreateProfilePage("Device behavior",
-                "Control power, input behavior, lighting, haptics, and audio for this profile.");
+                "Control connection, power, input, lighting, haptics, and audio for this profile.");
             var layout = new PageLayout(this, page, 96);
 
             // Most of this page is a dense mix of checkboxes/labels/selectors/custom buttons per
@@ -1160,8 +1162,25 @@ namespace BetterJoyForCemu {
             // relative to sectionTop instead of a hardcoded absolute number, so the whole section
             // moves together if something above it ever changes. layout.Advance(...) at the end of
             // each section is the one place that has to know that section's actual height.
-            layout.Heading("Power", "Choose when this controller powers itself off.");
+            layout.Heading("Connection",
+                "Choose which connection BetterJoy uses when this controller is both wired and wireless.");
             int sectionTop = layout.Y;
+            preferredTransportLabel = new Label();
+            preferredTransportSelector = CreateProfileChoiceSelector(0, 0, 0);
+            foreach (var transport in ControllerMappings.PreferredTransports)
+                preferredTransportSelector.Items.Add(transport.Label);
+            preferredTransportSelector.SelectedIndexChanged += ProfileOptionControlChanged;
+            layout.Row(preferredTransportLabel, preferredTransportSelector,
+                "Preferred transport", buttonX: 145, buttonWidth: 180);
+            tip_reassign.SetToolTip(preferredTransportSelector,
+                "Sony controllers only. Bluetooth keeps the wireless connection active when a " +
+                "matching USB interface appears, leaving the cable available for charging. USB " +
+                "keeps the wired connection and disconnects the matching Bluetooth link. If only " +
+                "one transport is available, BetterJoy continues using it.");
+
+            layout.Divider();
+            layout.Heading("Power", "Choose when this controller powers itself off.");
+            sectionTop = layout.Y;
             autoPowerOffCheckBox = CreateProfileCheckBox(
                 "Power off when BetterJoy exits", 24, sectionTop, "AutoPowerOff");
             homeLongPowerOffCheckBox = CreateProfileCheckBox(
@@ -1934,6 +1953,13 @@ namespace BetterJoyForCemu {
                 int minutes = InactivityMinutesFromText(inactivitySelector.Text);
                 ControllerMappings.SetOptionValue(
                     SelectedProfileId, "PowerOffInactivity", minutes.ToString());
+            } else if (sender == preferredTransportSelector) {
+                var transports = ControllerMappings.PreferredTransports;
+                int index = preferredTransportSelector.SelectedIndex;
+                ControllerMappings.SetOptionValue(SelectedProfileId, "PreferredTransport",
+                    index >= 0 && index < transports.Length
+                        ? transports[index].Value
+                        : ControllerMappings.PreferredTransportUsb);
             }
         }
 
@@ -2254,6 +2280,7 @@ namespace BetterJoyForCemu {
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
+                preferredTransportSelector,
                 swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
                 lightColorButton, lightingModeSelector, playerLedSelector,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
@@ -2313,6 +2340,12 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "HomeLongPowerOff");
                 homeLongPowerOffHoldInput.Text = ControllerMappings.IntOption(
                     SelectedProfileId, "HomeLongPowerOffHoldSeconds", 2).ToString();
+                string preferredTransport = ControllerMappings.PreferredTransport(SelectedProfileId);
+                int preferredTransportIndex = Array.FindIndex(
+                    ControllerMappings.PreferredTransports,
+                    transport => String.Equals(transport.Value, preferredTransport,
+                        StringComparison.OrdinalIgnoreCase));
+                preferredTransportSelector.SelectedIndex = Math.Max(0, preferredTransportIndex);
                 dragToggleCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
@@ -2619,6 +2652,9 @@ namespace BetterJoyForCemu {
                  selected.Kind == ControllerKind.DualShock4);
             bool hasAdaptiveTriggers = selected != null &&
                 selected.Kind == ControllerKind.DualSense;
+            bool hasSelectableTransport = selected != null &&
+                (selected.Kind == ControllerKind.DualSense ||
+                 selected.Kind == ControllerKind.DualShock4);
             bool hasConfigurableLight = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
@@ -2649,6 +2685,10 @@ namespace BetterJoyForCemu {
             }
             if (homeLedCheckBox != null)
                 homeLedCheckBox.Visible = !hasConfigurableLight;
+            if (preferredTransportLabel != null)
+                preferredTransportLabel.Enabled = hasSelectableTransport;
+            if (preferredTransportSelector != null)
+                preferredTransportSelector.Enabled = hasController && hasSelectableTransport;
             foreach (Control control in new Control[] {
                 controllerAudioEnabledLabel, controllerAudioVolumeLabel,
                 controllerAudioEndpointLabel,

@@ -645,12 +645,38 @@ namespace BetterJoyForCemu {
         protected virtual void RetireDuplicateConnections() {
             foreach (Controller other in Program.mgr.j) {
                 if (other != this && other.state != state_.DROPPED && other.PadMacAddress.Equals(PadMacAddress)) {
+                    // Some devices identify their transport only after their first actual input
+                    // report. Let both sides reach that point before choosing a winner; otherwise
+                    // a just-created USB instance can still carry its constructor's wireless
+                    // placeholder and make a transport preference depend on thread timing.
+                    if (!CanResolveDuplicate(other))
+                        continue;
+
+                    // Most controllers retain the historical "latest live connection wins"
+                    // behavior. Device definitions that can deliberately choose between two
+                    // simultaneous transports may instead keep the already-connected instance
+                    // and retire this one. The losing instance owns its transport-specific
+                    // cleanup in OnRetiredAsDuplicate; the winner owns cleanup of the other one
+                    // in OnDuplicateRetired.
+                    if (PreferExistingDuplicate(other)) {
+                        state = state_.DROPPED;
+                        form.AppendTextBox("Retiring non-preferred connection for the same controller.\r\n");
+                        OnRetiredAsDuplicate(other);
+                        return;
+                    }
+
                     other.state = state_.DROPPED;
                     form.AppendTextBox("Retiring duplicate connection for the same controller.\r\n");
                     OnDuplicateRetired(other);
                 }
             }
         }
+
+        protected virtual bool CanResolveDuplicate(Controller other) { return true; }
+
+        protected virtual bool PreferExistingDuplicate(Controller other) { return false; }
+
+        protected virtual void OnRetiredAsDuplicate(Controller other) { }
 
         // No-op by default; DualSenseController overrides this to attempt a Bluetooth-level
         // disconnect of the stale entry once USB has taken over for the same physical controller -

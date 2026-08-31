@@ -148,10 +148,9 @@ namespace BetterJoyForCemu {
             return 0;
         }
 
-        // The shared HOME-long-press and inactivity paths call this virtual hook. A DS4 needs
-        // the same radio-level Bluetooth disconnect as DualSense; merely marking it dropped
-        // leaves the physical HID connection alive and the scanner immediately adds it again.
-        // USB has no equivalent power-off command, so leave a wired controller connected.
+        // The DS4 power-off operation is likewise a Bluetooth-radio operation, not a command its
+        // wired firmware honors. Preferred transport: Bluetooth leaves USB charge-only, so this
+        // existing wireless path can still honor the shared long-press timer while plugged in.
         public override void PowerOff() {
             if (state > state_.DROPPED && !isUSB) {
                 StopBluetoothAudioStream();
@@ -190,12 +189,45 @@ namespace BetterJoyForCemu {
             return (lightbarRed, lightbarGreen, lightbarBlue);
         }
 
-        // If the same DS4 appears over USB while its Bluetooth HID connection is still present,
-        // the shared MAC-based duplicate retirement stops BetterJoy from using the old entry.
-        // Drop the underlying radio link as well so Windows does not rediscover that stale entry
-        // on every scan. This mirrors DualSenseController's transport handoff behavior.
+        private bool PrefersBluetoothTransport() {
+            return ControllerMappings.PreferredTransport(ControllerMappings.ProfileIdFor(this)) ==
+                ControllerMappings.PreferredTransportBluetooth;
+        }
+
+        protected override bool CanResolveDuplicate(Controller other) {
+            DualShock4Controller dualShock4 = other as DualShock4Controller;
+            return dualShock4 == null || dualShock4.lightbarTransportKnown;
+        }
+
+        protected override bool PreferExistingDuplicate(Controller other) {
+            if (!(other is DualShock4Controller) || isUSB == other.isUSB)
+                return false;
+
+            return PrefersBluetoothTransport()
+                ? isUSB && !other.isUSB
+                : !isUSB && other.isUSB;
+        }
+
+        protected override void OnRetiredAsDuplicate(Controller other) {
+            if (!(other is DualShock4Controller))
+                return;
+
+            if (isUSB && !other.isUSB) {
+                Program.mgr.SuppressUsbControllerForBluetoothPreference(
+                    path, ControllerMappings.ProfileIdFor(this));
+            } else if (!isUSB && other.isUSB) {
+                BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+            }
+        }
+
         protected override void OnDuplicateRetired(Controller other) {
-            if (other is DualShock4Controller && isUSB && !other.isUSB) {
+            if (!(other is DualShock4Controller))
+                return;
+
+            if (!isUSB && other.isUSB) {
+                Program.mgr.SuppressUsbControllerForBluetoothPreference(
+                    other.path, ControllerMappings.ProfileIdFor(this));
+            } else if (isUSB && !other.isUSB) {
                 bool disconnected = BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 form.AppendTextBox(disconnected
                     ? "Disconnected DualShock 4's Bluetooth link now that USB has taken over.\r\n"

@@ -431,22 +431,11 @@ namespace BetterJoyForCemu {
                           (buf[offset + 2] << 16) | (buf[offset + 3] << 24));
         }
 
-        // Deliberately no override here (inherits Controller's no-op): the old Joycon.PowerOff()
-        // this used to run through sent a Nintendo-protocol subcommand (SetHCIState/Subcommand)
-        // that's meaningless to a DualSense - Subcommand/ReadSPI/SetHCIState are Nintendo-only and
-        // stay in Joycon.cs, not promoted here. state_.DROPPED still needs to be set on power-off
-        // (HOME-long-press, inactivity timeout) so the connection actually tears down - see the
-        // override below.
-        // Real Bluetooth-level power-off - BT only, matching that command's own documented scope:
-        // a wired USB connection has no power-off analog, so attempting it there would be a no-op
-        // at best. Previously this just set state_.DROPPED unconditionally with no real hardware
-        // effect at all (neither transport) - harmless-looking, but BetterJoy would immediately
-        // rediscover the still-physically-connected controller on the next scan and reconnect it,
-        // producing a rapid disconnect/reconnect loop on every HOME-long-press or inactivity
-        // timeout (confirmed via debug.log: repeated "Connect: new controller added" for the same
-        // DualSense roughly every PowerOffInactivity-minutes interval, with zero "Dropped."/"went
-        // silent"/"Retiring duplicate" lines - the tell that state was being dropped silently,
-        // outside every path that normally logs a drop).
+        // Sony's feature report 0x08 only controls the Bluetooth radio; the controller accepts
+        // the HID transfer over USB but does not power down while the cable supplies it. Profiles
+        // that need charge-only USB therefore select Preferred transport: Bluetooth instead (see
+        // the duplicate-transport hooks below), leaving this proven radio disconnect as the live
+        // long-press path rather than pretending a wired shutdown command exists.
         public override void PowerOff() {
             if (state > state_.DROPPED && !isUSB) {
                 StopBluetoothMicrophone();
@@ -547,16 +536,49 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Generic MAC-based dedup runs in Controller.RetireDuplicateConnections(); this hook adds
-        // DualSense's own Bluetooth-auto-disconnect tail on top, for the one case a plain MAC-based
-        // drop doesn't fully clean up: a Bluetooth-connected DualSense that's now also connected
-        // over USB. Marking the stale BT entry DROPPED (already done by the caller) only stops
-        // BetterJoy from using it - the underlying OS-level Bluetooth HID connection is still alive
-        // and gets rediscovered (and re-retired) on every subsequent scan, churning a new virtual
-        // controller each time. Tell the Bluetooth radio itself to drop that connection instead,
-        // the same way DS4Windows's DisconnectBT does (IOCTL_BTH_DISCONNECT_DEVICE).
+        private bool PrefersBluetoothTransport() {
+            return ControllerMappings.PreferredTransport(ControllerMappings.ProfileIdFor(this)) ==
+                ControllerMappings.PreferredTransportBluetooth;
+        }
+
+        // Whichever transport proves itself alive second normally wins shared MAC deduplication.
+        // For DualSense the profile chooses instead: Bluetooth keeps the wireless HID/output/audio
+        // lanes and quarantines the matching USB HID path as charge-only; USB preserves the prior
+        // behavior and tears down the radio connection so it cannot churn through rediscovery.
+        protected override bool CanResolveDuplicate(Controller other) {
+            DualSenseController dualSense = other as DualSenseController;
+            return dualSense == null || dualSense.lightbarTransportKnown;
+        }
+
+        protected override bool PreferExistingDuplicate(Controller other) {
+            if (!(other is DualSenseController) || isUSB == other.isUSB)
+                return false;
+
+            return PrefersBluetoothTransport()
+                ? isUSB && !other.isUSB
+                : !isUSB && other.isUSB;
+        }
+
+        protected override void OnRetiredAsDuplicate(Controller other) {
+            if (!(other is DualSenseController))
+                return;
+
+            if (isUSB && !other.isUSB) {
+                Program.mgr.SuppressUsbControllerForBluetoothPreference(
+                    path, ControllerMappings.ProfileIdFor(this));
+            } else if (!isUSB && other.isUSB) {
+                BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+            }
+        }
+
         protected override void OnDuplicateRetired(Controller other) {
-            if (other is DualSenseController && isUSB && !other.isUSB) {
+            if (!(other is DualSenseController))
+                return;
+
+            if (!isUSB && other.isUSB) {
+                Program.mgr.SuppressUsbControllerForBluetoothPreference(
+                    other.path, ControllerMappings.ProfileIdFor(this));
+            } else if (isUSB && !other.isUSB) {
                 // The profile lightbar color is applied on the first transport-confirmed read,
                 // covering this handoff as well as a fresh USB or Bluetooth connection.
                 bool disconnected = BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());

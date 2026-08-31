@@ -73,6 +73,50 @@ namespace BetterJoyForCemu {
         // list/hiddenInstanceIds - not just the shutdown race StopScanning uses it for below.
         readonly object scanLock = new object();
 
+        // A Sony profile which prefers Bluetooth deliberately retires its duplicate wired HID
+        // interface while leaving the cable available for charging. Without a quarantine,
+        // CleanUp closes that interface and the next scan immediately opens it again. Remember
+        // both the path and profile so changing the dropdown back to USB releases it live; an
+        // unplug also removes the entry, with no persistent Windows device-disable state.
+        readonly object suppressedUsbControllerLock = new object();
+        readonly Dictionary<string, string> suppressedUsbControllerProfiles =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        public void SuppressUsbControllerForBluetoothPreference(
+                string devicePath, string profileId) {
+            if (String.IsNullOrEmpty(devicePath) || String.IsNullOrEmpty(profileId))
+                return;
+
+            lock (suppressedUsbControllerLock)
+                suppressedUsbControllerProfiles[devicePath] = profileId;
+        }
+
+        private bool IsUsbControllerSuppressed(string devicePath) {
+            if (String.IsNullOrEmpty(devicePath))
+                return false;
+
+            lock (suppressedUsbControllerLock) {
+                if (!suppressedUsbControllerProfiles.TryGetValue(devicePath,
+                        out string profileId))
+                    return false;
+
+                if (ControllerMappings.PreferredTransport(profileId) ==
+                        ControllerMappings.PreferredTransportBluetooth)
+                    return true;
+
+                suppressedUsbControllerProfiles.Remove(devicePath);
+                return false;
+            }
+        }
+
+        private void ReleaseRemovedUsbControllerSuppressions(HashSet<string> enumeratedPaths) {
+            lock (suppressedUsbControllerLock) {
+                foreach (string path in suppressedUsbControllerProfiles.Keys
+                        .Where(path => !enumeratedPaths.Contains(path)).ToList())
+                    suppressedUsbControllerProfiles.Remove(path);
+            }
+        }
+
         // Timer.Stop() only blocks FUTURE ticks - an Elapsed callback that already fired and is
         // queued on the ThreadPool, but hasn't reached the scanLock yet, isn't covered by that.
         // Set before the rendezvous below (not inside it) so a callback which acquires scanLock
@@ -544,6 +588,7 @@ namespace BetterJoyForCemu {
             bool isLeft = false;
             IntPtr ptr = HIDapi.hid_enumerate(0x0, 0x0);
             IntPtr top_ptr = ptr;
+            var enumeratedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             hid_device_info enumerate; // Add device to list
             bool foundNew = false;
@@ -551,9 +596,20 @@ namespace BetterJoyForCemu {
                 SController thirdParty = null;
                 enumerate = (hid_device_info)Marshal.PtrToStructure(ptr, typeof(hid_device_info));
 
+                if (!String.IsNullOrEmpty(enumerate.path))
+                    enumeratedPaths.Add(enumerate.path);
+
                 if (enumerate.serial_number == null) {
                     ptr = enumerate.next; // can't believe it took me this long to figure out why USB connections used up so much CPU.
                                           // it was getting stuck in an inf loop here!
+                    continue;
+                }
+
+                // A Bluetooth-preferred DualSense/DS4 keeps this matching wired HID interface
+                // charge-only. Keep tracking the path above so unplugging releases its quarantine,
+                // but do not hide, open, or attach it while that profile preference remains.
+                if (IsUsbControllerSuppressed(enumerate.path)) {
+                    ptr = enumerate.next;
                     continue;
                 }
 
@@ -824,6 +880,7 @@ namespace BetterJoyForCemu {
             }
 
             HIDapi.hid_free_enumeration(top_ptr);
+            ReleaseRemovedUsbControllerSuppressions(enumeratedPaths);
 
             // Connect/attach every newly-found device BEFORE auto-join runs below. Auto-join's
             // pairing (Joycon.other's setter) sends a player-LED subcommand immediately, which

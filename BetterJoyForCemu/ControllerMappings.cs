@@ -40,6 +40,8 @@ namespace BetterJoyForCemu {
         public const string RumbleModeDisableWithGyro = "disable_with_gyro";
         public const string AudioModeRequireHeadphones = "require_headphones";
         public const string MicrophoneModeStartMuted = "start_muted";
+        public const string PreferredTransportUsb = "usb";
+        public const string PreferredTransportBluetooth = "bluetooth";
         public const string MicIndicatorModeDisabled = "disabled";
         public const string MicIndicatorModeInverted = "inverted";
         public const string MicIndicatorModeEnabled = "enabled";
@@ -70,6 +72,10 @@ namespace BetterJoyForCemu {
         public static readonly (string Value, string Label)[] RumbleModes = {
             (ModeEnable, "Enable"), (ModeDisable, "Disable"),
             (RumbleModeDisableWithGyro, "Disable with gyro"),
+        };
+        public static readonly (string Value, string Label)[] PreferredTransports = {
+            (PreferredTransportBluetooth, "Bluetooth"),
+            (PreferredTransportUsb, "USB"),
         };
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
@@ -124,7 +130,7 @@ namespace BetterJoyForCemu {
         // migration/default source for profiles without an explicit option, but these values are
         // persisted beside bindings once a profile is edited.
         public static readonly string[] OptionKeys = {
-            "UseAs", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
+            "UseAs", "PreferredTransport", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "HomeLongPowerOffHoldSeconds",
             "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
@@ -543,6 +549,17 @@ namespace BetterJoyForCemu {
             if (String.Equals(value, LightingModeOpenRgb, StringComparison.OrdinalIgnoreCase))
                 return LightingModeOpenRgb;
             return LightingModeUser;
+        }
+
+        // USB preserves BetterJoy's established behavior for every existing profile. Bluetooth
+        // is opt-in and means a matching wired Sony HID interface is treated as charge-only while
+        // the same physical controller remains available through its wireless connection.
+        public static string PreferredTransport(string profileId) {
+            string value = OptionValue(profileId, "PreferredTransport");
+            return String.Equals(value, PreferredTransportBluetooth,
+                    StringComparison.OrdinalIgnoreCase)
+                ? PreferredTransportBluetooth
+                : PreferredTransportUsb;
         }
 
         public static int LightBrightness(string profileId) {
@@ -1031,6 +1048,8 @@ namespace BetterJoyForCemu {
 
             if (key == "ControllerAudioEnabled")
                 return ModeDisable;
+            if (key == "PreferredTransport")
+                return PreferredTransportUsb;
             if (key == "ControllerAudioVolume")
                 return "75";
             if (key == "ControllerAudioEndpointId")
