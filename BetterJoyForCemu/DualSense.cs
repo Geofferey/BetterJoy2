@@ -467,9 +467,17 @@ namespace BetterJoyForCemu {
         private void SetTrackedLightColor(byte red, byte green, byte blue,
                                           bool fromOpenRgbServer) {
             lock (outputReportLock) {
+                // OpenRGB is allowed to bypass the ordinary hands-off gate only while this exact
+                // profile is still assigned to OpenRGB. A queued SDK animation frame can race a
+                // live profile switch back to Default; accepting it there would let the Bluetooth
+                // audio carrier reclaim the lightbar on its next 0x36 report, undoing the strict
+                // Default-mode guarantee from 69b94e9.
+                if (fromOpenRgbServer && !LightingModeIsOpenRgb())
+                    return;
+
                 // Profile reconciliation reapplies controller options on every scan pass. Once
                 // this exact color has reached an initialized transport, another 0x31 report is
-                // redundant and can collide with the shared rumble/audio state lane. Preserve the
+                // redundant and needlessly consumes Bluetooth output bandwidth. Preserve the
                 // pending path during attach so the first real color write is never suppressed.
                 if (lightbarTransportKnown && !lightbarUpdatePending &&
                     lightbarRed == red && lightbarGreen == green &&
@@ -480,21 +488,18 @@ namespace BetterJoyForCemu {
                 lightbarGreen = green;
                 lightbarBlue = blue;
                 lightbarUpdatePending = true;
-                bluetoothOutputStateDirty = true;
-                if (fromOpenRgbServer)
-                    openRgbLightbarUpdatePending = true;
+                // This flag describes the source of the currently pending color, not whether an
+                // OpenRGB color has ever been queued. A later managed-profile update must revoke a
+                // stale OpenRGB bypass before any standalone lighting report is built.
+                openRgbLightbarUpdatePending = fromOpenRgbServer;
                 if (lightbarTransportKnown) {
-                    bool mediaOwnsOutput = !isUSB &&
-                        (bluetoothAudioStreaming || bluetoothMicrophoneStreaming ||
-                         bluetoothMicrophoneDisablePending ||
-                         bluetoothMicrophoneControlPending);
-                    if (!mediaOwnsOutput) {
-                        SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue,
-                            fromOpenRgbServer);
-                        lightbarUpdatePending = false;
-                        if (fromOpenRgbServer)
-                            openRgbLightbarUpdatePending = false;
-                    }
+                    // Lighting remains a standalone controller-output request even while the
+                    // Bluetooth media lane is active. Audio carriers never need RGB state
+                    // interleaved into them; the controller retains the last LED command itself.
+                    SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue,
+                        fromOpenRgbServer);
+                    lightbarUpdatePending = false;
+                    openRgbLightbarUpdatePending = false;
                 }
             }
         }
@@ -531,7 +536,6 @@ namespace BetterJoyForCemu {
                     return;
 
                 currentPlayerLeds = desired;
-                bluetoothOutputStateDirty = true;
                 // Reuses the exact same "not yet known, retry once ReceiveRaw confirms transport"
                 // path SetLightColor already relies on - SendDualSenseLightbar publishes both the
                 // lightbar color and currentPlayerLeds together in one report either way.
@@ -668,6 +672,12 @@ namespace BetterJoyForCemu {
                 // issue it here at all while Default is active. lightbarUpdatePending is
                 // deliberately left set (not cleared) so switching the profile away from Default
                 // later, even without a reconnect, still applies its assigned color once.
+                // Discard an OpenRGB frame that was queued immediately before a profile switch.
+                // In particular, never let it fall through as a normal profile color in Default.
+                if (openRgbLightbarUpdatePending && !LightingModeIsOpenRgb()) {
+                    openRgbLightbarUpdatePending = false;
+                    lightbarUpdatePending = false;
+                }
                 if (lightbarUpdatePending && openRgbLightbarUpdatePending) {
                     SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue, true);
                     lightbarUpdatePending = false;
@@ -1504,12 +1514,11 @@ namespace BetterJoyForCemu {
                 AudioDebugLog.Write("DualSenseSend", "Stop pad=" + PadId);
             }
 
-            // Return ownership to ordinary 0x31 output reports after the media carrier stops.
-            // These calls are outside bluetoothAudioStateLock so no pipe/lifecycle work is held
-            // across physical HID writes.
+            // Reassert rumble after the media carrier stops. Lighting is intentionally absent here:
+            // it was already delivered by standalone reports while media was active, and the
+            // controller retains that LED state without an audio-lifecycle resend.
             if (restoreControllerOutput) {
                 SendDualSenseRumble(currentLeftMotor, currentRightMotor);
-                SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
             }
         }
 
@@ -1618,9 +1627,6 @@ namespace BetterJoyForCemu {
                     if (submitted) {
                         bluetoothOutputStateDirty = false;
                         adaptiveTriggerUpdatePending = false;
-                        if (openRgbLightbarUpdatePending)
-                            lightbarUpdatePending = false;
-                        openRgbLightbarUpdatePending = false;
                     } else {
                         // Building a carrier reserves both protocol sequence values. A saturated
                         // native pool did not publish it, so preserve contiguous wire sequences for
@@ -1793,25 +1799,17 @@ namespace BetterJoyForCemu {
                 report[BtAudioStateOffset + 38] = 0;
             }
 
-            if (LightingModeIsHandsOff()) {
-                // A 0x36 carrier contains the complete DualSense output-state structure. Its
-                // default template asserts RGB and player-indicator controls in valid_flag1,
-                // plus lightbar setup and LED brightness in valid_flag2. Default delegates all
-                // lighting to firmware or another application, so strip every lighting ownership
-                // bit on every frame. Compatible vibration2 (valid_flag2 bit 2) remains intact.
-                report[BtAudioStateOffset + 1] &=
-                    unchecked((byte)~DualSenseValidLightingFlag1);
-                report[BtAudioStateOffset + 38] &=
-                    unchecked((byte)~DualSenseValidLightingFlag2);
-                if (openRgbLightbarUpdatePending) {
-                    // Publish an explicit OpenRGB transition through the media carrier that owns
-                    // Bluetooth output, without claiming player indicators or LED brightness.
-                    report[BtAudioStateOffset + 1] |= DualSenseValidLightbarControl;
-                    report[BtAudioStateOffset + 38] |=
-                        DualSenseValidLightbarSetupControl;
-                    report[BtAudioStateOffset + 41] = 0x02;
-                }
-            }
+            // A 0x36 media carrier contains the complete DualSense output-state structure, but
+            // audio does not require it to repeatedly claim or resend any lighting state. Strip
+            // RGB, player-indicator, lightbar-setup, and LED-brightness validity on every carrier,
+            // in every lighting mode. Standalone 0x31/0x02 requests own LED transitions instead;
+            // the controller retains their result while subsequent media packets carry audio,
+            // microphone, rumble, and trigger state only. Compatible vibration2 (flag2 bit 2)
+            // remains intact.
+            report[BtAudioStateOffset + 1] &=
+                unchecked((byte)~DualSenseValidLightingFlag1);
+            report[BtAudioStateOffset + 38] &=
+                unchecked((byte)~DualSenseValidLightingFlag2);
 
             if (bluetoothOutputStateDirty || currentLeftMotor != 0 || currentRightMotor != 0) {
                 report[BtAudioStateOffset] |=
@@ -2000,8 +1998,18 @@ namespace BetterJoyForCemu {
         // any time via a live profile edit, and this needs to reflect whatever's current on every
         // single write, not a stale snapshot from Attach. Default and OpenRGB share the same
         // hands-off behavior here - see ControllerMappings.LightingModeIsHandsOff's own comment.
+        private string CurrentLightingMode() {
+            return ControllerMappings.LightingMode(ControllerMappings.ProfileIdFor(this));
+        }
+
         private bool LightingModeIsHandsOff() {
-            return ControllerMappings.LightingModeIsHandsOff(ControllerMappings.ProfileIdFor(this));
+            string mode = CurrentLightingMode();
+            return mode == ControllerMappings.LightingModeDefault ||
+                mode == ControllerMappings.LightingModeOpenRgb;
+        }
+
+        private bool LightingModeIsOpenRgb() {
+            return CurrentLightingMode() == ControllerMappings.LightingModeOpenRgb;
         }
 
         private void WriteRetainedRumbleAndTriggerState(byte[] report, int commonOffset,
@@ -2222,15 +2230,25 @@ namespace BetterJoyForCemu {
         private void SendDualSenseLightbar(byte red, byte green, byte blue,
                                            bool fromOpenRgbServer = false) {
             lock (outputReportLock) {
-                bluetoothOutputStateDirty = true;
                 bool bt = !isUSB;
                 // This helper carries both RGB and player-indicator state. Default delegates all
                 // lighting, even when the separate Player LEDs option is enabled. Retain the
                 // desired state as pending so leaving Default can apply it without reconnecting,
                 // but do not publish any LED command while Default is active.
-                bool lightingDefault = LightingModeIsHandsOff();
-                if (lightingDefault && !fromOpenRgbServer) {
-                    lightbarUpdatePending = true;
+                string lightingMode = CurrentLightingMode();
+                bool lightingHandsOff =
+                    lightingMode == ControllerMappings.LightingModeDefault ||
+                    lightingMode == ControllerMappings.LightingModeOpenRgb;
+                bool openRgbAuthorized = fromOpenRgbServer &&
+                    lightingMode == ControllerMappings.LightingModeOpenRgb;
+                if ((fromOpenRgbServer && !openRgbAuthorized) ||
+                    (lightingHandsOff && !openRgbAuthorized)) {
+                    if (fromOpenRgbServer) {
+                        openRgbLightbarUpdatePending = false;
+                        lightbarUpdatePending = false;
+                    } else {
+                        lightbarUpdatePending = true;
+                    }
                     return;
                 }
                 if (!bt) {
@@ -2249,11 +2267,6 @@ namespace BetterJoyForCemu {
                     HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
                     return;
                 }
-
-                if (bluetoothAudioStreaming || bluetoothMicrophoneStreaming ||
-                    bluetoothMicrophoneDisablePending ||
-                    bluetoothMicrophoneControlPending)
-                    return;
 
                 if (!lightbarControlReleased) {
                     byte[] setup = CreateDualSenseBluetoothLightbarReport();
