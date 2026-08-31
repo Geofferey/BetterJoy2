@@ -688,7 +688,10 @@ namespace BetterJoyForCemu {
                     if (!connectionLightFlashStarted) {
                         // Confirm every new USB or Bluetooth connection with a short blue light,
                         // then replace it with the controller profile's assigned color.
-                        SendDualSenseLightbar(0, 0, 255);
+                        string profileId = ControllerMappings.ProfileIdFor(this);
+                        (byte flashRed, byte flashGreen, byte flashBlue) =
+                            ControllerMappings.ApplyLightBrightness(profileId, 0, 0, 255);
+                        SendDualSenseLightbar(flashRed, flashGreen, flashBlue);
                         connectionLightFlashStarted = true;
                         connectionLightColorTimestamp = lightbarNow + Stopwatch.Frequency / 4;
                     } else if (lightbarNow >= connectionLightColorTimestamp) {

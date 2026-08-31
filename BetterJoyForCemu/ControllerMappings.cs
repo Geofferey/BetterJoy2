@@ -102,7 +102,7 @@ namespace BetterJoyForCemu {
             "capture", "home", "guide", "mic_mute", "toggle_built_in_mic",
             "volume_up", "volume_down",
             "lt_haptics", "rt_haptics", "toggle_haptics", "toggle_lighting", "color_wheel",
-            "modifier",
+            "brightness_up", "brightness_down", "modifier",
             "sl_l", "sl_r", "sr_l", "sr_r", "shake",
             // active_gyro is retained only to migrate existing per-profile bindings from the
             // former global GyroToJoyOrMouse selector. New runtime/UI code uses the three
@@ -135,7 +135,8 @@ namespace BetterJoyForCemu {
             "TouchpadHorizontalScale", "TouchpadVerticalScale",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
-            "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "LightingOff", "LightingMode",
+            "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "LightBrightness",
+            "LightingOff", "LightingMode",
             "PlayerLedMode",
             "GyroAnalogSliders", "DefaultOrientation",
             "GyroStickModeLeft", "GyroStickModeRight",
@@ -539,6 +540,26 @@ namespace BetterJoyForCemu {
             if (String.Equals(value, LightingModeOpenRgb, StringComparison.OrdinalIgnoreCase))
                 return LightingModeOpenRgb;
             return LightingModeUser;
+        }
+
+        public static int LightBrightness(string profileId) {
+            return Math.Max(0, Math.Min(100, IntOption(profileId, "LightBrightness", 100)));
+        }
+
+        // Uniform RGB scaling preserves the selected hue and saturation. Default and OpenRGB are
+        // intentionally excluded: both modes delegate lighting ownership outside BetterJoy, so
+        // this helper must never modify their colors even if a caller reaches it accidentally.
+        public static (byte Red, byte Green, byte Blue) ApplyLightBrightness(
+                string profileId, byte red, byte green, byte blue) {
+            string mode = LightingMode(profileId);
+            if (mode == LightingModeDefault || mode == LightingModeOpenRgb)
+                return (red, green, blue);
+
+            int brightness = LightBrightness(profileId);
+            return (
+                (byte)Math.Round(red * brightness / 100.0),
+                (byte)Math.Round(green * brightness / 100.0),
+                (byte)Math.Round(blue * brightness / 100.0));
         }
 
         // Default and OpenRGB both mean BetterJoy never sends a single lighting command for this
@@ -1017,6 +1038,8 @@ namespace BetterJoyForCemu {
                 return "false";
             if (key == "ControllerBluetoothMicrophoneEnabled")
                 return ModeDisable;
+            if (key == "LightBrightness")
+                return "100";
             if (key == "EnableRumble") {
                 bool enabled;
                 Boolean.TryParse(ConfigurationManager.AppSettings[key], out enabled);

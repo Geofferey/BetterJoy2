@@ -150,7 +150,7 @@ namespace BetterJoyForCemu {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
             "clench_gyro", "ratchet_gyro", "touchpad_left_click", "touchpad_right_click",
             "touchpad_center_click", "touchpad_scroll_up", "touchpad_scroll_down",
-            "touchpad_pointer_lock", "color_wheel"
+            "touchpad_pointer_lock", "color_wheel", "brightness_up", "brightness_down"
         };
 
         private ControllerProfileInfo SelectedProfile {
@@ -276,7 +276,7 @@ namespace BetterJoyForCemu {
                 new ToolStripMenuItem("Vertical") { Tag = ControllerMappings.OrientationVertical });
             menu_default_orientation.ItemClicked += DefaultOrientationMenu_ItemClicked;
 
-            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_toggle_haptics, btn_toggle_lighting, btn_color_wheel, btn_modifier, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
+            specialButtons = new List<SplitButton> { btn_capture, btn_home, btn_guide, btn_mic_mute, btn_toggle_built_in_mic, btn_volume_up, btn_volume_down, btn_lt_haptics, btn_rt_haptics, btn_toggle_haptics, btn_toggle_lighting, btn_color_wheel, btn_brightness_up, btn_brightness_down, btn_modifier, btn_sl_l, btn_sl_r, btn_sr_l, btn_sr_r, btn_shake, btn_reset_mouse, btn_active_gyro, btn_ratchet_gyro, btn_touchpad_click, btn_touchpad_tap, btn_touchpad_two_finger_tap, btn_touchpad_two_finger_scroll_up, btn_touchpad_two_finger_scroll_down, btn_active_touchpad_mouse };
             specialButtons.AddRange(gyroMouseButtons);
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
@@ -324,6 +324,8 @@ namespace BetterJoyForCemu {
         private SplitButton btn_toggle_haptics;
         private SplitButton btn_toggle_lighting;
         private SplitButton btn_color_wheel;
+        private SplitButton btn_brightness_up;
+        private SplitButton btn_brightness_down;
         private SplitButton btn_modifier;
         private SplitButton btn_touchpad_click;
         private SplitButton btn_touchpad_tap;
@@ -431,6 +433,8 @@ namespace BetterJoyForCemu {
             btn_toggle_haptics = new SplitButton { Name = "btn_toggle_haptics" };
             btn_toggle_lighting = new SplitButton { Name = "btn_toggle_lighting" };
             btn_color_wheel = new SplitButton { Name = "btn_color_wheel" };
+            btn_brightness_up = new SplitButton { Name = "btn_brightness_up" };
+            btn_brightness_down = new SplitButton { Name = "btn_brightness_down" };
             btn_modifier = new SplitButton { Name = "btn_modifier" };
             btn_touchpad_click = new SplitButton { Name = "btn_touchpad_click" };
             btn_touchpad_tap = new SplitButton { Name = "btn_touchpad_tap" };
@@ -847,6 +851,13 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(btn_color_wheel,
                 "While Lighting Mode is Wheel, hold this binding and slide a finger on the " +
                 "touchpad to choose the controller's light color.");
+            layout.Row(null, btn_brightness_up, "Brightness +");
+            layout.Row(null, btn_brightness_down, "Brightness -");
+            const string brightnessTip =
+                "Adjust BetterJoy-managed lightbar brightness by 10%. Disabled in Default and " +
+                "OpenRGB modes, where BetterJoy does not own lighting.";
+            tip_reassign.SetToolTip(btn_brightness_up, brightnessTip);
+            tip_reassign.SetToolTip(btn_brightness_down, brightnessTip);
 
             layout.Divider();
             layout.Heading("Joy-Con rail buttons",
@@ -2671,6 +2682,8 @@ namespace BetterJoyForCemu {
             btn_rt_haptics.Enabled = hasController && hasAdaptiveTriggers;
             btn_toggle_lighting.Enabled = hasController && hasConfigurableLight;
             btn_color_wheel.Enabled = hasController && hasTouchpad && hasConfigurableLight;
+            btn_brightness_up.Enabled = hasController && hasConfigurableLight;
+            btn_brightness_down.Enabled = hasController && hasConfigurableLight;
             btn_apply.Enabled = hasController;
             gameControllersButton.Enabled = hasController;
             LoadProfileOptions(hasController);

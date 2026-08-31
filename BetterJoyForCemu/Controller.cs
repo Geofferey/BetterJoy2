@@ -1251,8 +1251,7 @@ namespace BetterJoyForCemu {
                      (timestamp - touchpadColorWheelLastPublishTimestamp) /
                          (double)Stopwatch.Frequency >=
                          1.0 / TouchpadColorWheelUpdatesPerSecond)) {
-                SetLightColor(touchpadColorWheelRed, touchpadColorWheelGreen,
-                    touchpadColorWheelBlue);
+                SetTouchpadColorWheelLight();
                 touchpadColorWheelPublishPending = false;
                 touchpadColorWheelLastPublishTimestamp = timestamp;
             }
@@ -1286,6 +1285,13 @@ namespace BetterJoyForCemu {
             blue = (byte)Math.Round((blueBase + match) * Byte.MaxValue);
         }
 
+        private void SetTouchpadColorWheelLight() {
+            (byte red, byte green, byte blue) = ControllerMappings.ApplyLightBrightness(
+                mappingProfileId, touchpadColorWheelRed, touchpadColorWheelGreen,
+                touchpadColorWheelBlue);
+            SetLightColor(red, green, blue);
+        }
+
         // The latest preview is flushed and persisted exactly once at the end of the hold. This
         // keeps controller_mappings.xml off the high-rate touch-report path while ensuring the
         // color survives reconnects and application restarts.
@@ -1295,8 +1301,7 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            SetLightColor(touchpadColorWheelRed, touchpadColorWheelGreen,
-                touchpadColorWheelBlue);
+            SetTouchpadColorWheelLight();
             string color = String.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}",
                 touchpadColorWheelRed, touchpadColorWheelGreen, touchpadColorWheelBlue);
             ControllerMappings.SetOptionValue(mappingProfileId, "LightColor", color);
@@ -2569,6 +2574,39 @@ namespace BetterJoyForCemu {
             ControllerMappings.SetOptionValue(mappingProfileId, "ControllerAudioVolume", updated.ToString());
         }
 
+        // One discrete 10% step per press. Default and OpenRGB are hard exclusions rather than
+        // merely delayed updates: BetterJoy does not own lighting in either mode, so these binds
+        // cannot alter their output or quietly queue a brightness change behind their back.
+        private void AdjustLightBrightnessOnPress(string configKey, int deltaPercent) {
+            if (mappingProfileId == null)
+                mappingProfileId = ControllerMappings.ProfileIdFor(this);
+
+            string lightingMode = ControllerMappings.LightingMode(mappingProfileId);
+            bool enabled = (Kind == ControllerKind.DualSense ||
+                            Kind == ControllerKind.DualShock4) &&
+                lightingMode != ControllerMappings.LightingModeDefault &&
+                lightingMode != ControllerMappings.LightingModeOpenRgb;
+            bool held = UpdateDesktopActionComboHeld(configKey, enabled, out bool wasHeld);
+            if (!held || wasHeld)
+                return;
+
+            int current = ControllerMappings.LightBrightness(mappingProfileId);
+            int updated = Math.Max(0, Math.Min(100, current + deltaPercent));
+            if (updated == current)
+                return;
+
+            ControllerMappings.SetOptionValue(
+                mappingProfileId, "LightBrightness", updated.ToString());
+            JoyconManager.ApplyControllerProfileLighting(this, mappingProfileId);
+            try {
+                ControllerMappings.Save();
+            } catch (IOException) {
+                form?.AppendTextBox("Could not save the controller lighting brightness.\r\n");
+            } catch (UnauthorizedAccessException) {
+                form?.AppendTextBox("Could not save the controller lighting brightness.\r\n");
+            }
+        }
+
         // Advances optionKey to the next entry in modes (ControllerMappings.AdaptiveTriggerModes/
         // RumbleModes - the same list its own dropdown populates .Items from, so a mode added
         // there is automatically part of the cycle here too, nothing to keep in sync by hand).
@@ -2719,6 +2757,8 @@ namespace BetterJoyForCemu {
             // there's nothing to save/restore, only to flip.
             if (Kind == ControllerKind.DualSense || Kind == ControllerKind.DualShock4)
                 ToggleBoolOptionOnPress("toggle_lighting", "LightingOff");
+            AdjustLightBrightnessOnPress("brightness_up", 10);
+            AdjustLightBrightnessOnPress("brightness_down", -10);
             UpdateTouchpadColorWheel();
             DoDeviceSpecificButtonActions();
 

@@ -331,7 +331,10 @@ namespace BetterJoyForCemu {
                             // DS4 finishes entering extended-report mode shortly after connect.
                             // Once ready, show the same blue confirmation as DualSense before
                             // applying this controller profile's assigned color.
-                            if (SendDualShock4Lightbar(0, 0, 255)) {
+                            string profileId = ControllerMappings.ProfileIdFor(this);
+                            (byte flashRed, byte flashGreen, byte flashBlue) =
+                                ControllerMappings.ApplyLightBrightness(profileId, 0, 0, 255);
+                            if (SendDualShock4Lightbar(flashRed, flashGreen, flashBlue)) {
                                 connectionLightFlashStarted = true;
                                 lightbarApplyEarliestTimestamp = lightbarNow +
                                     Stopwatch.Frequency / 4;

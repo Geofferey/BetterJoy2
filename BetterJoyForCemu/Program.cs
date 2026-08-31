@@ -270,8 +270,8 @@ namespace BetterJoyForCemu {
             });
         }
 
-        private static void ApplyControllerProfileLighting(Controller controller,
-                                                            string profileId) {
+        internal static void ApplyControllerProfileLighting(Controller controller,
+                                                             string profileId) {
             // While the held color-wheel binding owns the touchpad, its live preview is the
             // lighting source of truth. Reapplying the last persisted profile color from this
             // periodic reconciliation pass would make the lightbar jump backward mid-swipe.
@@ -308,6 +308,8 @@ namespace BetterJoyForCemu {
             } else {
                 ControllerMappings.GetLightColor(profileId, out red, out green, out blue);
             }
+            (red, green, blue) = ControllerMappings.ApplyLightBrightness(
+                profileId, red, green, blue);
 
             // Deliberately unconditional, not deduped up here - both DualSenseController and
             // DualShock4Controller's own SetLightColor already dedupe identical colors
