@@ -292,9 +292,15 @@ namespace BetterJoyForCemu {
         }
 
         public override void PowerOff() {
-            if (state > state_.DROPPED) {
+            if (state > state_.DROPPED && !isUSB) {
+                // Preserve Nintendo's controller-side sleep request, then tear down the Windows
+                // Bluetooth link with the same radio-level mechanism used by DualSense and
+                // DualShock4. Some third-party Pro controllers acknowledge or ignore subcommand
+                // 0x06 without actually releasing their HID connection; merely marking the
+                // BetterJoy object dropped then lets the scanner rediscover it immediately.
                 HIDapi.hid_set_nonblocking(handle, 0);
                 SetHCIState(0x00);
+                BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 state = state_.DROPPED;
             }
         }
