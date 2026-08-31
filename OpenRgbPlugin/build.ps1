@@ -90,6 +90,8 @@ $vcVars64 = Find-VcVars64
 $qmake = Ensure-Qt
 $openRgbSource = Ensure-OpenRgbSource
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+$qmakeBuildRoot = Join-Path $pluginRoot "obj\qmake"
+New-Item -ItemType Directory -Force -Path $qmakeBuildRoot | Out-Null
 
 $qmakeNative = $qmake -replace '/', '\'
 $projectNative = $project -replace '/', '\'
@@ -101,8 +103,13 @@ Write-Host "==> Building BetterJoy2 OpenRGB plugin (API v4 / Qt 5.15.0)..."
 $command = 'call "' + $vcVarsNative + '" && "' + $qmakeNative + '" "' + $projectNative +
     '" OPENRGB_SOURCE_DIR="' + $openRgbNative + '" BETTERJOY_PLUGIN_OUTPUT_DIR="' +
     $outputNative + '" && nmake /NOLOGO'
-& cmd.exe /d /c $command
-if ($LASTEXITCODE -ne 0) { throw "OpenRGB plugin build failed." }
+Push-Location $qmakeBuildRoot
+try {
+    & cmd.exe /d /c $command
+    if ($LASTEXITCODE -ne 0) { throw "OpenRGB plugin build failed." }
+} finally {
+    Pop-Location
+}
 
 $pluginDll = Join-Path $outputRoot "BetterJoyOpenRgbPlugin.dll"
 if (-not (Test-Path -LiteralPath $pluginDll)) {
