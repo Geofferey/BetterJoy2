@@ -14,7 +14,7 @@ namespace BetterJoyForCemu {
                 "UseHidHide", "UnhideOnExit", "AutoCalDebugLogging",
                 "DualSenseDebugLogging", "DualShock4DebugLogging", "DebugLogging", "GyroMouseDebugLogging",
                 "GyroStickDebugLogging", "UseViiperForDualSenseMicrophone",
-                "OpenRgbServerEnabled",
+                "OpenRgbServerMode", "OpenRgbServerCachedColor",
             };
 
         public static bool IsGlobalOption(string key) {
@@ -24,6 +24,11 @@ namespace BetterJoyForCemu {
         public static bool BoolValue(string key) {
             bool value;
             return Boolean.TryParse(ConfigurationManager.AppSettings[key], out value) && value;
+        }
+
+        public static string StringValue(string key, string defaultValue) {
+            string value = ConfigurationManager.AppSettings[key];
+            return String.IsNullOrEmpty(value) ? defaultValue : value;
         }
 
         public static void SetValue(string key, string value) {

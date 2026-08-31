@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Configuration;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -25,10 +27,10 @@ namespace BetterJoyForCemu {
     // cached and reapplied to a controller as soon as it becomes eligible, so connecting later
     // doesn't lose whatever OpenRGB last set.
     //
-    // Deliberately global, not per-profile: gated behind the "Enable OpenRGB SDK server" Global
-    // option (Reassign.cs), independent of - and coexisting with - OpenRgbRescan.cs's existing
-    // client-side rescan-nudge, which stays exactly as-is for anyone who'd rather just expose the
-    // raw HID device to OpenRGB directly instead.
+    // Deliberately global, not per-profile: gated behind the "OpenRGB SDK server" Global mode
+    // dropdown (Reassign.cs, see Modes below), independent of - and coexisting with -
+    // OpenRgbRescan.cs's existing client-side rescan-nudge, which stays exactly as-is for anyone
+    // who'd rather just expose the raw HID device to OpenRGB directly instead.
     //
     // Hard requirement: listens on 127.0.0.1 ONLY, never any other interface - every socket
     // operation here goes through that one guarantee (see Start() below).
@@ -45,6 +47,20 @@ namespace BetterJoyForCemu {
         private const int Port = 6743; // Deliberately not 6742 (OpenRGB's own default) - this is
                                         // a second, independent server the user points OpenRGB at.
         private const uint DeclaredProtocolVersion = 1;
+
+        // Global Options' "OpenRGB SDK server" dropdown (Reassign.cs) - single source of truth
+        // for both the stored OpenRgbServerMode value and the dropdown's own Items, same pattern
+        // as ControllerMappings.LightingModes. EnabledWithCache additionally persists the last
+        // color to OpenRgbServerCachedColor (see SyncEnabledState) - real hardware remembers its
+        // last color on its own even across a restart; this virtual device otherwise can't, since
+        // cachedColor below is normally just in-process memory.
+        public const string ModeDisabled = "Disabled";
+        public const string ModeEnabled = "Enabled";
+        public const string ModeEnabledWithCache = "EnabledWithCache";
+        public static readonly (string Value, string Label)[] Modes = {
+            (ModeDisabled, "Disabled"), (ModeEnabled, "Enabled"),
+            (ModeEnabledWithCache, "Enabled with cache"),
+        };
 
         // Confirmed against RGBControllerInterface.h.
         private const int DeviceTypeGamepad = 10;
@@ -75,16 +91,58 @@ namespace BetterJoyForCemu {
         // is reapplied whenever a controller becomes eligible.
         private static int cachedColor = -1;
 
+        // Mirrors OpenRgbServerMode == ModeEnabledWithCache - whether SetCachedColor should also
+        // persist to OpenRgbServerCachedColor. A plain field, not read under lifecycleLock:
+        // SetCachedColor runs on a client socket thread and only needs the latest value, not
+        // exclusion with Start/Stop.
+        private static volatile bool cachingEnabled;
+
         // Called at startup and after every shared-config reload (HeadlessJoyconHost's config
-        // watcher) - starts or stops the listener to match the current "Enable OpenRGB SDK
-        // server" Global option, whichever direction that changed.
+        // watcher) - starts or stops the listener, and turns caching on/off, to match the
+        // current "OpenRGB SDK server" Global option.
         public static void SyncEnabledState() {
-            bool shouldRun = ApplicationSettings.BoolValue("OpenRgbServerEnabled");
+            string mode = ApplicationSettings.StringValue("OpenRgbServerMode", ModeDisabled);
+            bool shouldRun = mode != ModeDisabled;
+            bool shouldCache = mode == ModeEnabledWithCache;
+
             lock (lifecycleLock) {
+                if (shouldCache && !cachingEnabled)
+                    LoadOrPersistCachedColor();
+                cachingEnabled = shouldCache;
+
                 if (shouldRun && listener == null)
                     Start();
                 else if (!shouldRun && listener != null)
                     Stop();
+            }
+        }
+
+        // Called once, right as caching turns on. If this session already has a color (OpenRGB
+        // set one before the mode was switched to "Enabled with cache"), persist it immediately
+        // rather than waiting for the next color write. Otherwise there's nothing from this
+        // session yet, so restore whatever a previous session last persisted.
+        private static void LoadOrPersistCachedColor() {
+            int color = Volatile.Read(ref cachedColor);
+            if (color >= 0) {
+                PersistCachedColor(color);
+                return;
+            }
+
+            int persisted;
+            if (Int32.TryParse(ApplicationSettings.StringValue("OpenRgbServerCachedColor", ""),
+                    NumberStyles.Integer, CultureInfo.InvariantCulture, out persisted) &&
+                    persisted >= 0) {
+                Volatile.Write(ref cachedColor, persisted);
+                ApplyCachedColorToEligibleControllers();
+            }
+        }
+
+        private static void PersistCachedColor(int color) {
+            try {
+                ApplicationSettings.SetValue("OpenRgbServerCachedColor",
+                    color.ToString(CultureInfo.InvariantCulture));
+            } catch (ConfigurationErrorsException ex) {
+                DebugLog.Write("OpenRgbServer: failed to persist cached color - " + ex.Message);
             }
         }
 
@@ -292,6 +350,8 @@ namespace BetterJoyForCemu {
         private static void SetCachedColor(uint rgbColor) {
             int color = (int)(rgbColor & 0x00FFFFFF);
             Volatile.Write(ref cachedColor, color);
+            if (cachingEnabled)
+                PersistCachedColor(color);
             byte cachedRed = (byte)(color & 0xFF);
             byte cachedGreen = (byte)((color >> 8) & 0xFF);
             byte cachedBlue = (byte)((color >> 16) & 0xFF);

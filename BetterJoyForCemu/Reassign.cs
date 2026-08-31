@@ -113,6 +113,10 @@ namespace BetterJoyForCemu {
         private bool updatingGlobalOptions;
         private readonly Dictionary<string, CheckBox> globalOptionCheckBoxes =
             new Dictionary<string, CheckBox>(StringComparer.Ordinal);
+        private readonly Dictionary<string, ProfileChoiceSelector> globalOptionSelectors =
+            new Dictionary<string, ProfileChoiceSelector>(StringComparer.Ordinal);
+        private readonly Dictionary<string, (string Value, string Label)[]> globalOptionSelectorModes =
+            new Dictionary<string, (string Value, string Label)[]>(StringComparer.Ordinal);
         private readonly Dictionary<string, Panel> profilePages = new Dictionary<string, Panel>();
         private readonly Dictionary<string, Button> profileNavigationButtons = new Dictionary<string, Button>();
         private Panel profilePageHost;
@@ -1479,9 +1483,10 @@ namespace BetterJoyForCemu {
             layout.Heading("OpenRGB SDK server",
                 "Expose a fixed BetterJoy2 device to OpenRGB - always present, loopback-only.");
             sectionTop = layout.Y;
-            page.Controls.Add(CreateGlobalCheckBox(
-                "Enable OpenRGB SDK server", 24, sectionTop, "OpenRgbServerEnabled"));
-            tip_reassign.SetToolTip(globalOptionCheckBoxes["OpenRgbServerEnabled"],
+            page.Controls.Add(CreateLabel("Server", 24, sectionTop + 6, ProfileText, false));
+            page.Controls.Add(CreateGlobalChoiceSelector(
+                90, sectionTop, 160, "OpenRgbServerMode", OpenRgbServer.Modes));
+            tip_reassign.SetToolTip(globalOptionSelectors["OpenRgbServerMode"],
                 "Listens on 127.0.0.1:6743 only - never any other network interface. Point " +
                 "OpenRGB's own Settings > SDK Client tab at that address and OpenRGB will pick " +
                 "it up automatically on every launch from then on, before any other program " +
@@ -1491,7 +1496,10 @@ namespace BetterJoyForCemu {
                 "or disappears from OpenRGB's list mid-session. Coexists with the OpenRGB " +
                 "Lighting Mode's existing rescan-on-connect behavior (which instead needs the " +
                 "controller's raw HID device exposed to OpenRGB directly) - enable either, both, " +
-                "or neither depending on your setup.");
+                "or neither depending on your setup. Enabled: color resets to black on every " +
+                "BetterJoy2 restart, same as a real device's software layer without any onboard " +
+                "memory. Enabled with cache: also remembers the last color OpenRGB set across a " +
+                "BetterJoy2 restart, the way a real RGB device's own onboard memory would.");
             layout.Advance(50);
 
             layout.Divider();
@@ -1676,6 +1684,22 @@ namespace BetterJoyForCemu {
             return checkBox;
         }
 
+        // Global counterpart to CreateProfileChoiceSelector's per-profile dropdowns (e.g.
+        // lightingModeSelector) - same (Value, Label) tuple-array convention, but writes straight
+        // to an ApplicationSettings key instead of the selected profile.
+        private ProfileChoiceSelector CreateGlobalChoiceSelector(int left, int top, int width,
+                                                                  string optionKey,
+                                                                  (string Value, string Label)[] modes) {
+            ProfileChoiceSelector selector = CreateProfileChoiceSelector(left, top, width);
+            foreach (var mode in modes)
+                selector.Items.Add(mode.Label);
+            selector.Tag = optionKey;
+            selector.SelectedIndexChanged += GlobalChoiceOptionChanged;
+            globalOptionSelectors.Add(optionKey, selector);
+            globalOptionSelectorModes.Add(optionKey, modes);
+            return selector;
+        }
+
         private CheckBox CreateOptionCheckBox(string text, int left, int top, string optionKey,
                                               EventHandler changed) {
             CheckBox checkBox = new DarkCheckBox {
@@ -1708,11 +1732,36 @@ namespace BetterJoyForCemu {
             }
         }
 
+        private void GlobalChoiceOptionChanged(object sender, EventArgs e) {
+            if (updatingGlobalOptions)
+                return;
+
+            ProfileChoiceSelector selector = (ProfileChoiceSelector)sender;
+            string optionKey = (string)selector.Tag;
+            var modes = globalOptionSelectorModes[optionKey];
+            int index = selector.SelectedIndex;
+            string value = index >= 0 && index < modes.Length ? modes[index].Value : modes[0].Value;
+            try {
+                ApplicationSettings.SetValue(optionKey, value);
+            } catch (ConfigurationErrorsException ex) {
+                LoadGlobalOptions();
+                MessageBox.Show("Unable to save global setting: " + ex.Message,
+                    "BetterJoy2", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         private void LoadGlobalOptions() {
             updatingGlobalOptions = true;
             try {
                 foreach (KeyValuePair<string, CheckBox> option in globalOptionCheckBoxes)
                     option.Value.Checked = ApplicationSettings.BoolValue(option.Key);
+                foreach (KeyValuePair<string, ProfileChoiceSelector> option in globalOptionSelectors) {
+                    var modes = globalOptionSelectorModes[option.Key];
+                    string value = ApplicationSettings.StringValue(option.Key, modes[0].Value);
+                    int index = Array.FindIndex(modes,
+                        m => String.Equals(m.Value, value, StringComparison.OrdinalIgnoreCase));
+                    option.Value.SelectedIndex = Math.Max(0, index);
+                }
             } finally {
                 updatingGlobalOptions = false;
             }
