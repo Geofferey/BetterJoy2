@@ -2,32 +2,43 @@
   <img src="title.png">
 </p>
 
-# BetterJoy2 v7.3.0
+# BetterJoy² v7.3.0
 
-**BetterJoy2 is a free, [MIT-licensed](LICENSE), system-wide controller compatibility layer for
+### Controller freedom, squared.
+
+**BetterJoy² is a free, [MIT-licensed](LICENSE), system-wide controller compatibility layer for
 Windows.** It
 makes Joy-Cons, Switch Pro, Switch SNES/N64, DualShock 4, and DualSense controllers usable through
 standard virtual XInput or DualShock 4 output while preserving the motion, touch, lighting, audio,
 adaptive triggers, and device features that make the physical controllers worth owning.
 
-BetterJoy2 does not require Steam, an account, online ownership checks, per-machine purchases, or
+BetterJoy² does not require Steam, an account, online ownership checks, per-machine purchases, or
 paid feature tiers. Install it on the computers you own and use your controllers where you want.
 It can run independently as a Windows service, including across sign-in sessions and elevated
 applications.
 
 The default goal is a clean, conventional virtual controller—not mandatory input remapping. For
-people who do want another mapping layer, BetterJoy2's standard virtual output remains compatible
-with Steam Input and other remappers. Optional BetterJoy2 profiles provide controller-native
+people who do want another mapping layer, BetterJoy²'s standard virtual output remains compatible
+with Steam Input and other remappers. Optional BetterJoy² profiles provide controller-native
 configuration, motion and touch behavior, button chords, and keyboard/mouse actions without making
 any of that a prerequisite for ordinary play.
 
-BetterJoy2 also provides [Cemuhook](https://sshnuke.net/cemuhook/)/DSU motion for
+BetterJoy² is growing beyond a collection of fixed controller shortcuts into a composable input
+system. Physical buttons, ordered chords, alternative binds, modifiers, touch gestures, and motion
+can activate controller, mouse, keyboard, lighting, audio, and hardware actions without generated
+outputs feeding back into the real-input state. The goal is simple: bindings should be limited by
+the user's imagination, not by collisions between features.
+
+BetterJoy² also provides [Cemuhook](https://sshnuke.net/cemuhook/)/DSU motion for
 [Cemu](http://cemu.info/), [Dolphin](https://dolphin-emu.org/), Citra-compatible emulators, and
 other compatible applications.
 
-## Why BetterJoy2 exists
+The executable, repository, packages, and filesystem paths retain the ASCII-safe `BetterJoy2`
+name where required; **BetterJoy²** is the project and product identity.
 
-Controller support should behave like a system utility, not like a licensed game. BetterJoy2 grew
+## Why BetterJoy² exists
+
+Controller support should behave like a system utility, not like a licensed game. BetterJoy² grew
 out of frustration with controller software that requires user intervention, ties access to a storefront, 
 limits simultaneous use across a person's own devices, divides hardware support into additional paid
 tiers, or requires users to assemble fragile remapping and device-hiding workarounds merely to
@@ -35,7 +46,7 @@ avoid double input.
 
 People should be paid for great software BUT nickle and diming + subscription practice is DISGUSTING!
 
-BetterJoy2 takes the opposite approach:
+BetterJoy² takes the opposite approach:
 
 * **Works system-wide** - the controller service does not depend on a game launcher or the GUI
   remaining open, and the optional virtual HID mouse reaches elevated applications and Windows
@@ -44,7 +55,7 @@ BetterJoy2 takes the opposite approach:
   entitlement, concurrent-use restriction, or feature DLC. I paid for DSX on Steam and still feel ripped!
 * **Remapping is optional** - choose XInput or DualShock 4 output and play, or layer Steam Input or
   another remapper on top when its additional behavior is actually wanted.
-* **Double input is handled at the source** - when HidHide is installed, BetterJoy2 can manage the
+* **Double input is handled at the source** - when HidHide is installed, BetterJoy² can manage the
   physical controller's visibility before creating its virtual output, recognizes and rejects its
   own virtual devices during discovery, and provides an explicit unhide-on-exit policy.
 * **The implementation is inspectable** - controller protocols, transforms, profiles, service
@@ -53,7 +64,7 @@ BetterJoy2 takes the opposite approach:
 
 # Features
 
-This fork (BetterJoy2) builds heavily on the original BetterJoy - see
+This fork (BetterJoy²) builds heavily on the original BetterJoy - see
 [Acknowledgements](#acknowledgements) for the foundation it's built on. Major additions include:
 
 * **FIRST CLASS Nintendo and PlayStation controller support** - Joy-Con pairs or individual halves, Switch Pro,
@@ -66,11 +77,11 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   output - ViGEmBus has no DualSense target at all, so VIIPER is the only way to expose a real
   PS5-shaped virtual controller. A separate Passthrough mode skips virtual output entirely and
   unhides the physical controller instead, so another program (Steam, a game with native
-  DualSense/Joy-Con support) can use it directly under its true identity while BetterJoy2 keeps
+  DualSense/Joy-Con support) can use it directly under its true identity while BetterJoy² keeps
   handling gyro, touchpad, audio, and lighting in the background.
-* **Clean physical/virtual device ownership** - integrated and automated HidHide management prevents 
-  games and remappers from consuming both the physical controller and BetterJoy2's virtual output. 
-  BetterJoy2 excludes its own virtual devices from discovery and can restore hidden controllers on exit.
+* **Clean physical/virtual device ownership** - integrated and automated HidHide management prevents
+  games and remappers from consuming both the physical controller and BetterJoy²'s virtual output.
+  BetterJoy² excludes its own virtual devices from discovery and can restore hidden controllers on exit.
 * **Gravity-referenced filtered gyro mouse** - a full rework around "Player Space" motion math
   (adapted from GamepadMotionHelpers): yaw/pitch tracked relative to true gravity instead of the
   controller's raw local axes, attempts to keep aiming consistent when the controller is tilted
@@ -93,17 +104,20 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   surviving sign-out/sign-in. Works from elevated windows and the Windows lock screen, with
   crash recovery and a session-launched helper so keyboard/mouse actions still work across the
   all service boundaries.
-* **Per-controller profiles** - matching profiles per physical controller cover virtual
-  output, motion, touch, device behavior, and optional mappings. Bindings support physical-only
-  capture, button combinations (chords are exact-match and order-sensitive, so a shorter combo
-  doesn't fire while a real superset is held, and HOME+A is a different binding from A+HOME), an
-  optional Modifier binding that inhibits ordinary output while held so a button can be used
-  purely as a chord prefix, touch gestures, a mappable shake input, and reassignable virtual
-  Guide/PS output without mapped outputs or button remaps contaminating subsequent bind capture.
+* **Per-controller profiles and composable bindings** - matching profiles per physical controller
+  cover virtual output, motion, touch, device behavior, and optional mappings. Bindings support
+  physical-only capture, multiple alternatives, and button combinations (chords are exact-match
+  and order-sensitive, so a shorter combo doesn't fire while a real superset is held, and HOME+A
+  is different from A+HOME). An optional Modifier can inhibit ordinary controller and gyro-mouse
+  output while remaining available as a prefix for any number of other actions. Touch gestures,
+  mappable shake, and reassignable virtual Guide/PS output use the same input language without
+  mapped outputs or button remaps contaminating subsequent bind capture.
 * **Controller-owned hardware behavior** - profile-scoped rumble, lightbar colors (a fixed color,
-  an automatic Battery mode that shows charge as green/yellow/red bands instead, a Default mode
-  that leaves lighting entirely untouched for another program or the controller's own power-on
-  default to control, or a Disabled mode that forces it off), an independent Player LED toggle for
+  an automatic Battery mode that shows charge as green/yellow/red bands, an invisible touchpad
+  color wheel usable as an exclusive held action or a latched overlay alongside ordinary touchpad
+  and gyro controls, a Default mode that leaves lighting entirely untouched for another program
+  or the controller's own power-on default to control, or a Disabled mode that forces it off),
+  bindable brightness controls, an independent Player LED toggle for
   the small player-number indicator LEDs (DualSense, Joy-Con, Pro, SNES, and N64), battery
   percentage/status, Bluetooth disconnect with a configurable hold-to-power-off duration,
   headphone-jack detection and routing, gyro recentering, and controller-specific calibration
@@ -116,9 +130,10 @@ This fork (BetterJoy2) builds heavily on the original BetterJoy - see
   effect modes on demand.
 * **Expanded controller function bindings** - assign chords or buttons to adjust controller
   volume, cycle DualSense adaptive trigger effects, cycle rumble modes, toggle the built-in
-  microphone, and toggle lightbar output on/off, alongside the existing physical remaps. Bindings
-  that cycle through modes share the same underlying list as their matching dropdown, so adding a
-  mode in one place updates both automatically.
+  microphone, toggle lightbar output, adjust brightness, or activate the touchpad color wheel,
+  alongside the existing physical remaps. Bindings that cycle through modes share the same
+  underlying list as their matching dropdown, so adding a mode in one place updates both
+  automatically.
 * **PlayStation controller audio** - route Windows audio to DualShock 4 or DualSense speakers and
   connected headsets over USB or Bluetooth, with automatic jack switching and headphone-gated
   startup. Multiple audio-capable controllers can stream over Bluetooth at once, each with its own
@@ -156,22 +171,22 @@ It's been quite a wild ride, with nearly **590k** (!!) official download on GitH
 ![Example](https://raw.githubusercontent.com/Geofferey/BetterJoy2/b1378869a53dfe976f1677d887a6298f6e84b334/screenshots/BetterJoy_Screenshot_Main_UI.png)
 
 # Downloads
-Go to the [BetterJoy2 Releases tab](https://github.com/Geofferey/BetterJoy2/releases/)!
+Go to the [BetterJoy² Releases tab](https://github.com/Geofferey/BetterJoy2/releases/)!
 
 # How to use
 1. Install drivers
     1. Read the READMEs (they're there for a reason!)
     1. Run *Drivers/ViGEmBus_1.22.0_x64_x86_arm64.exe*
     1. Restart your computer
-    1. Recommended: install *Drivers/HidHide_1.5.230_x64.exe*. On a fresh install BetterJoy2
+    1. Recommended: install *Drivers/HidHide_1.5.230_x64.exe*. On a fresh install BetterJoy²
        enables **Use HidHide** automatically when the driver is detected, then manages each
        physical controller's visibility so games see only the selected virtual output. If HidHide
-       is installed later, enable it under **Global** options and restart BetterJoy2.
+       is installed later, enable it under **Global** options and restart BetterJoy².
 2. Run *BetterJoy2.exe* 
     1. Run as Administrator if your keyboard/mouse button mappings don't work
 3. Connect your controllers.
 4. For normal PC games, select XInput or DualShock 4 as the profile's virtual-controller output,
-   then configure that controller normally in the game. BetterJoy2 profiles and downstream
+   then configure that controller normally in the game. BetterJoy² profiles and downstream
    remapping are optional.
 5. For CemuHook/DSU applications, start the application and select BetterJoy2 as the motion source.
     1. If using Joycons, CemuHook will detect two controllers - each will give all buttons, but choosing one over the other just chooses preference for which hand to use for gyro controls.
@@ -266,7 +281,7 @@ Judge the project by what it actually does, how reliably it does it, whether the
 
 ## Implementation lineage and adapted work
 
-BetterJoy2 is built on a long chain of open-source controller work. The following projects
+BetterJoy² is built on a long chain of open-source controller work. The following projects
 contributed code, algorithms, protocol knowledge, or concrete implementation patterns used by
 this repository:
 
