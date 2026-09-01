@@ -412,6 +412,17 @@ namespace BetterJoyForCemu {
         // yet. Returns true if hidden (or HidHide isn't in use), false if hiding failed after
         // retries - callers decide what that means for them (e.g. skip attaching this pass, or
         // for an already-blacklisted device, nothing further at all).
+        //
+        // Skips the actual AddBlockedInstanceId call entirely when hiddenInstanceIds already has
+        // this instance - a reconnect cycle (Bluetooth especially, but also repeated pairing
+        // attempts) calls this again for the same physical device, and every call was previously
+        // an unconditional write into HidHide's persisted registry blocklist regardless of
+        // whether it was already there. A long session with heavy reconnect churn could add the
+        // same instance ID many times over; the driver's own list-serialization code has a real,
+        // documented history of choking (nefarius/HidHide#83, #215) on ERROR_INVALID_PARAMETER,
+        // and an unusually large/duplicate-heavy list is a plausible trigger. Real hardware
+        // incident this session: HidHide's blacklist ended up in a state where every client
+        // (GUI, CLI, and this app's own driver calls) failed identically until it was cleared.
         private bool TryHideController(hid_device_info enumerate) {
             if (!Program.useHidHide)
                 return true;
@@ -423,6 +434,10 @@ namespace BetterJoyForCemu {
 
                 try {
                     instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
+                    lock (Program.hiddenInstanceIdsLock) {
+                        if (Program.hiddenInstanceIds.Contains(instanceId))
+                            return true;
+                    }
                     Program.hidHide.AddBlockedInstanceId(instanceId);
                     lock (Program.hiddenInstanceIdsLock) {
                         Program.hiddenInstanceIds.Add(instanceId);
@@ -438,10 +453,14 @@ namespace BetterJoyForCemu {
         // Adds or removes jc's own HidHide block after the fact - the one case that needs this is
         // a profile set to ControllerMappings.UseAsPassthrough, which wants its physical device
         // visible to other programs again instead of staying exclusively blocked the way
-        // TryHideController leaves every newly-connected controller by default. Safe to call
-        // unconditionally from CreateOutputControllers on every pass (attach, profile change,
-        // AssignPadId, survivor restoration) - HidHide's block list is idempotent, so reasserting
-        // a state that's already correct is a harmless no-op.
+        // TryHideController leaves every newly-connected controller by default. Called from
+        // CreateOutputControllers on every pass (attach, profile change, AssignPadId, survivor
+        // restoration) - for a long-lived connection that's every ~2s scan tick for the entire
+        // session, not just once. Previously assumed harmless to call unconditionally since
+        // HidHide's block list is supposed to be idempotent; a real hardware incident this
+        // session (the driver's persisted blocklist ending up in a state where every client
+        // failed with ERROR_INVALID_PARAMETER - see nefarius/HidHide#83/#215) argues against
+        // trusting that assumption when hiddenInstanceIds already has the answer for free.
         private void ReconcileHidHideForController(Controller jc, bool wantHidden) {
             if (!Program.useHidHide || Program.hidHide == null || String.IsNullOrEmpty(jc.path))
                 return;
@@ -455,6 +474,13 @@ namespace BetterJoyForCemu {
 
             try {
                 if (wantHidden) {
+                    bool alreadyHidden;
+                    lock (Program.hiddenInstanceIdsLock) {
+                        alreadyHidden = Program.hiddenInstanceIds.Contains(instanceId);
+                    }
+                    if (alreadyHidden)
+                        return;
+
                     Program.hidHide.AddBlockedInstanceId(instanceId);
                     lock (Program.hiddenInstanceIdsLock) {
                         if (!Program.hiddenInstanceIds.Contains(instanceId))
@@ -465,12 +491,12 @@ namespace BetterJoyForCemu {
                     lock (Program.hiddenInstanceIdsLock) {
                         wasHidden = Program.hiddenInstanceIds.Remove(instanceId);
                     }
+                    if (!wasHidden)
+                        return;
                     Program.hidHide.RemoveBlockedInstanceId(instanceId);
-                    // Only a real hidden-to-visible transition means OpenRGB's raw HID access
-                    // just changed - reasserting an already-visible device (the common,
-                    // idempotent reconciliation pass) has nothing new for it to see.
-                    if (wasHidden && ControllerMappings.LightingMode(
-                            ControllerMappings.ProfileIdFor(jc)) ==
+                    // We only get here on a real hidden->visible transition (returned above
+                    // otherwise), which is the only time OpenRGB's raw HID access just changed.
+                    if (ControllerMappings.LightingMode(ControllerMappings.ProfileIdFor(jc)) ==
                             ControllerMappings.LightingModeOpenRgb) {
                         DebugLog.Write("OpenRgbRescan: triggered from HidHide hidden->visible, instanceId=" + instanceId);
                         OpenRgbRescan.RequestRescan();
