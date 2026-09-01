@@ -77,6 +77,9 @@ namespace BetterJoyForCemu {
             (PreferredTransportBluetooth, "Bluetooth"),
             (PreferredTransportUsb, "USB"),
         };
+        public static readonly (string Value, string Label)[] AutomaticBluetoothPairingModes = {
+            (ModeEnable, "Enabled"), (ModeDisable, "Disabled"),
+        };
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
             (LightingModeWheel, "Wheel"), (LightingModeWheelToggle, "Wheel (toggle)"),
@@ -131,7 +134,8 @@ namespace BetterJoyForCemu {
         // migration/default source for profiles without an explicit option, but these values are
         // persisted beside bindings once a profile is edited.
         public static readonly string[] OptionKeys = {
-            "UseAs", "PreferredTransport", "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
+            "UseAs", "PreferredTransport", "AutomaticBluetoothPairing",
+            "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "HomeLongPowerOffHoldSeconds",
             "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
@@ -561,6 +565,11 @@ namespace BetterJoyForCemu {
                     StringComparison.OrdinalIgnoreCase)
                 ? PreferredTransportBluetooth
                 : PreferredTransportUsb;
+        }
+
+        public static bool AutomaticBluetoothPairingEnabled(string profileId) {
+            return String.Equals(OptionValue(profileId, "AutomaticBluetoothPairing"),
+                ModeEnable, StringComparison.OrdinalIgnoreCase);
         }
 
         public static int LightBrightness(string profileId) {
@@ -1051,6 +1060,8 @@ namespace BetterJoyForCemu {
                 return ModeDisable;
             if (key == "PreferredTransport")
                 return PreferredTransportUsb;
+            if (key == "AutomaticBluetoothPairing")
+                return ModeDisable;
             if (key == "ControllerAudioVolume")
                 return "75";
             if (key == "ControllerAudioEndpointId")

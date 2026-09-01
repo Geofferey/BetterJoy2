@@ -74,6 +74,8 @@ namespace BetterJoyForCemu {
         private TextBox homeLongPowerOffHoldInput;
         private Label preferredTransportLabel;
         private ProfileChoiceSelector preferredTransportSelector;
+        private Label automaticBluetoothPairingLabel;
+        private ProfileChoiceSelector automaticBluetoothPairingSelector;
         private ProfileChoiceSelector rumbleModeSelector;
         private Label rumbleModeLabel;
         private CheckBox dragToggleCheckBox;
@@ -1184,6 +1186,18 @@ namespace BetterJoyForCemu {
                 "keeps the wired connection and disconnects the matching Bluetooth link. If only " +
                 "one transport is available, BetterJoy continues using it.");
 
+            automaticBluetoothPairingLabel = new Label();
+            automaticBluetoothPairingSelector = CreateProfileChoiceSelector(0, 0, 0);
+            foreach (var mode in ControllerMappings.AutomaticBluetoothPairingModes)
+                automaticBluetoothPairingSelector.Items.Add(mode.Label);
+            automaticBluetoothPairingSelector.SelectedIndexChanged +=
+                ProfileOptionControlChanged;
+            layout.Row(automaticBluetoothPairingLabel, automaticBluetoothPairingSelector,
+                "Automatic BT pairing", buttonX: 145, buttonWidth: 180);
+            tip_reassign.SetToolTip(automaticBluetoothPairingSelector,
+                "DualSense only. When enabled, connecting the controller over USB pairs its " +
+                "Bluetooth connection to this computer without opening Windows Bluetooth settings.");
+
             layout.Divider();
             layout.Heading("Power", "Choose when this controller powers itself off.");
             sectionTop = layout.Y;
@@ -1966,6 +1980,13 @@ namespace BetterJoyForCemu {
                     index >= 0 && index < transports.Length
                         ? transports[index].Value
                         : ControllerMappings.PreferredTransportUsb);
+            } else if (sender == automaticBluetoothPairingSelector) {
+                var modes = ControllerMappings.AutomaticBluetoothPairingModes;
+                int index = automaticBluetoothPairingSelector.SelectedIndex;
+                ControllerMappings.SetOptionValue(SelectedProfileId,
+                    "AutomaticBluetoothPairing",
+                    index >= 0 && index < modes.Length
+                        ? modes[index].Value : ControllerMappings.ModeDisable);
             }
         }
 
@@ -2286,7 +2307,7 @@ namespace BetterJoyForCemu {
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
-                preferredTransportSelector,
+                preferredTransportSelector, automaticBluetoothPairingSelector,
                 swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
                 lightColorButton, lightingModeSelector, playerLedSelector,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
@@ -2352,6 +2373,8 @@ namespace BetterJoyForCemu {
                     transport => String.Equals(transport.Value, preferredTransport,
                         StringComparison.OrdinalIgnoreCase));
                 preferredTransportSelector.SelectedIndex = Math.Max(0, preferredTransportIndex);
+                automaticBluetoothPairingSelector.SelectedIndex =
+                    ControllerMappings.AutomaticBluetoothPairingEnabled(SelectedProfileId) ? 0 : 1;
                 dragToggleCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
@@ -2738,6 +2761,13 @@ namespace BetterJoyForCemu {
             btn_apply.Enabled = hasController;
             gameControllersButton.Enabled = hasController;
             LoadProfileOptions(hasController);
+            bool supportsAutomaticBluetoothPairing = selected != null &&
+                selected.Kind == ControllerKind.DualSense;
+            if (automaticBluetoothPairingLabel != null)
+                automaticBluetoothPairingLabel.Enabled = supportsAutomaticBluetoothPairing;
+            if (automaticBluetoothPairingSelector != null)
+                automaticBluetoothPairingSelector.Enabled = hasController &&
+                    supportsAutomaticBluetoothPairing;
             UpdateControllerAudioControlState();
             UpdateProfilePresentation(selected);
         }

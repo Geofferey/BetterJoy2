@@ -267,6 +267,7 @@ namespace BetterJoyForCemu {
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
                     if (jc is DualSenseController triggerController) {
+                        triggerController.ApplyAutomaticBluetoothPairing();
                         // Each mode keeps its own Start/Secondary/Strength now (see
                         // ControllerMappings.AdaptiveTriggerFieldValue) - read using whichever
                         // mode is actually configured per side, not a shared flat value.

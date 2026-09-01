@@ -54,6 +54,7 @@ namespace BetterJoyForCemu {
         private string chargeOnlyUsbPath;
         private bool monitorChargeOnlyWakeAfterPowerOff;
         private int chargeOnlyWakeMonitorStarted;
+        private bool automaticBluetoothPairingAttempted;
         private bool lightbarTransportKnown;
         private bool lightbarUpdatePending = true;
         private bool openRgbLightbarUpdatePending;
@@ -471,6 +472,90 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Called by the same periodic profile reconciliation that applies lighting, audio, and
+        // trigger options, so enabling the dropdown pairs an already-connected USB controller
+        // without requiring a reconnect. One attempt per USB attachment/toggle prevents a failed
+        // radio or registry operation from hammering the controller every two seconds.
+        public void ApplyAutomaticBluetoothPairing() {
+            bool enabled = ControllerMappings.AutomaticBluetoothPairingEnabled(
+                ControllerMappings.ProfileIdFor(this));
+            if (!enabled) {
+                automaticBluetoothPairingAttempted = false;
+                return;
+            }
+            if (!isUSB || state <= state_.DROPPED || automaticBluetoothPairingAttempted)
+                return;
+
+            automaticBluetoothPairingAttempted = true;
+            byte[] controllerMac = PadMacAddress.GetAddressBytes();
+            byte[] hostMacLittleEndian = null;
+            byte[] linkKey = null;
+            bool created = false;
+            try {
+                if (!BluetoothRadio.TryGetOrCreateClassicPairing(controllerMac,
+                        out hostMacLittleEndian, out linkKey, out created)) {
+                    form.AppendTextBox("Automatic DualSense Bluetooth pairing could not access " +
+                        "a local Bluetooth radio or its Windows bond store.\r\n");
+                    return;
+                }
+
+                bool controllerUpdated = SendBluetoothPairingFeatureReport(
+                    handle, hostMacLittleEndian, linkKey);
+                if (!controllerUpdated) {
+                    if (created)
+                        BluetoothRadio.RemoveClassicLinkKeyIfMatches(
+                            hostMacLittleEndian, controllerMac, linkKey);
+                    form.AppendTextBox("Automatic DualSense Bluetooth pairing was rejected by " +
+                        "the controller; the Windows bond was left unchanged.\r\n");
+                    return;
+                }
+
+                bool connectRequested = SendBluetoothControlFeatureReport(
+                    handle, false, DualSenseBluetoothControlOn);
+                QueueAutomaticBluetoothPairingFinalization(hostMacLittleEndian,
+                    controllerMac, connectRequested, created);
+                form.AppendTextBox(connectRequested
+                    ? "DualSense Bluetooth bond saved; completing Windows device setup.\r\n"
+                    : "DualSense Bluetooth bond saved; press PS to finish Windows device setup.\r\n");
+                DebugLog.Write("DualSense automatic Bluetooth pairing: pad=" + PadId +
+                    " createdWindowsBond=" + created +
+                    " connectRequested=" + connectRequested);
+            } finally {
+                if (linkKey != null)
+                    Array.Clear(linkKey, 0, linkKey.Length);
+            }
+        }
+
+        private void QueueAutomaticBluetoothPairingFinalization(
+                byte[] hostMacLittleEndian, byte[] controllerMac,
+                bool connectRequested, bool createdWindowsBond) {
+            byte[] hostCopy = (byte[])hostMacLittleEndian.Clone();
+            byte[] controllerCopy = (byte[])controllerMac.Clone();
+            bool queued = ThreadPool.QueueUserWorkItem(_ => {
+                try {
+                    bool completed = BluetoothRadio.TryFinalizeClassicHidPairing(
+                        hostCopy, controllerCopy, "DualSense Wireless Controller", 10000);
+                    form.AppendTextBox(completed
+                        ? "DualSense Bluetooth pairing completed; Windows registered its HID service.\r\n"
+                        : "DualSense Bluetooth bond was saved, but Windows did not finish HID " +
+                            "registration. Press PS once and try again.\r\n");
+                    DebugLog.Write("DualSense automatic Bluetooth registration: pad=" + PadId +
+                        " createdWindowsBond=" + createdWindowsBond +
+                        " connectRequested=" + connectRequested +
+                        " hidRegistered=" + completed);
+                } finally {
+                    Array.Clear(hostCopy, 0, hostCopy.Length);
+                    Array.Clear(controllerCopy, 0, controllerCopy.Length);
+                }
+            });
+            if (!queued) {
+                Array.Clear(hostCopy, 0, hostCopy.Length);
+                Array.Clear(controllerCopy, 0, controllerCopy.Length);
+                form.AppendTextBox("DualSense Bluetooth bond was saved, but Windows device " +
+                    "registration could not be started.\r\n");
+            }
+        }
+
         private bool ReassertBluetoothPairingStateOverUsb() {
             if (String.IsNullOrEmpty(chargeOnlyUsbPath))
                 return false;
@@ -480,7 +565,6 @@ namespace BetterJoyForCemu {
                 return false;
 
             byte[] linkKey = null;
-            byte[] setPairing = null;
             try {
                 byte[] pairingInfo = new byte[DualSensePairingInfoFeatureReportLen];
                 pairingInfo[0] = DualSensePairingInfoFeatureReportId;
@@ -505,24 +589,37 @@ namespace BetterJoyForCemu {
                         hostMacLittleEndian, controllerMac, out linkKey))
                     return false;
 
-                setPairing = new byte[DualSenseSetPairingFeatureReportLen];
-                setPairing[0] = DualSenseSetPairingFeatureReportId;
-                Buffer.BlockCopy(hostMacLittleEndian, 0, setPairing, 1,
+                return SendBluetoothPairingFeatureReport(
+                    usbHandle, hostMacLittleEndian, linkKey);
+            } finally {
+                if (linkKey != null)
+                    Array.Clear(linkKey, 0, linkKey.Length);
+                HIDapi.hid_close(usbHandle);
+            }
+        }
+
+        private static bool SendBluetoothPairingFeatureReport(IntPtr targetHandle,
+                byte[] hostMacLittleEndian, byte[] linkKey) {
+            if (targetHandle == IntPtr.Zero || hostMacLittleEndian == null ||
+                    hostMacLittleEndian.Length != 6 || linkKey == null ||
+                    linkKey.Length != 16)
+                return false;
+
+            byte[] report = new byte[DualSenseSetPairingFeatureReportLen];
+            try {
+                report[0] = DualSenseSetPairingFeatureReportId;
+                Buffer.BlockCopy(hostMacLittleEndian, 0, report, 1,
                     hostMacLittleEndian.Length);
-                Buffer.BlockCopy(linkKey, 0, setPairing, 7, linkKey.Length);
+                Buffer.BlockCopy(linkKey, 0, report, 7, linkKey.Length);
                 // Bytes 23..26 are the optional CRC field. USB uses zero, matching the other
                 // USB feature reports and the controller descriptor's 26-byte payload.
-                bool sent = HIDapi.hid_send_feature_report(usbHandle, setPairing,
-                    new UIntPtr((uint)setPairing.Length)) == setPairing.Length;
+                bool sent = HIDapi.hid_send_feature_report(targetHandle, report,
+                    new UIntPtr((uint)report.Length)) == report.Length;
                 if (sent)
                     Thread.Sleep(20);
                 return sent;
             } finally {
-                if (linkKey != null)
-                    Array.Clear(linkKey, 0, linkKey.Length);
-                if (setPairing != null)
-                    Array.Clear(setPairing, 0, setPairing.Length);
-                HIDapi.hid_close(usbHandle);
+                Array.Clear(report, 0, report.Length);
             }
         }
 
