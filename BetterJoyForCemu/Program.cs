@@ -127,6 +127,29 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // The active Bluetooth controller object is destroyed during power-off and recreated on
+        // PS wake, while the charge-only USB quarantine deliberately survives in the manager.
+        // Let that fresh controller recover the wired HID path by stable profile identity so a
+        // second shutdown can reassert the bond and arm another USB wake monitor just like the
+        // first one did.
+        public bool TryGetChargeOnlyUsbPath(string profileId, out string devicePath) {
+            devicePath = null;
+            if (String.IsNullOrEmpty(profileId))
+                return false;
+
+            lock (suppressedUsbControllerLock) {
+                foreach (KeyValuePair<string, string> entry in
+                        suppressedUsbControllerProfiles) {
+                    if (!String.Equals(entry.Value, profileId,
+                            StringComparison.Ordinal))
+                        continue;
+                    devicePath = entry.Key;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public bool TryBeginChargeOnlyUsbWakeMonitor() {
             lock (chargeOnlyWakeMonitorLock) {
                 if (scanningStopped)

@@ -451,6 +451,7 @@ namespace BetterJoyForCemu {
         // bond: use the host-side radio disconnect instead.
         public override void PowerOff() {
             if (state > state_.DROPPED && !isUSB) {
+                PrepareChargeOnlyUsbWake();
                 StopBluetoothMicrophone();
                 StopBluetoothAudioStream();
                 bool pairingStateReasserted = ReassertBluetoothPairingStateOverUsb();
@@ -546,8 +547,16 @@ namespace BetterJoyForCemu {
         }
 
         public override void PrepareLongPressPowerOff() {
+            PrepareChargeOnlyUsbWake();
+        }
+
+        private void PrepareChargeOnlyUsbWake() {
+            monitorChargeOnlyWakeAfterPowerOff = false;
             if (state > state_.DROPPED && !isUSB && PrefersBluetoothTransport()) {
                 string profileId = ControllerMappings.ProfileIdFor(this);
+                if (String.IsNullOrEmpty(chargeOnlyUsbPath))
+                    Program.mgr.TryGetChargeOnlyUsbPath(profileId,
+                        out chargeOnlyUsbPath);
                 Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(profileId);
                 monitorChargeOnlyWakeAfterPowerOff =
                     !String.IsNullOrEmpty(chargeOnlyUsbPath) &&
@@ -559,8 +568,10 @@ namespace BetterJoyForCemu {
         private void BeginChargeOnlyUsbWakeMonitor() {
             if (Interlocked.Exchange(ref chargeOnlyWakeMonitorStarted, 1) != 0)
                 return;
-            if (!Program.mgr.TryBeginChargeOnlyUsbWakeMonitor())
+            if (!Program.mgr.TryBeginChargeOnlyUsbWakeMonitor()) {
+                Interlocked.Exchange(ref chargeOnlyWakeMonitorStarted, 0);
                 return;
+            }
 
             string devicePath = chargeOnlyUsbPath;
             string profileId = ControllerMappings.ProfileIdFor(this);
@@ -568,11 +579,14 @@ namespace BetterJoyForCemu {
                 try {
                     MonitorChargeOnlyUsbWake(devicePath, profileId);
                 } finally {
+                    Interlocked.Exchange(ref chargeOnlyWakeMonitorStarted, 0);
                     Program.mgr.EndChargeOnlyUsbWakeMonitor();
                 }
             });
-            if (!queued)
+            if (!queued) {
+                Interlocked.Exchange(ref chargeOnlyWakeMonitorStarted, 0);
                 Program.mgr.EndChargeOnlyUsbWakeMonitor();
+            }
         }
 
         private static void MonitorChargeOnlyUsbWake(string devicePath, string profileId) {
