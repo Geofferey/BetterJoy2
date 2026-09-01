@@ -51,6 +51,8 @@ namespace BetterJoyForCemu {
         private const int DualSensePairingHostAddressOffset = 10;
         private const byte DualSenseSetPairingFeatureReportId = 0x0A;
         private const int DualSenseSetPairingFeatureReportLen = 27;
+        private const int PairingRecordCommitTimeoutMs = 3000;
+        private const int PairingRecordPollIntervalMs = 50;
         private string chargeOnlyUsbPath;
         private bool monitorChargeOnlyWakeAfterPowerOff;
         private int chargeOnlyWakeMonitorStarted;
@@ -490,6 +492,8 @@ namespace BetterJoyForCemu {
             byte[] controllerMac = PadMacAddress.GetAddressBytes();
             byte[] hostMacLittleEndian = null;
             byte[] linkKey = null;
+            byte[] emptyHost = new byte[6];
+            byte[] emptyKey = new byte[16];
             bool created = false;
             try {
                 if (!BluetoothRadio.TryGetOrCreateClassicPairing(controllerMac,
@@ -499,14 +503,42 @@ namespace BetterJoyForCemu {
                     return;
                 }
 
+                bool previousPairingCleared = SendBluetoothPairingFeatureReport(
+                    handle, emptyHost, emptyKey);
+                if (previousPairingCleared)
+                    previousPairingCleared = WaitForBluetoothPairingHost(handle,
+                        emptyHost, PairingRecordCommitTimeoutMs);
+                if (!previousPairingCleared) {
+                    if (created)
+                        BluetoothRadio.RemoveClassicLinkKeyIfMatches(
+                            hostMacLittleEndian, controllerMac, linkKey);
+                    form.AppendTextBox("Automatic DualSense Bluetooth pairing could not verify " +
+                        "that the controller cleared its previous bond.\r\n");
+                    return;
+                }
+
                 bool controllerUpdated = SendBluetoothPairingFeatureReport(
                     handle, hostMacLittleEndian, linkKey);
+                if (controllerUpdated)
+                    controllerUpdated = WaitForBluetoothPairingHost(handle,
+                        hostMacLittleEndian, PairingRecordCommitTimeoutMs);
                 if (!controllerUpdated) {
                     if (created)
                         BluetoothRadio.RemoveClassicLinkKeyIfMatches(
                             hostMacLittleEndian, controllerMac, linkKey);
                     form.AppendTextBox("Automatic DualSense Bluetooth pairing was rejected by " +
                         "the controller; the Windows bond was left unchanged.\r\n");
+                    return;
+                }
+
+                bool pairingStateReasserted = SendBluetoothPairingFeatureReport(
+                    handle, hostMacLittleEndian, linkKey);
+                if (pairingStateReasserted)
+                    pairingStateReasserted = WaitForBluetoothPairingHost(handle,
+                        hostMacLittleEndian, PairingRecordCommitTimeoutMs);
+                if (!pairingStateReasserted) {
+                    form.AppendTextBox("DualSense Bluetooth bond was saved, but its pairing " +
+                        "state could not be reasserted and verified; reconnect USB and try again.\r\n");
                     return;
                 }
 
@@ -519,10 +551,14 @@ namespace BetterJoyForCemu {
                     : "DualSense Bluetooth bond saved; press PS to finish Windows device setup.\r\n");
                 DebugLog.Write("DualSense automatic Bluetooth pairing: pad=" + PadId +
                     " createdWindowsBond=" + created +
+                    " previousPairingCleared=" + previousPairingCleared +
+                    " pairingStateReasserted=" + pairingStateReasserted +
                     " connectRequested=" + connectRequested);
             } finally {
                 if (linkKey != null)
                     Array.Clear(linkKey, 0, linkKey.Length);
+                Array.Clear(emptyHost, 0, emptyHost.Length);
+                Array.Clear(emptyKey, 0, emptyKey.Length);
             }
         }
 
@@ -589,8 +625,10 @@ namespace BetterJoyForCemu {
                         hostMacLittleEndian, controllerMac, out linkKey))
                     return false;
 
-                return SendBluetoothPairingFeatureReport(
+                bool pairingStateReasserted = SendBluetoothPairingFeatureReport(
                     usbHandle, hostMacLittleEndian, linkKey);
+                return pairingStateReasserted && WaitForBluetoothPairingHost(
+                    usbHandle, hostMacLittleEndian, PairingRecordCommitTimeoutMs);
             } finally {
                 if (linkKey != null)
                     Array.Clear(linkKey, 0, linkKey.Length);
@@ -615,11 +653,46 @@ namespace BetterJoyForCemu {
                 // USB feature reports and the controller descriptor's 26-byte payload.
                 bool sent = HIDapi.hid_send_feature_report(targetHandle, report,
                     new UIntPtr((uint)report.Length)) == report.Length;
-                if (sent)
-                    Thread.Sleep(20);
                 return sent;
             } finally {
                 Array.Clear(report, 0, report.Length);
+            }
+        }
+
+        private static bool WaitForBluetoothPairingHost(IntPtr targetHandle,
+                byte[] expectedHostMacLittleEndian, int timeoutMs) {
+            if (targetHandle == IntPtr.Zero || expectedHostMacLittleEndian == null ||
+                    expectedHostMacLittleEndian.Length != 6)
+                return false;
+
+            Stopwatch timer = Stopwatch.StartNew();
+            byte[] pairingInfo = new byte[DualSensePairingInfoFeatureReportLen];
+            try {
+                while (true) {
+                    Array.Clear(pairingInfo, 0, pairingInfo.Length);
+                    pairingInfo[0] = DualSensePairingInfoFeatureReportId;
+                    int received = HIDapi.hid_get_feature_report(targetHandle, pairingInfo,
+                        new UIntPtr((uint)pairingInfo.Length));
+                    if (received >= DualSensePairingHostAddressOffset + 6) {
+                        bool matches = true;
+                        for (int i = 0; i < expectedHostMacLittleEndian.Length; i++) {
+                            if (pairingInfo[DualSensePairingHostAddressOffset + i] !=
+                                    expectedHostMacLittleEndian[i]) {
+                                matches = false;
+                                break;
+                            }
+                        }
+                        if (matches)
+                            return true;
+                    }
+
+                    if (timer.ElapsedMilliseconds >= timeoutMs)
+                        return false;
+                    Thread.Sleep(PairingRecordPollIntervalMs);
+                }
+            } finally {
+                Array.Clear(pairingInfo, 0, pairingInfo.Length);
+                timer.Stop();
             }
         }
 
