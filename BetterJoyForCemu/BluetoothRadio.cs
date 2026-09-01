@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace BetterJoyForCemu {
     // Forces the local Bluetooth radio to drop its connection to a specific paired device, via
@@ -15,6 +16,8 @@ namespace BetterJoyForCemu {
         }
 
         private const uint IOCTL_BTH_DISCONNECT_DEVICE = 0x41000c;
+        private const string BluetoothKeysRegistryPath =
+            @"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys";
 
         [DllImport("bthprops.cpl", CharSet = CharSet.Auto)]
         private static extern IntPtr BluetoothFindFirstRadio(ref BLUETOOTH_FIND_RADIO_PARAMS pbtfrp, ref IntPtr phRadio);
@@ -65,6 +68,57 @@ namespace BetterJoyForCemu {
                 BluetoothFindRadioClose(searchHandle);
             }
             return success;
+        }
+
+        // Classic Bluetooth link keys are owned by BthPort and protected so ordinary desktop
+        // processes cannot read them. BetterJoy's controller owner normally runs as LocalSystem,
+        // which can read the exact existing bond without changing it. hostMacLittleEndian comes
+        // directly from DualSense feature report 0x09; the registry names both adapter and device
+        // in normal display order. Never log the returned key.
+        internal static bool TryGetClassicLinkKey(byte[] hostMacLittleEndian,
+                byte[] deviceMac, out byte[] linkKey) {
+            linkKey = null;
+            if (hostMacLittleEndian == null || hostMacLittleEndian.Length != 6 ||
+                    deviceMac == null || deviceMac.Length != 6)
+                return false;
+
+            byte[] hostMac = new byte[6];
+            for (int i = 0; i < hostMac.Length; i++)
+                hostMac[i] = hostMacLittleEndian[hostMac.Length - 1 - i];
+
+            string adapterName = MacRegistryName(hostMac);
+            string deviceName = MacRegistryName(deviceMac);
+            try {
+                using (RegistryKey localMachine = RegistryKey.OpenBaseKey(
+                        RegistryHive.LocalMachine, Environment.Is64BitOperatingSystem
+                            ? RegistryView.Registry64 : RegistryView.Registry32))
+                using (RegistryKey adapterKey = localMachine.OpenSubKey(
+                        BluetoothKeysRegistryPath + "\\" + adapterName, false)) {
+                    byte[] stored = adapterKey?.GetValue(deviceName, null,
+                        RegistryValueOptions.DoNotExpandEnvironmentNames) as byte[];
+                    if (stored == null || stored.Length != 16)
+                        return false;
+
+                    linkKey = (byte[])stored.Clone();
+                    return true;
+                }
+            } catch (UnauthorizedAccessException) {
+                return false;
+            } catch (System.Security.SecurityException) {
+                return false;
+            } catch (System.IO.IOException) {
+                return false;
+            }
+        }
+
+        private static string MacRegistryName(byte[] mac) {
+            char[] text = new char[mac.Length * 2];
+            const string hex = "0123456789abcdef";
+            for (int i = 0; i < mac.Length; i++) {
+                text[i * 2] = hex[mac[i] >> 4];
+                text[i * 2 + 1] = hex[mac[i] & 0x0f];
+            }
+            return new string(text);
         }
     }
 }
