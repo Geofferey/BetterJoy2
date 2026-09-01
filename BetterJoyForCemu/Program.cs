@@ -83,6 +83,8 @@ namespace BetterJoyForCemu {
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, long> suppressedUsbPowerOffGraceUntil =
             new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        readonly object chargeOnlyWakeMonitorLock = new object();
+        int activeChargeOnlyWakeMonitors;
 
         // Sony firmware can briefly remove and recreate its wired HID interface while an active
         // Bluetooth connection is intentionally shut down. Keep the already charge-only path
@@ -108,6 +110,39 @@ namespace BetterJoyForCemu {
 
             lock (suppressedUsbControllerLock)
                 suppressedUsbControllerProfiles[devicePath] = profileId;
+        }
+
+        public bool ShouldMonitorChargeOnlyUsbWake(string devicePath, string profileId) {
+            if (scanningStopped || String.IsNullOrEmpty(devicePath) ||
+                    String.IsNullOrEmpty(profileId))
+                return false;
+
+            lock (suppressedUsbControllerLock) {
+                return suppressedUsbControllerProfiles.TryGetValue(devicePath,
+                        out string suppressedProfileId) &&
+                    String.Equals(suppressedProfileId, profileId,
+                        StringComparison.Ordinal) &&
+                    ControllerMappings.PreferredTransport(profileId) ==
+                        ControllerMappings.PreferredTransportBluetooth;
+            }
+        }
+
+        public bool TryBeginChargeOnlyUsbWakeMonitor() {
+            lock (chargeOnlyWakeMonitorLock) {
+                if (scanningStopped)
+                    return false;
+                activeChargeOnlyWakeMonitors++;
+                return true;
+            }
+        }
+
+        public void EndChargeOnlyUsbWakeMonitor() {
+            lock (chargeOnlyWakeMonitorLock) {
+                if (activeChargeOnlyWakeMonitors > 0)
+                    activeChargeOnlyWakeMonitors--;
+                if (activeChargeOnlyWakeMonitors == 0)
+                    Monitor.PulseAll(chargeOnlyWakeMonitorLock);
+            }
         }
 
         private bool IsUsbControllerSuppressed(string devicePath) {
@@ -187,6 +222,10 @@ namespace BetterJoyForCemu {
             controllerCheck?.Stop();
             lock (scanLock) { }
             controllerCheck?.Dispose();
+            lock (chargeOnlyWakeMonitorLock) {
+                while (activeChargeOnlyWakeMonitors > 0)
+                    Monitor.Wait(chargeOnlyWakeMonitorLock);
+            }
         }
 
         bool ControllerAlreadyAdded(string path) {
@@ -777,6 +816,12 @@ namespace BetterJoyForCemu {
                 if (prod_id == 0) {
                     ptr = enumerate.next; // controller was not assigned a type, but advance ptr anyway
                     continue;
+                }
+
+                if (isDualSenseDevice) {
+                    DebugLog.Write("CheckForNewControllers: DualSense enumerated path=" +
+                        enumerate.path + " validController=" + validController +
+                        " alreadyAdded=" + ControllerAlreadyAdded(enumerate.path));
                 }
 
                 if (validController && !ControllerAlreadyAdded(enumerate.path)) {

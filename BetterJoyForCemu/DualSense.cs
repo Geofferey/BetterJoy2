@@ -42,6 +42,14 @@ namespace BetterJoyForCemu {
         protected override byte[] TriggerVal => triggerVal;
 
         private const int DualSenseMaxReportLen = 78; // Bluetooth report length; USB (64) fits the same buffer
+        private const int DualSenseBluetoothControlFeatureReportLen = 47;
+        private const byte DualSenseBluetoothControlFeatureReportId = 0x08;
+        private const byte DualSenseBluetoothControlOff = 0x02;
+        private const byte DualSenseUsbBluetoothWakeControl = 0x11;
+        private const int DualSenseUsbBluetoothWakeReportLen = 17;
+        private string chargeOnlyUsbPath;
+        private bool monitorChargeOnlyWakeAfterPowerOff;
+        private int chargeOnlyWakeMonitorStarted;
         private bool lightbarTransportKnown;
         private bool lightbarUpdatePending = true;
         private bool openRgbLightbarUpdatePending;
@@ -431,26 +439,167 @@ namespace BetterJoyForCemu {
                           (buf[offset + 2] << 16) | (buf[offset + 3] << 24));
         }
 
-        // Sony's feature report 0x08 only controls the Bluetooth radio; the controller accepts
-        // the HID transfer over USB but does not power down while the cable supplies it. Profiles
-        // that need charge-only USB therefore select Preferred transport: Bluetooth instead (see
-        // the duplicate-transport hooks below), leaving this proven radio disconnect as the live
-        // long-press path rather than pretending a wired shutdown command exists.
+        // Ask the controller itself to power its Bluetooth radio down. A host-side Windows radio
+        // disconnect produces the same immediate visual result, but bypasses the controller's
+        // normal shutdown/reconnect lifecycle and can leave a cable-powered controller unable to
+        // reconnect when PS is pressed. Report 0x08 is Sony's dedicated Bluetooth-control feature
+        // report (47 bytes, command 0x02, CRC32 seeded with 0x53). Keep the Windows disconnect only
+        // as a fallback when the controller rejects the real command.
         public override void PowerOff() {
             if (state > state_.DROPPED && !isUSB) {
                 StopBluetoothMicrophone();
                 StopBluetoothAudioStream();
-                BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+                bool sentFeatureReport = SendBluetoothPowerOffFeatureReport();
+                if (!sentFeatureReport)
+                    BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+                DebugLog.Write("DualSense.PowerOff: pad=" + PadId +
+                    " featureReportSent=" + sentFeatureReport +
+                    " monitorChargeOnlyWakeAfterPowerOff=" + monitorChargeOnlyWakeAfterPowerOff +
+                    " chargeOnlyUsbPath=" + chargeOnlyUsbPath);
                 state = state_.DROPPED;
                 AbandonBluetoothMediaTransport();
+                if (monitorChargeOnlyWakeAfterPowerOff)
+                    BeginChargeOnlyUsbWakeMonitor();
+            }
+        }
+
+        private bool SendBluetoothPowerOffFeatureReport() {
+            if (handle == IntPtr.Zero || isUSB)
+                return false;
+
+            byte[] report = new byte[DualSenseBluetoothControlFeatureReportLen];
+            report[0] = DualSenseBluetoothControlFeatureReportId;
+            report[1] = DualSenseBluetoothControlOff;
+            uint crc = Crc32(0x53, report, report.Length - 4);
+            report[report.Length - 4] = (byte)crc;
+            report[report.Length - 3] = (byte)(crc >> 8);
+            report[report.Length - 2] = (byte)(crc >> 16);
+            report[report.Length - 1] = (byte)(crc >> 24);
+
+            lock (outputReportLock) {
+                return HIDapi.hid_send_feature_report(handle, report,
+                    new UIntPtr((uint)report.Length)) == report.Length;
             }
         }
 
         public override void PrepareLongPressPowerOff() {
             if (state > state_.DROPPED && !isUSB && PrefersBluetoothTransport()) {
-                Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(
-                    ControllerMappings.ProfileIdFor(this));
+                string profileId = ControllerMappings.ProfileIdFor(this);
+                Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(profileId);
+                monitorChargeOnlyWakeAfterPowerOff =
+                    !String.IsNullOrEmpty(chargeOnlyUsbPath) &&
+                    Program.mgr.ShouldMonitorChargeOnlyUsbWake(
+                        chargeOnlyUsbPath, profileId);
+                DebugLog.Write("DualSense.PrepareLongPressPowerOff: pad=" + PadId +
+                    " chargeOnlyUsbPath=" + chargeOnlyUsbPath +
+                    " monitorChargeOnlyWakeAfterPowerOff=" + monitorChargeOnlyWakeAfterPowerOff);
             }
+        }
+
+        private void BeginChargeOnlyUsbWakeMonitor() {
+            if (Interlocked.Exchange(ref chargeOnlyWakeMonitorStarted, 1) != 0)
+                return;
+            if (!Program.mgr.TryBeginChargeOnlyUsbWakeMonitor()) {
+                DebugLog.Write("DualSense.BeginChargeOnlyUsbWakeMonitor: pad=" + PadId +
+                    " TryBeginChargeOnlyUsbWakeMonitor refused (scanning stopped?)");
+                return;
+            }
+
+            string devicePath = chargeOnlyUsbPath;
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            DebugLog.Write("DualSense.BeginChargeOnlyUsbWakeMonitor: pad=" + PadId +
+                " watching path=" + devicePath);
+            bool queued = ThreadPool.QueueUserWorkItem(_ => {
+                try {
+                    MonitorChargeOnlyUsbWake(devicePath, profileId);
+                } finally {
+                    Program.mgr.EndChargeOnlyUsbWakeMonitor();
+                }
+            });
+            if (!queued)
+                Program.mgr.EndChargeOnlyUsbWakeMonitor();
+        }
+
+        private static void MonitorChargeOnlyUsbWake(
+                string devicePath, string profileId) {
+            bool sawPsReleased = false;
+            bool dormant = false;
+            long quietSince = Stopwatch.GetTimestamp();
+
+            while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(devicePath, profileId)) {
+                IntPtr wakeHandle = HIDapi.hid_open_path(devicePath);
+                if (wakeHandle == IntPtr.Zero) {
+                    DebugLog.Write("DualSense.MonitorChargeOnlyUsbWake: hid_open_path failed for " +
+                        devicePath + ", retrying");
+                    Thread.Sleep(200);
+                    continue;
+                }
+                DebugLog.Write("DualSense.MonitorChargeOnlyUsbWake: opened " + devicePath);
+
+                try {
+                    quietSince = Stopwatch.GetTimestamp();
+                    byte[] report = new byte[64];
+                    while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(
+                            devicePath, profileId)) {
+                        int received = HIDapi.hid_read_timeout(wakeHandle, report,
+                            new UIntPtr((uint)report.Length), 100);
+                        if (received < 0)
+                            break;
+
+                        long now = Stopwatch.GetTimestamp();
+                        if (received == 0) {
+                            if ((now - quietSince) >= Stopwatch.Frequency * 3L / 4L)
+                                dormant = true;
+                            continue;
+                        }
+
+                        if (received != 64 || report[0] != 0x01) {
+                            quietSince = now;
+                            continue;
+                        }
+
+                        bool psPressed = (report[10] & 0x01) != 0;
+                        if (!psPressed)
+                            sawPsReleased = true;
+
+                        // A report after the interface went quiet means the controller woke even
+                        // if the short PS edge occurred before this read completed. If USB never
+                        // went fully quiet, require a released->pressed PS edge so the original
+                        // long-press cannot immediately undo its own shutdown.
+                        bool wakeRequested = dormant || (sawPsReleased && psPressed);
+                        quietSince = now;
+                        if (!wakeRequested)
+                            continue;
+
+                        bool woke = SendUsbBluetoothWakeControl(wakeHandle);
+                        DebugLog.Write("DualSense.MonitorChargeOnlyUsbWake: wake requested " +
+                            "(dormant=" + dormant + " sawPsReleased=" + sawPsReleased + "), " +
+                            "SendUsbBluetoothWakeControl succeeded=" + woke);
+                        if (woke)
+                            return;
+                    }
+                } finally {
+                    HIDapi.hid_close(wakeHandle);
+                }
+            }
+        }
+
+        private static bool SendUsbBluetoothWakeControl(IntPtr wakeHandle) {
+            byte[] report = new byte[DualSenseUsbBluetoothWakeReportLen];
+            report[0] = DualSenseBluetoothControlFeatureReportId;
+            report[1] = DualSenseUsbBluetoothWakeControl;
+
+            // A captured PS5 connection sequence repeats this exact 17-byte feature report a
+            // few times. Match that behavior so one transient USB control transfer cannot lose
+            // the wake request before the controller's Bluetooth radio begins reconnecting.
+            bool sent = false;
+            for (int attempt = 0; attempt < 3; attempt++) {
+                sent |= HIDapi.hid_send_feature_report(wakeHandle, report,
+                    new UIntPtr((uint)report.Length)) == report.Length;
+                if (attempt < 2)
+                    Thread.Sleep(20);
+            }
+            return sent;
         }
 
         public override void SetLightColor(byte red, byte green, byte blue) {
@@ -567,10 +716,12 @@ namespace BetterJoyForCemu {
         }
 
         protected override void OnRetiredAsDuplicate(Controller other) {
-            if (!(other is DualSenseController))
+            DualSenseController dualSense = other as DualSenseController;
+            if (dualSense == null)
                 return;
 
             if (isUSB && !other.isUSB) {
+                dualSense.chargeOnlyUsbPath = path;
                 Program.mgr.SuppressUsbControllerForBluetoothPreference(
                     path, ControllerMappings.ProfileIdFor(this));
             } else if (!isUSB && other.isUSB) {
@@ -583,6 +734,7 @@ namespace BetterJoyForCemu {
                 return;
 
             if (!isUSB && other.isUSB) {
+                chargeOnlyUsbPath = other.path;
                 Program.mgr.SuppressUsbControllerForBluetoothPreference(
                     other.path, ControllerMappings.ProfileIdFor(this));
             } else if (isUSB && !other.isUSB) {

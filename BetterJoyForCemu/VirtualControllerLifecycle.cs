@@ -81,6 +81,8 @@ namespace BetterJoyForCemu {
                         CreateOutputControllers(survivor);
                     }
 
+                    DebugLog.Write("CleanUp: dropping controller pad=" + joycon.PadId +
+                        " path=" + joycon.path);
                     joycon.Detach(true);
                     // UsbAudioLoopback lives outside the controller classes entirely (driven
                     // straight from Program.cs/form, not a per-controller Detach hook like
