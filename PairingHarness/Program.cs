@@ -22,6 +22,10 @@ namespace BetterJoyForCemu {
     static class Program {
         const ushort SonyVendorId = 0x054C;
         const ushort DualSenseProductId = 0x0CE6;
+        // Confirmed on real hardware: a DualSense Edge enumerates under this different product ID
+        // instead - same constant BetterJoyForCemu's own CheckForNewControllers checks
+        // (product_dualsense_edge). Both are otherwise identical for this harness's purposes.
+        const ushort DualSenseEdgeProductId = 0x0DF2;
 
         const byte PairingInfoReportId = 0x09;
         const int PairingInfoReportLen = 20;
@@ -189,14 +193,20 @@ namespace BetterJoyForCemu {
                     maxMonitorSeconds));
         }
 
+        static bool IsDualSenseProductId(ushort productId) {
+            return productId == DualSenseProductId || productId == DualSenseEdgeProductId;
+        }
+
         static bool BluetoothInterfacePresent() {
-            IntPtr ptr = HIDapi.hid_enumerate(SonyVendorId, DualSenseProductId);
+            // Wildcard product ID (0) - DualSense and DualSense Edge use different PIDs, filtered
+            // below via IsDualSenseProductId instead of narrowing the enumeration itself.
+            IntPtr ptr = HIDapi.hid_enumerate(SonyVendorId, 0);
             IntPtr top = ptr;
             bool found = false;
             try {
                 while (ptr != IntPtr.Zero) {
                     var info = (HIDapi.hid_device_info)Marshal.PtrToStructure(ptr, typeof(HIDapi.hid_device_info));
-                    if (!string.IsNullOrEmpty(info.path) &&
+                    if (IsDualSenseProductId(info.product_id) && !string.IsNullOrEmpty(info.path) &&
                             info.path.IndexOf("00001124", StringComparison.OrdinalIgnoreCase) >= 0) {
                         found = true;
                         break;
@@ -210,7 +220,7 @@ namespace BetterJoyForCemu {
         }
 
         static string FindUsbDualSensePath() {
-            IntPtr ptr = HIDapi.hid_enumerate(SonyVendorId, DualSenseProductId);
+            IntPtr ptr = HIDapi.hid_enumerate(SonyVendorId, 0);
             IntPtr top = ptr;
             string result = null;
             try {
@@ -219,7 +229,7 @@ namespace BetterJoyForCemu {
                     // The wired composite HID interface; Bluetooth's carries the 00001124 GATT/
                     // BR-EDR HID service GUID instead - same distinction used throughout
                     // BetterJoy's own CheckForNewControllers.
-                    if (!string.IsNullOrEmpty(info.path) &&
+                    if (IsDualSenseProductId(info.product_id) && !string.IsNullOrEmpty(info.path) &&
                             info.path.IndexOf("MI_03", StringComparison.OrdinalIgnoreCase) >= 0) {
                         result = info.path;
                         break;
