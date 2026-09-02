@@ -46,6 +46,14 @@ namespace BetterJoyForCemu {
             using (logFile = new StreamWriter(logPath, false) { AutoFlush = true }) {
                 Log("=== DualSense Bluetooth pairing test harness ===");
                 Log("Log: " + logPath);
+                // HidHide hides the raw HID interface from every non-whitelisted process once
+                // BetterJoy claims it - hid_enumerate then sees nothing, indistinguishable from
+                // "not plugged in" at this API level. If nothing is ever found below: unhide the
+                // controller (or fully quit BetterJoy) and add PairingHarness.exe to HidHide's
+                // whitelist (Control Device Access in the HidHide config UI, or the
+                // Nefarius.Drivers.HidHide API BetterJoy itself uses).
+                Log("Note: if the wired DualSense is never found, check it isn't HidHide-hidden - " +
+                    "PairingHarness.exe needs to be on HidHide's whitelist (or BetterJoy fully quit).");
                 RunOnce();
             }
             Console.WriteLine();
