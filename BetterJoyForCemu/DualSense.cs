@@ -564,11 +564,10 @@ namespace BetterJoyForCemu {
                 }
 
                 automaticBluetoothPairingInProgress = true;
-                string usbPath = path;
                 bool connectRequested = SendBluetoothControlFeatureReport(
                     handle, false, DualSenseBluetoothControlOn);
                 bool queued = QueueAutomaticBluetoothPairingFinalization(hostMacLittleEndian,
-                    controllerMac, usbPath, connectRequested, created);
+                    controllerMac, connectRequested, created);
                 if (!queued)
                     automaticBluetoothPairingInProgress = false;
                 form.AppendTextBox(connectRequested
@@ -602,53 +601,33 @@ namespace BetterJoyForCemu {
         }
 
         private bool QueueAutomaticBluetoothPairingFinalization(
-                byte[] hostMacLittleEndian, byte[] controllerMac, string usbPath,
+                byte[] hostMacLittleEndian, byte[] controllerMac,
                 bool connectRequested, bool createdWindowsBond) {
             byte[] hostCopy = (byte[])hostMacLittleEndian.Clone();
             byte[] controllerCopy = (byte[])controllerMac.Clone();
             bool queued = ThreadPool.QueueUserWorkItem(_ => {
-                byte[] finalLinkKey = null;
                 try {
                     bool completed = BluetoothRadio.TryFinalizeClassicHidPairing(
                         hostCopy, controllerCopy, "DualSense Wireless Controller", 10000);
-                    // The USB attachment this pairing attempt ran on has already stepped off (see
-                    // PerformAutomaticBluetoothPairing) by the time this observes completion, so
-                    // its own handle is closed - open a fresh one on the same path, matching
-                    // ReassertBluetoothPairingStateOverUsb's pattern, rather than writing through
-                    // a stale handle.
-                    bool finalKeyReasserted = false;
-                    if (completed && BluetoothRadio.TryGetClassicLinkKey(hostCopy, controllerCopy,
-                            out finalLinkKey) && !String.IsNullOrEmpty(usbPath)) {
-                        IntPtr finalizeHandle = HIDapi.hid_open_path(usbPath);
-                        if (finalizeHandle != IntPtr.Zero) {
-                            try {
-                                finalKeyReasserted = SendBluetoothPairingFeatureReport(
-                                    finalizeHandle, hostCopy, finalLinkKey);
-                            } finally {
-                                HIDapi.hid_close(finalizeHandle);
-                            }
-                        }
-                    }
-                    if (completed && finalKeyReasserted) {
-                        form.AppendTextBox("DualSense Bluetooth pairing completed; Windows " +
-                            "authenticated the bond and registered its HID service.\r\n");
-                    } else if (completed) {
-                        form.AppendTextBox("DualSense Bluetooth pairing completed in Windows, " +
-                            "but its final link key could not be reasserted over USB.\r\n");
-                    } else {
-                        form.AppendTextBox("DualSense Bluetooth bond was saved, but Windows did " +
-                            "not keep an authenticated HID registration. Press PS once and try " +
-                            "again.\r\n");
-                    }
+                    // Previously also reopened a fresh USB handle here and rewrote the pairing-info
+                    // feature report (0x0A) once more as a "final key reassert" once Windows
+                    // finished authenticating - confirmed on real hardware to knock the controller
+                    // back into pairing/low-power broadcast mode right as the connection was
+                    // settling, so Windows kept showing Connected while the controller itself
+                    // stopped actually being a working HID endpoint. completed already means
+                    // Windows authenticated the bond and registered the HID service - nothing left
+                    // to do on top of that.
+                    form.AppendTextBox(completed
+                        ? "DualSense Bluetooth pairing completed; Windows authenticated the bond " +
+                            "and registered its HID service.\r\n"
+                        : "DualSense Bluetooth bond was saved, but Windows did not keep an " +
+                            "authenticated HID registration. Press PS once and try again.\r\n");
                     DebugLog.Write("DualSense automatic Bluetooth registration: pad=" + PadId +
                         " createdWindowsBond=" + createdWindowsBond +
                         " connectRequested=" + connectRequested +
-                        " authenticatedHidRegistered=" + completed +
-                        " finalKeyReasserted=" + finalKeyReasserted);
+                        " authenticatedHidRegistered=" + completed);
                 } finally {
                     automaticBluetoothPairingInProgress = false;
-                    if (finalLinkKey != null)
-                        Array.Clear(finalLinkKey, 0, finalLinkKey.Length);
                     Array.Clear(hostCopy, 0, hostCopy.Length);
                     Array.Clear(controllerCopy, 0, controllerCopy.Length);
                 }
