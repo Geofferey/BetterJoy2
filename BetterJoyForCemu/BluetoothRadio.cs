@@ -312,21 +312,14 @@ namespace BetterJoyForCemu {
 
         private static bool TryEnableHidService(IntPtr radioHandle,
                 ulong targetDeviceAddress, string fallbackName) {
-            // issueInquiry=true tells Windows to actively scan for nearby discoverable devices
-            // rather than only checking devices it already knows about - a cache-only search
-            // never finds a device Windows has never seen before, no matter how correctly the
-            // controller is broadcasting. Confirmed on real hardware across extensive testing:
-            // substantially more reliable pairing with this on than the cache-only search it
-            // replaced. timeoutMultiplier is in units of 1.28 seconds (Win32
-            // BLUETOOTH_DEVICE_SEARCH_PARAMS); 4 gives a real ~5.1-second scan window per attempt.
             var search = new BLUETOOTH_DEVICE_SEARCH_PARAMS {
                 dwSize = Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_SEARCH_PARAMS)),
                 returnAuthenticated = true,
                 returnRemembered = true,
                 returnUnknown = true,
                 returnConnected = true,
-                issueInquiry = true,
-                timeoutMultiplier = 4,
+                issueInquiry = false,
+                timeoutMultiplier = 0,
                 radioHandle = radioHandle,
             };
             var device = new BLUETOOTH_DEVICE_INFO {
