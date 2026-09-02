@@ -6,7 +6,7 @@ using System.Security.Cryptography;
 using System.Threading;
 using Microsoft.Win32;
 
-// Frozen copy of BetterJoyForCemu/BluetoothRadio.cs as committed at d49e317 - deliberately NOT a
+// Frozen copy of BetterJoyForCemu/BluetoothRadio.cs as committed at b7d0efa - deliberately NOT a
 // project reference to the live BetterJoyForCemu assembly. The whole point of this harness is to
 // answer "does BetterJoy's own code affect this" by running the pairing sequence with nothing
 // else BetterJoy does (Poll threads, scanning, virtual controllers, HidHide) anywhere in the

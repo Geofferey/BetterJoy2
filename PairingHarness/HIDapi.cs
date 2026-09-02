@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Runtime.InteropServices;
 
-// Frozen copy of BetterJoyForCemu/HIDapi.cs as committed at d49e317 - see
+// Frozen copy of BetterJoyForCemu/HIDapi.cs as committed at b7d0efa - see
 // BluetoothRadioSnapshot.cs's header for why this harness keeps its own copy instead of
 // referencing the live BetterJoyForCemu assembly.
 namespace BetterJoyForCemu {
