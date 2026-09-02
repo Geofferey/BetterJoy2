@@ -60,11 +60,9 @@ namespace BetterJoyForCemu {
         }
 
         static void RunOnce() {
-            string usbPath = FindUsbDualSensePath();
-            if (usbPath == null) {
-                Log("No wired DualSense found. Plug it in over USB and re-run.");
+            string usbPath = WaitForUsbDualSense();
+            if (usbPath == null)
                 return;
-            }
             Log("Found wired DualSense: " + usbPath);
 
             IntPtr handle = HIDapi.hid_open_path(usbPath);
@@ -224,6 +222,24 @@ namespace BetterJoyForCemu {
                 HIDapi.hid_free_enumeration(top);
             }
             return result;
+        }
+
+        // Polls for the wired DualSense instead of requiring it already be plugged in before
+        // launch - run the tool first, then plug in (or unplug/replug), same as any real
+        // automatic-pairing attempt would encounter it. Ctrl+C to give up.
+        static string WaitForUsbDualSense() {
+            bool printedWaitingMessage = false;
+            while (true) {
+                string path = FindUsbDualSensePath();
+                if (path != null)
+                    return path;
+
+                if (!printedWaitingMessage) {
+                    Log("No wired DualSense found yet - waiting for one (plug it in now, Ctrl+C to give up)...");
+                    printedWaitingMessage = true;
+                }
+                Thread.Sleep(500);
+            }
         }
 
         // Bytes 1-6 of feature report 0x09 are the controller's own MAC, stored in reverse byte
