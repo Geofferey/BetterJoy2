@@ -82,26 +82,13 @@ namespace BetterJoyForCemu {
             new Step("GetOrCreateBond", GetOrCreateBond),
             new Step("ClearPreviousBond", ClearPreviousBond),
             new Step("WriteBond", WriteBond),
-            new Step("ReassertBond", ReassertBond),
+            //new Step("ReassertBond", ReassertBond),
             new Step("SendConnectTrigger", SendConnectTrigger),
-			new Step("ReassertBond", ReassertBond),
-            new Step("SendConnectTrigger", SendConnectTrigger),
-            new Step("CloseUsbHandle", CloseUsbHandle),
-            new Step("FinalizeHidService", FinalizeHidService),
-			
-			new Step("WriteBond", WriteBond),
-            new Step("ReassertBond", ReassertBond),
-            new Step("SendConnectTrigger", SendConnectTrigger),
-			new Step("ReassertBond", ReassertBond),
-            new Step("SendConnectTrigger", SendConnectTrigger),
-            new Step("CloseUsbHandle", CloseUsbHandle),
-			new Step("PressPSButton", PowerOffController),
+			//new Step("ReassertBond", ReassertBond),
+			//new Step("PressPSButton", PowerOffController),
 			new Step("PowerOffController", PowerOffController),
             new Step("FinalizeHidService", FinalizeHidService),
-			new Step("ReassertBond", ReassertBond),
-            //new Step("ReassertFinalKeyOverUsb", ReassertFinalKeyOverUsb),
-            //new Step("MonitorBluetoothConnection", MonitorBluetoothConnection),
-            new Step("PowerOffController", PowerOffController),
+
         };
 
         static void Main() {
