@@ -31,7 +31,7 @@ namespace BetterJoyForCemu {
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct SYSTEMTIME {
+        internal struct SYSTEMTIME {
             public ushort year;
             public ushort month;
             public ushort dayOfWeek;
@@ -43,7 +43,7 @@ namespace BetterJoyForCemu {
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct BLUETOOTH_DEVICE_INFO {
+        internal struct BLUETOOTH_DEVICE_INFO {
             public int dwSize;
             public ulong address;
             public uint classOfDevice;
@@ -243,6 +243,14 @@ namespace BetterJoyForCemu {
         // still-anonymous record a useful fallback name, then enable its standard HID service.
         // BluetoothSetServiceState is the supported Windows step that installs the profile
         // driver and completes the device entry shown by Bluetooth Settings.
+        //
+        // Reverted from an authentication-window/durability-gated version (active
+        // BluetoothRegisterForAuthenticationEx callback, BluetoothAuthenticateDeviceEx retries,
+        // requiring authenticated+remembered to hold for a continuous 2-second window) back to
+        // this simpler shape. Real hardware evidence: every added verification/durability layer
+        // this session correlated with worse outcomes, not better, and the authentication
+        // callback never fired even once across many attempts - the simpler version is the one
+        // that got furthest (real connections observed staying up on their own).
         internal static bool TryFinalizeClassicHidPairing(byte[] hostMacLittleEndian,
                 byte[] deviceMac, string fallbackName, int timeoutMilliseconds) {
             if (hostMacLittleEndian == null || hostMacLittleEndian.Length != 6 ||

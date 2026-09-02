@@ -533,6 +533,13 @@ namespace BetterJoyForCemu {
                 }
                 SendQueuedRumbleIfAny();
                 SendQueuedBluetoothAudioIfAny();
+                ApplyQueuedAutomaticBluetoothPairingIfAny();
+                // The pairing hook above can itself Detach() this controller mid-iteration
+                // (closing handle) once its Bluetooth-preferred hand-off is armed - stop_polling
+                // alone doesn't take effect until the next loop condition check, so without this,
+                // ReceiveRaw() right below would still run against the now-closed handle.
+                if (stop_polling)
+                    break;
 
                 int a;
                 try {
@@ -634,6 +641,14 @@ namespace BetterJoyForCemu {
         // output path, and needs no artificial pacing/sleep - Poll's own natural iteration rate
         // (driven by real HID read timing) already provides smooth-enough cadence.
         protected virtual void SendQueuedBluetoothAudioIfAny() { }
+
+        // Same reasoning again: DualSenseController's automatic-pairing feature-report sequence
+        // (clear/write/verify/reassert, plus the Bluetooth authentication-window setup) must run
+        // on this Poll thread, not the manager's scan-timer thread that requests it - a real race
+        // confirmed on hardware earlier this session, where the timer thread's writes interleaved
+        // with this thread's own concurrent hid_read_timeout/output traffic on the same handle.
+        // Request-then-drain on this thread, matching pendingLedPlayerNum's pattern below.
+        protected virtual void ApplyQueuedAutomaticBluetoothPairingIfAny() { }
 
         // Generic MAC-based duplicate-connection dedup, shared by every device type - if another
         // already-connected entry has the same PadMacAddress as this one, it's the same physical

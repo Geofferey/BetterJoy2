@@ -57,6 +57,10 @@ namespace BetterJoyForCemu {
         private bool monitorChargeOnlyWakeAfterPowerOff;
         private int chargeOnlyWakeMonitorStarted;
         private bool automaticBluetoothPairingAttempted;
+        // Interlocked-exchanged request flag from the scan-timer thread to the Poll thread - see
+        // ApplyAutomaticBluetoothPairing/ApplyQueuedAutomaticBluetoothPairingIfAny.
+        private int automaticBluetoothPairingPending;
+        private volatile bool automaticBluetoothPairingInProgress;
         private bool lightbarTransportKnown;
         private bool lightbarUpdatePending = true;
         private bool openRgbLightbarUpdatePending;
@@ -475,9 +479,17 @@ namespace BetterJoyForCemu {
         }
 
         // Called by the same periodic profile reconciliation that applies lighting, audio, and
-        // trigger options, so enabling the dropdown pairs an already-connected USB controller
-        // without requiring a reconnect. One attempt per USB attachment/toggle prevents a failed
-        // radio or registry operation from hammering the controller every two seconds.
+        // trigger options - but that reconciliation runs on the manager's scan-timer thread, not
+        // this controller's own Poll thread, and the actual pairing sequence below issues many
+        // hid_get/send_feature_report calls (plus the Bluetooth authentication-window setup)
+        // against the same handle Poll's ReceiveRaw/output calls use continuously. Calling that
+        // sequence directly from here would be exactly the concurrent-hid-call hazard
+        // ApplyQueuedAutomaticBluetoothPairingIfAny's comment describes - confirmed on real
+        // hardware earlier this session. So this only ever records a request;
+        // PerformAutomaticBluetoothPairing below does the actual work, only from the Poll thread.
+        // One attempt per USB attachment/toggle still applies - set immediately here, not after
+        // the Poll thread gets to it - so a failed radio/registry operation or slow Poll
+        // iteration can't cause repeat requests every scan.
         public void ApplyAutomaticBluetoothPairing() {
             bool enabled = ControllerMappings.AutomaticBluetoothPairingEnabled(
                 ControllerMappings.ProfileIdFor(this));
@@ -489,6 +501,15 @@ namespace BetterJoyForCemu {
                 return;
 
             automaticBluetoothPairingAttempted = true;
+            Interlocked.Exchange(ref automaticBluetoothPairingPending, 1);
+        }
+
+        protected override void ApplyQueuedAutomaticBluetoothPairingIfAny() {
+            if (Interlocked.Exchange(ref automaticBluetoothPairingPending, 0) != 0)
+                PerformAutomaticBluetoothPairing();
+        }
+
+        private void PerformAutomaticBluetoothPairing() {
             byte[] controllerMac = PadMacAddress.GetAddressBytes();
             byte[] hostMacLittleEndian = null;
             byte[] linkKey = null;
@@ -542,10 +563,14 @@ namespace BetterJoyForCemu {
                     return;
                 }
 
+                automaticBluetoothPairingInProgress = true;
+                string usbPath = path;
                 bool connectRequested = SendBluetoothControlFeatureReport(
                     handle, false, DualSenseBluetoothControlOn);
-                QueueAutomaticBluetoothPairingFinalization(hostMacLittleEndian,
-                    controllerMac, connectRequested, created);
+                bool queued = QueueAutomaticBluetoothPairingFinalization(hostMacLittleEndian,
+                    controllerMac, usbPath, connectRequested, created);
+                if (!queued)
+                    automaticBluetoothPairingInProgress = false;
                 form.AppendTextBox(connectRequested
                     ? "DualSense Bluetooth bond saved; completing Windows device setup.\r\n"
                     : "DualSense Bluetooth bond saved; press PS to finish Windows device setup.\r\n");
@@ -554,6 +579,20 @@ namespace BetterJoyForCemu {
                     " previousPairingCleared=" + previousPairingCleared +
                     " pairingStateReasserted=" + pairingStateReasserted +
                     " connectRequested=" + connectRequested);
+
+                // USB's job is to write the pairing record, verify it committed, and trigger the
+                // connection - once that trigger (0x08/ON) is sent, holding this USB attachment
+                // open any longer only contends with the Bluetooth connection it just started for
+                // the controller's attention. Confirmed on real hardware earlier this session:
+                // leaving USB's own Poll thread running is enough by itself to keep the new
+                // Bluetooth side from ever getting serviced. Step off immediately, synchronously,
+                // right here - not reactively after observing anything - so every attempt gets the
+                // same uncontended window instead of leaving it to scheduling luck.
+                if (connectRequested) {
+                    state = state_.DROPPED;
+                    Detach(true);
+                    Program.mgr.j.Remove(this);
+                }
             } finally {
                 if (linkKey != null)
                     Array.Clear(linkKey, 0, linkKey.Length);
@@ -562,24 +601,54 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private void QueueAutomaticBluetoothPairingFinalization(
-                byte[] hostMacLittleEndian, byte[] controllerMac,
+        private bool QueueAutomaticBluetoothPairingFinalization(
+                byte[] hostMacLittleEndian, byte[] controllerMac, string usbPath,
                 bool connectRequested, bool createdWindowsBond) {
             byte[] hostCopy = (byte[])hostMacLittleEndian.Clone();
             byte[] controllerCopy = (byte[])controllerMac.Clone();
             bool queued = ThreadPool.QueueUserWorkItem(_ => {
+                byte[] finalLinkKey = null;
                 try {
                     bool completed = BluetoothRadio.TryFinalizeClassicHidPairing(
                         hostCopy, controllerCopy, "DualSense Wireless Controller", 10000);
-                    form.AppendTextBox(completed
-                        ? "DualSense Bluetooth pairing completed; Windows registered its HID service.\r\n"
-                        : "DualSense Bluetooth bond was saved, but Windows did not finish HID " +
-                            "registration. Press PS once and try again.\r\n");
+                    // The USB attachment this pairing attempt ran on has already stepped off (see
+                    // PerformAutomaticBluetoothPairing) by the time this observes completion, so
+                    // its own handle is closed - open a fresh one on the same path, matching
+                    // ReassertBluetoothPairingStateOverUsb's pattern, rather than writing through
+                    // a stale handle.
+                    bool finalKeyReasserted = false;
+                    if (completed && BluetoothRadio.TryGetClassicLinkKey(hostCopy, controllerCopy,
+                            out finalLinkKey) && !String.IsNullOrEmpty(usbPath)) {
+                        IntPtr finalizeHandle = HIDapi.hid_open_path(usbPath);
+                        if (finalizeHandle != IntPtr.Zero) {
+                            try {
+                                finalKeyReasserted = SendBluetoothPairingFeatureReport(
+                                    finalizeHandle, hostCopy, finalLinkKey);
+                            } finally {
+                                HIDapi.hid_close(finalizeHandle);
+                            }
+                        }
+                    }
+                    if (completed && finalKeyReasserted) {
+                        form.AppendTextBox("DualSense Bluetooth pairing completed; Windows " +
+                            "authenticated the bond and registered its HID service.\r\n");
+                    } else if (completed) {
+                        form.AppendTextBox("DualSense Bluetooth pairing completed in Windows, " +
+                            "but its final link key could not be reasserted over USB.\r\n");
+                    } else {
+                        form.AppendTextBox("DualSense Bluetooth bond was saved, but Windows did " +
+                            "not keep an authenticated HID registration. Press PS once and try " +
+                            "again.\r\n");
+                    }
                     DebugLog.Write("DualSense automatic Bluetooth registration: pad=" + PadId +
                         " createdWindowsBond=" + createdWindowsBond +
                         " connectRequested=" + connectRequested +
-                        " hidRegistered=" + completed);
+                        " authenticatedHidRegistered=" + completed +
+                        " finalKeyReasserted=" + finalKeyReasserted);
                 } finally {
+                    automaticBluetoothPairingInProgress = false;
+                    if (finalLinkKey != null)
+                        Array.Clear(finalLinkKey, 0, finalLinkKey.Length);
                     Array.Clear(hostCopy, 0, hostCopy.Length);
                     Array.Clear(controllerCopy, 0, controllerCopy.Length);
                 }
@@ -590,6 +659,7 @@ namespace BetterJoyForCemu {
                 form.AppendTextBox("DualSense Bluetooth bond was saved, but Windows device " +
                     "registration could not be started.\r\n");
             }
+            return queued;
         }
 
         private bool ReassertBluetoothPairingStateOverUsb() {
@@ -914,7 +984,10 @@ namespace BetterJoyForCemu {
         // behavior and tears down the radio connection so it cannot churn through rediscovery.
         protected override bool CanResolveDuplicate(Controller other) {
             DualSenseController dualSense = other as DualSenseController;
-            return dualSense == null || dualSense.lightbarTransportKnown;
+            return dualSense == null ||
+                (!automaticBluetoothPairingInProgress &&
+                    !dualSense.automaticBluetoothPairingInProgress &&
+                    dualSense.lightbarTransportKnown);
         }
 
         protected override bool PreferExistingDuplicate(Controller other) {
