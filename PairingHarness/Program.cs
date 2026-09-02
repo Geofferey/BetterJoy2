@@ -80,7 +80,7 @@ namespace BetterJoyForCemu {
             new Step("WaitForUsbController", WaitForUsbController),
             new Step("ReadControllerMac", ReadControllerMac),
             new Step("GetOrCreateBond", GetOrCreateBond),
-            new Step("ClearPreviousBond", ClearPreviousBond),
+            new Step("ClearPreviousBonds", ClearPreviousBond),
             new Step("WriteBond", WriteBond),
             //new Step("ReassertBond", ReassertBond),
             new Step("SendConnectTrigger", SendConnectTrigger),
@@ -202,6 +202,36 @@ namespace BetterJoyForCemu {
                     BluetoothRadio.RemoveClassicLinkKeyIfMatches(ctx.HostMacLittleEndian, ctx.ControllerMac, ctx.LinkKey);
                 ctx.Ok = false;
             }
+        }
+
+        // Not wired into Sequence - place it yourself, in place of ClearPreviousBond above.
+        // "Seek and destroy" version: ClearPreviousBond only clears the CONTROLLER's own onboard
+        // pairing record (report 0x0A). This also clears WINDOWS' side first - every trace of a
+        // bond to this device, not just whatever TryGetOrCreateClassicPairing's single
+        // GetOrCreateBond call happened to find. Motivated by real hardware testing: Windows
+        // Bluetooth Settings sometimes shows only one bonded entry for a device that actually has
+        // two underlying records - delete the visible one, restart the radio (Settings > toggle
+        // Bluetooth off/on), and a second one appears to delete too. Calls the real
+        // BluetoothRemoveDevice API (goes through the actual Bluetooth stack, not just registry
+        // bytes - the likely reason a manual radio toggle was needed before) and sweeps every
+        // adapter subkey under the registry's Keys tree for anything left over, not just one.
+        // Runs before GetOrCreateBond has resolved a host/key for this attempt, so it needs
+        // ctx.ControllerMac only - nothing else from later steps.
+        static void ClearPreviousBonds(Ctx ctx) {
+            BluetoothRadio.RemoveAllBondsForDevice(ctx.ControllerMac,
+                out bool removedViaApi, out uint apiResult, out int registryRemovals);
+            Log(string.Format(
+                "ClearPreviousBonds: BluetoothRemoveDevice={0} (0x{1:X8}), registry entries removed={2}",
+                removedViaApi, apiResult, registryRemovals));
+
+            byte[] emptyHost = new byte[6];
+            byte[] emptyKey = new byte[16];
+            bool cleared = SendPairingReport(ctx.Handle, emptyHost, emptyKey);
+            if (cleared)
+                cleared = WaitForPairingHost(ctx.Handle, emptyHost, PairingRecordCommitTimeoutMs);
+            Log("Clear controller's own record: " + (cleared ? "OK" : "FAILED"));
+            if (!cleared)
+                ctx.Ok = false;
         }
 
         static void WriteBond(Ctx ctx) {

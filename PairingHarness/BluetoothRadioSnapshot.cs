@@ -122,6 +122,15 @@ namespace BetterJoyForCemu {
         private static extern uint BluetoothUpdateDeviceRecord(
             ref BLUETOOTH_DEVICE_INFO deviceInfo);
 
+        // The real "forget this device" API - distinct from just erasing the registry link key.
+        // Added for the harness's ClearPreviousBonds (not part of the real b7d0efa file): goes
+        // through Windows' actual Bluetooth stack rather than only erasing raw bytes, which is the
+        // likely reason a manual radio toggle was needed before a second lingering bond would show
+        // up in Settings - a raw registry delete alone can leave the stack's own in-memory device
+        // record stale until something (like a radio restart) forces it to re-read.
+        [DllImport("bthprops.cpl")]
+        private static extern uint BluetoothRemoveDevice(ref ulong pAddress);
+
         [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
         private static extern uint BluetoothSetServiceState(IntPtr radioHandle,
             ref BLUETOOTH_DEVICE_INFO deviceInfo, ref Guid serviceGuid,
@@ -411,6 +420,59 @@ namespace BetterJoyForCemu {
                         return;
                     adapterKey.DeleteValue(deviceName, false);
                     adapterKey.Flush();
+                }
+            } catch (UnauthorizedAccessException) {
+            } catch (System.Security.SecurityException) {
+            } catch (System.IO.IOException) {
+            }
+        }
+
+        // Added for the harness (not part of the real b7d0efa file) - "seek and destroy" every
+        // trace of a bond to this device, not just the one under whichever single adapter/host
+        // TryGetOrCreateClassicPairing happened to pick. Two things observed on real hardware
+        // motivated this: Windows Bluetooth Settings sometimes only shows one bonded entry for a
+        // device that actually has two underlying records - deleting the visible one and then
+        // restarting the radio (Settings > toggle Bluetooth off/on) surfaces a second one to
+        // delete - and BluetoothRemoveDevice goes through the actual Bluetooth stack instead of
+        // just erasing registry bytes, which is likely why that manual radio toggle was needed:
+        // a raw registry delete alone can leave the stack's own in-memory device record stale
+        // until something forces it to re-read. This does both: calls the real API, then also
+        // sweeps every adapter subkey under Parameters\Keys (not just one) for a leftover value
+        // keyed to this device's MAC, in case anything survives outside what the API clears.
+        internal static void RemoveAllBondsForDevice(byte[] deviceMac,
+                out bool removedViaApi, out uint apiResult, out int registryRemovals) {
+            removedViaApi = false;
+            apiResult = 0;
+            registryRemovals = 0;
+            if (deviceMac == null || deviceMac.Length != 6)
+                return;
+
+            ulong address = AddressValue(deviceMac);
+            apiResult = BluetoothRemoveDevice(ref address);
+            removedViaApi = apiResult == ErrorSuccess;
+
+            string deviceName = MacRegistryName(deviceMac);
+            try {
+                using (RegistryKey localMachine = OpenLocalMachine())
+                using (RegistryKey keysRoot = localMachine.OpenSubKey(BluetoothKeysRegistryPath, false)) {
+                    if (keysRoot != null) {
+                        foreach (string adapterName in keysRoot.GetSubKeyNames()) {
+                            try {
+                                using (RegistryKey adapterKey = localMachine.OpenSubKey(
+                                        BluetoothKeysRegistryPath + "\\" + adapterName, true)) {
+                                    if (adapterKey?.GetValue(deviceName, null,
+                                            RegistryValueOptions.DoNotExpandEnvironmentNames) == null)
+                                        continue;
+                                    adapterKey.DeleteValue(deviceName, false);
+                                    adapterKey.Flush();
+                                    registryRemovals++;
+                                }
+                            } catch (UnauthorizedAccessException) {
+                            } catch (System.Security.SecurityException) {
+                            } catch (System.IO.IOException) {
+                            }
+                        }
+                    }
                 }
             } catch (UnauthorizedAccessException) {
             } catch (System.Security.SecurityException) {
