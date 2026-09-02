@@ -84,10 +84,24 @@ namespace BetterJoyForCemu {
             new Step("WriteBond", WriteBond),
             new Step("ReassertBond", ReassertBond),
             new Step("SendConnectTrigger", SendConnectTrigger),
+			new Step("ReassertBond", ReassertBond),
+            new Step("SendConnectTrigger", SendConnectTrigger),
             new Step("CloseUsbHandle", CloseUsbHandle),
             new Step("FinalizeHidService", FinalizeHidService),
-            new Step("ReassertFinalKeyOverUsb", ReassertFinalKeyOverUsb),
-            new Step("MonitorBluetoothConnection", MonitorBluetoothConnection),
+			
+			new Step("WriteBond", WriteBond),
+            new Step("ReassertBond", ReassertBond),
+            new Step("SendConnectTrigger", SendConnectTrigger),
+			new Step("ReassertBond", ReassertBond),
+            new Step("SendConnectTrigger", SendConnectTrigger),
+            new Step("CloseUsbHandle", CloseUsbHandle),
+			new Step("PressPSButton", PowerOffController),
+			new Step("PowerOffController", PowerOffController),
+            new Step("FinalizeHidService", FinalizeHidService),
+			new Step("ReassertBond", ReassertBond),
+            //new Step("ReassertFinalKeyOverUsb", ReassertFinalKeyOverUsb),
+            //new Step("MonitorBluetoothConnection", MonitorBluetoothConnection),
+            new Step("PowerOffController", PowerOffController),
         };
 
         static void Main() {
@@ -231,6 +245,62 @@ namespace BetterJoyForCemu {
                 ctx.Ok = false;
         }
 
+        // Not wired into Sequence - place it yourself. Theory (confirmed against official PS5
+        // pairing behavior): once the bond is written, the controller goes to low power and
+        // correctly STAYS there - not a bug - until a PS press wakes it. Waits for a
+        // release-to-press edge over ctx.Handle (or, if the interface was already idle when this
+        // step started, treats the first report after that idle stretch as the wake itself), then
+        // sends the connect trigger only once woken - same detection shape as DualSense.cs's own
+        // MonitorChargeOnlyUsbWake. No cap - Ctrl+C to give up.
+        static void PressPSButton(Ctx ctx) {
+            if (ctx.Handle == IntPtr.Zero) {
+                Log("PressPSButton: no open handle.");
+                return;
+            }
+
+            Log("Waiting for a PS button press to wake the controller (Ctrl+C to give up)...");
+            bool sawPsReleased = false;
+            bool dormant = false;
+            long quietSinceTicks = Environment.TickCount;
+            long lastHeartbeatTicks = quietSinceTicks;
+            byte[] report = new byte[64];
+
+            while (true) {
+                int received = HIDapi.hid_read_timeout(ctx.Handle, report,
+                    new UIntPtr((uint)report.Length), 100);
+                if (received < 0) {
+                    Log("PressPSButton: read failed, handle went invalid.");
+                    return;
+                }
+
+                long now = Environment.TickCount;
+                if (received == 0) {
+                    if ((now - quietSinceTicks) >= 750)
+                        dormant = true;
+                } else if (received != 64 || report[0] != 0x01) {
+                    quietSinceTicks = now;
+                } else {
+                    bool psPressed = (report[10] & 0x01) != 0;
+                    if (!psPressed)
+                        sawPsReleased = true;
+
+                    bool wakeRequested = dormant || (sawPsReleased && psPressed);
+                    quietSinceTicks = now;
+                    if (wakeRequested) {
+                        Log("PS wake edge detected - sending connect trigger.");
+                        ctx.ConnectRequested = SendBluetoothControlReport(ctx.Handle, false, BluetoothControlOn);
+                        Log("Connect trigger (0x08/ON): " + (ctx.ConnectRequested ? "sent" : "FAILED to send"));
+                        return;
+                    }
+                }
+
+                if ((now - lastHeartbeatTicks) >= 30000) {
+                    lastHeartbeatTicks = now;
+                    Log("Still waiting for PS press...");
+                }
+            }
+        }
+
         // The real app's synchronous USB step-off: nothing further touches this handle after the
         // connect trigger, matching PerformAutomaticBluetoothPairing exactly.
         static void CloseUsbHandle(Ctx ctx) {
@@ -308,6 +378,32 @@ namespace BetterJoyForCemu {
             try {
                 bool sent = SendBluetoothControlReport(handle, btPath != null, BluetoothControlOff);
                 Log("SendPowerOffToController (" + (btPath != null ? "Bluetooth" : "USB") + "): " +
+                    (sent ? "sent" : "FAILED to send"));
+            } finally {
+                HIDapi.hid_close(handle);
+            }
+        }
+
+        // Same job as SendPowerOffToController above, kept as its own separately-named step (not
+        // wired into Sequence - place it wherever you want to test). Self-contained: finds
+        // whichever interface (Bluetooth preferred, falls back to USB) is currently reachable and
+        // opens its own handle, safe to splice in anywhere.
+        static void PowerOffController(Ctx ctx) {
+            string btPath = FindBluetoothInterfacePath();
+            string path = btPath ?? FindUsbDualSensePath();
+            if (path == null) {
+                Log("PowerOffController: no reachable interface found.");
+                return;
+            }
+
+            IntPtr handle = HIDapi.hid_open_path(path);
+            if (handle == IntPtr.Zero) {
+                Log("PowerOffController: could not open " + path);
+                return;
+            }
+            try {
+                bool sent = SendBluetoothControlReport(handle, btPath != null, BluetoothControlOff);
+                Log("PowerOffController (" + (btPath != null ? "Bluetooth" : "USB") + "): " +
                     (sent ? "sent" : "FAILED to send"));
             } finally {
                 HIDapi.hid_close(handle);
