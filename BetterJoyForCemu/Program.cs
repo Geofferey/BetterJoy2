@@ -127,6 +127,40 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // True if a DualSense/DualSense Edge Bluetooth HID interface (path carries the 00001124
+        // BR/EDR HID service GUID) is currently enumerable for this exact controller MAC - i.e.
+        // the controller is connected/connecting over Bluetooth right now. Used by Repair mode to
+        // decide whether the controller came up over Bluetooth on its own before deciding to
+        // rewrite its bond. controllerMac is normal display order (PadMacAddress.GetAddressBytes()).
+        public bool IsBluetoothInterfacePresent(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return false;
+
+            string mac = BitConverter.ToString(controllerMac).Replace("-", "");
+            IntPtr ptr = HIDapi.hid_enumerate(vendor_sony, 0);
+            IntPtr top = ptr;
+            try {
+                while (ptr != IntPtr.Zero) {
+                    hid_device_info info = (hid_device_info)Marshal.PtrToStructure(
+                        ptr, typeof(hid_device_info));
+                    if ((info.product_id == product_dualsense ||
+                            info.product_id == product_dualsense_edge) &&
+                            !String.IsNullOrEmpty(info.path) &&
+                            info.path.IndexOf("00001124", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                            !String.IsNullOrEmpty(info.serial_number)) {
+                        string serial = new string(
+                            info.serial_number.Where(Uri.IsHexDigit).ToArray());
+                        if (String.Equals(serial, mac, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                    ptr = info.next;
+                }
+            } finally {
+                HIDapi.hid_free_enumeration(top);
+            }
+            return false;
+        }
+
         // The active Bluetooth controller object is destroyed during power-off and recreated on
         // PS wake, while the charge-only USB quarantine deliberately survives in the manager.
         // Let that fresh controller recover the wired HID path by stable profile identity so a

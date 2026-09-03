@@ -2373,8 +2373,14 @@ namespace BetterJoyForCemu {
                     transport => String.Equals(transport.Value, preferredTransport,
                         StringComparison.OrdinalIgnoreCase));
                 preferredTransportSelector.SelectedIndex = Math.Max(0, preferredTransportIndex);
+                string automaticBluetoothPairingMode =
+                    ControllerMappings.AutomaticBluetoothPairingMode(SelectedProfileId);
+                int automaticBluetoothPairingIndex = Array.FindIndex(
+                    ControllerMappings.AutomaticBluetoothPairingModes,
+                    mode => String.Equals(mode.Value, automaticBluetoothPairingMode,
+                        StringComparison.OrdinalIgnoreCase));
                 automaticBluetoothPairingSelector.SelectedIndex =
-                    ControllerMappings.AutomaticBluetoothPairingEnabled(SelectedProfileId) ? 0 : 1;
+                    Math.Max(0, automaticBluetoothPairingIndex);
                 dragToggleCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");

@@ -37,6 +37,10 @@ namespace BetterJoyForCemu {
         public const string DefaultLightColor = "#0000FF";
         public const string ModeEnable = "enable";
         public const string ModeDisable = "disable";
+        // Automatic BT third mode: restore/repair an existing PC bond a controller lost (e.g. to a
+        // PS5), rather than the full from-scratch pairing "enable" does. See
+        // AutomaticBluetoothPairingMode / DualSense's Repair fast path.
+        public const string ModeRepair = "repair";
         public const string RumbleModeDisableWithGyro = "disable_with_gyro";
         public const string AudioModeRequireHeadphones = "require_headphones";
         public const string MicrophoneModeStartMuted = "start_muted";
@@ -78,7 +82,7 @@ namespace BetterJoyForCemu {
             (PreferredTransportUsb, "USB"),
         };
         public static readonly (string Value, string Label)[] AutomaticBluetoothPairingModes = {
-            (ModeEnable, "Enabled"), (ModeDisable, "Disabled"),
+            (ModeEnable, "Enabled"), (ModeRepair, "Repair"), (ModeDisable, "Disabled"),
         };
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
@@ -567,9 +571,21 @@ namespace BetterJoyForCemu {
                 : PreferredTransportUsb;
         }
 
+        // Raw mode: ModeEnable (full from-scratch pairing), ModeRepair (restore an existing PC
+        // bond the controller lost), or ModeDisable. Anything unrecognized is treated as disabled.
+        public static string AutomaticBluetoothPairingMode(string profileId) {
+            string value = OptionValue(profileId, "AutomaticBluetoothPairing");
+            if (String.Equals(value, ModeEnable, StringComparison.OrdinalIgnoreCase))
+                return ModeEnable;
+            if (String.Equals(value, ModeRepair, StringComparison.OrdinalIgnoreCase))
+                return ModeRepair;
+            return ModeDisable;
+        }
+
+        // True for both Enabled and Repair - either way the controller's cable attach should
+        // trigger the automatic-BT flow; the mode above decides which path it takes.
         public static bool AutomaticBluetoothPairingEnabled(string profileId) {
-            return String.Equals(OptionValue(profileId, "AutomaticBluetoothPairing"),
-                ModeEnable, StringComparison.OrdinalIgnoreCase);
+            return AutomaticBluetoothPairingMode(profileId) != ModeDisable;
         }
 
         public static int LightBrightness(string profileId) {
