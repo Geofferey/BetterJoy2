@@ -614,52 +614,49 @@ namespace BetterJoyForCemu {
 
         // Repair mode (Automatic BT = Repair, preferred transport Bluetooth). Restores the
         // controller's half of a bond the PC never lost, instead of the full from-scratch pairing.
-        // First give the controller a chance to connect over Bluetooth on its own: send the connect
-        // trigger and watch briefly for its Bluetooth HID interface to appear. If it comes up, the
-        // onboard bond is still intact (it never left this PC) - nothing to repair, leave it. If it
-        // does not come up, the controller lost this PC's bond (e.g. it got re-bonded to a PS5, and
-        // a controller only remembers one host), so rewrite the PC's host+key back over whatever
-        // host it holds now (0x0A) and put it to sleep the same way a long-hold-PS PowerOff does -
-        // low-power OFF plus the charge-only USB wake monitor - so a PS press wakes it and it
-        // connects with the restored bond. Runs on the Poll thread, same as the full path.
-        private const int RepairConnectWaitSeconds = 5;
-
+        //
+        // The host MAC the controller is bonded to IS readable (report 0x09, offset 10), unlike the
+        // write-only link key - so check it and rewrite ONLY when it points somewhere other than
+        // this PC's adapter. A controller that's still ours (just re-plugged, never went to a PS5)
+        // gets no write at all. When it IS foreign (e.g. a PS5, since a controller only remembers
+        // one host), repoint it at this PC and CONFIRM the repoint took before any wake - if we
+        // can't confirm it, do not sleep/wake, or the wake would reach whatever host it still holds
+        // and could wake a nearby PS5. Only PowerOff (auto power-off / long-hold) asserts the bond
+        // unconditionally. Does no lighting/output - the controller stays dark until it is actually
+        // up on Bluetooth. Runs on the Poll thread, same as the full path.
         private void PerformRepairModePairing(byte[] controllerMac,
                 byte[] hostMacLittleEndian, byte[] linkKey) {
             string profileId = ControllerMappings.ProfileIdFor(this);
             string usbPath = path;
 
-            bool connectRequested = SendBluetoothControlFeatureReport(
-                handle, false, DualSenseBluetoothControlOn);
-            bool connectedOverBluetooth = false;
-            if (connectRequested) {
-                long deadline = Stopwatch.GetTimestamp() +
-                    Stopwatch.Frequency * RepairConnectWaitSeconds;
-                while (Stopwatch.GetTimestamp() < deadline) {
-                    if (Program.mgr.IsBluetoothInterfacePresent(controllerMac)) {
-                        connectedOverBluetooth = true;
-                        break;
-                    }
-                    Thread.Sleep(250);
+            byte[] currentHost = ReadControllerPairedHost();
+            bool matchesPc = currentHost != null &&
+                ByteArraysEqual(currentHost, hostMacLittleEndian);
+
+            if (!matchesPc) {
+                // Foreign host - repoint the controller at this PC and confirm it took before we
+                // ever wake it.
+                bool reasserted = SendBluetoothPairingFeatureReport(
+                    handle, hostMacLittleEndian, linkKey);
+                if (reasserted)
+                    reasserted = WaitForBluetoothPairingHost(handle,
+                        hostMacLittleEndian, PairingRecordCommitTimeoutMs);
+                if (!reasserted) {
+                    // Couldn't confirm the repoint - do NOT sleep/wake (avoid waking whatever host
+                    // it still points at).
+                    form.AppendTextBox("DualSense bond could not be repaired over USB; reconnect " +
+                        "and try again.\r\n");
+                    DebugLog.Write("DualSense repair: pad=" + PadId +
+                        " hostMatchedPc=False reasserted=False (aborted, not woken)");
+                    return;
                 }
             }
 
-            if (connectedOverBluetooth) {
-                form.AppendTextBox("DualSense already connected over Bluetooth; nothing to " +
-                    "repair.\r\n");
-                DebugLog.Write("DualSense repair: pad=" + PadId +
-                    " connectRequested=" + connectRequested +
-                    " connectedOverBluetooth=True (no repair needed)");
-                return;
-            }
-
-            // Didn't come up - restore the controller's half, then sleep it to wait for a PS press.
-            bool reasserted = SendBluetoothPairingFeatureReport(
-                handle, hostMacLittleEndian, linkKey);
-            if (reasserted)
-                reasserted = WaitForBluetoothPairingHost(handle,
-                    hostMacLittleEndian, PairingRecordCommitTimeoutMs);
-            bool sentLowPower = reasserted && SendBluetoothControlFeatureReport(
+            // Host is confirmed to be this PC now (either it already matched, or the repoint above
+            // verified). Settle to low power and hand off to the charge-only Bluetooth wake path -
+            // the controller comes up over Bluetooth on its own / on a PS press. The low-power OFF
+            // (same one PowerOff uses) is unconditional; only the bond WRITE above is conditional.
+            bool sentLowPower = SendBluetoothControlFeatureReport(
                 handle, false, DualSenseBluetoothControlOff);
 
             chargeOnlyUsbPath = usbPath;
@@ -671,12 +668,11 @@ namespace BetterJoyForCemu {
             monitorChargeOnlyWakeAfterPowerOff =
                 Program.mgr.ShouldMonitorChargeOnlyUsbWake(chargeOnlyUsbPath, profileId);
 
-            form.AppendTextBox(reasserted
-                ? "DualSense bond repaired; press PS to connect to this PC.\r\n"
-                : "DualSense bond could not be repaired over USB; reconnect and try again.\r\n");
+            form.AppendTextBox(matchesPc
+                ? "DualSense already bonded to this PC; using Bluetooth.\r\n"
+                : "DualSense bond repaired; using Bluetooth.\r\n");
             DebugLog.Write("DualSense repair: pad=" + PadId +
-                " connectRequested=" + connectRequested +
-                " connectedOverBluetooth=False reasserted=" + reasserted +
+                " hostMatchedPc=" + matchesPc +
                 " sentLowPower=" + sentLowPower +
                 " wakeMonitorArmed=" + monitorChargeOnlyWakeAfterPowerOff);
 
@@ -688,6 +684,22 @@ namespace BetterJoyForCemu {
             Program.mgr.j.Remove(this);
             if (monitorChargeOnlyWakeAfterPowerOff)
                 BeginChargeOnlyUsbWakeMonitor();
+        }
+
+        // Reads the host address the controller is currently bonded to (report 0x09, offset 10),
+        // little-endian to match hostMacLittleEndian. Returns null if it can't be read. The host is
+        // readable unlike the write-only link key, which is what lets Repair skip rewriting a bond
+        // that already points at this PC.
+        private byte[] ReadControllerPairedHost() {
+            byte[] pairingInfo = new byte[DualSensePairingInfoFeatureReportLen];
+            pairingInfo[0] = DualSensePairingInfoFeatureReportId;
+            int received = HIDapi.hid_get_feature_report(handle, pairingInfo,
+                new UIntPtr((uint)pairingInfo.Length));
+            if (received < DualSensePairingHostAddressOffset + 6)
+                return null;
+            byte[] host = new byte[6];
+            Buffer.BlockCopy(pairingInfo, DualSensePairingHostAddressOffset, host, 0, 6);
+            return host;
         }
 
         private bool QueueAutomaticBluetoothPairingFinalization(
