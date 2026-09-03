@@ -61,6 +61,10 @@ namespace BetterJoyForCemu {
         // ApplyAutomaticBluetoothPairing/ApplyQueuedAutomaticBluetoothPairingIfAny.
         private int automaticBluetoothPairingPending;
         private volatile bool automaticBluetoothPairingInProgress;
+        // Set by the manager (scan-timer thread) once this Bluetooth pad is confirmed live
+        // (IMU_DATA_OK on the 00001124 interface); drained on the Poll thread to run the roaming
+        // sleep (PowerOff) - same scan->Poll hand-off shape as automaticBluetoothPairingPending.
+        private int roamingSleepPending;
         private bool lightbarTransportKnown;
         private bool lightbarUpdatePending = true;
         private bool openRgbLightbarUpdatePending;
@@ -290,7 +294,7 @@ namespace BetterJoyForCemu {
         // rather than dividing by a degenerate (0-0) Plus/Minus range.
         private bool gyroCalibrationValid;
 
-        public DualSenseController(IntPtr handle_, string path, string serialNum, int id = 0) {
+        public DualSenseController(IntPtr handle_, string path, string serialNum, bool isUsb, int id = 0) {
             serial_number = serialNum;
             activeData = new float[6];
             handle = handle_;
@@ -308,10 +312,15 @@ namespace BetterJoyForCemu {
             isLeft = true;
 
             PadId = id;
-            // Re-derived every packet from actual report length (see ReceiveRaw) - the Joy-Con-
-            // only placeholder-serial heuristic doesn't apply here.
-            isUSB = false;
             this.path = path;
+            // Transport is the authoritative PnP-bus answer resolved at enumeration
+            // (Program.GetControllerTransport: USB vs BTHENUM up the device tree), passed in here so
+            // isUSB is correct from packet zero. NOT re-derived from read length in ReceiveRaw:
+            // Windows pads reads up to the buffer size, so a wired read can arrive as 78 and be
+            // misread as Bluetooth. This is the wire-vs-BT conditional everything else depends on
+            // (pairing only runs on USB; a controller on Bluetooth is already paired, so it's never
+            // re-paired), so it has to be right the instant the pad exists.
+            isUSB = isUsb;
 
             RefreshGyroOnlyButtonReservations();
 
@@ -462,8 +471,13 @@ namespace BetterJoyForCemu {
                 StopBluetoothMicrophone();
                 StopBluetoothAudioStream();
                 bool pairingStateReasserted = ReassertBluetoothPairingStateOverUsb();
+                // Send the low-power OFF the same way Repair does and it lands reliably:
+                // bluetoothTransport:false. Passing true appends a CRC Windows' BT HID stack
+                // rejects, so the report never sent (featureReportSent=False) and PowerOff fell back
+                // to DisconnectDevice - which only drops the link, leaving the controller awake so
+                // the wake monitor immediately re-woke it (the sleep/wake loop).
                 bool sentFeatureReport = pairingStateReasserted &&
-                    SendBluetoothControlFeatureReport(handle, true,
+                    SendBluetoothControlFeatureReport(handle, false,
                         DualSenseBluetoothControlOff);
                 if (!sentFeatureReport)
                     BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
@@ -507,6 +521,17 @@ namespace BetterJoyForCemu {
         protected override void ApplyQueuedAutomaticBluetoothPairingIfAny() {
             if (Interlocked.Exchange(ref automaticBluetoothPairingPending, 0) != 0)
                 PerformAutomaticBluetoothPairing();
+            // The pad has been confirmed live over Bluetooth - drop it into the roaming sleep
+            // (PowerOff already is the full assert-key + low-power OFF + arm-PS-wake tail), run here
+            // on the Poll thread because PowerOff issues feature reports on the handle.
+            if (Interlocked.Exchange(ref roamingSleepPending, 0) != 0)
+                PowerOff();
+        }
+
+        // Called by the manager reconciliation once this Bluetooth pad reaches IMU_DATA_OK and its
+        // MAC had a pending pairing attempt. Records the request; the Poll thread runs PowerOff.
+        public void RequestRoamingSleepAfterBluetoothConfirmation() {
+            Interlocked.Exchange(ref roamingSleepPending, 1);
         }
 
         private void PerformAutomaticBluetoothPairing() {
@@ -524,15 +549,30 @@ namespace BetterJoyForCemu {
                     return;
                 }
 
-                // Repair mode takes a different path from Enabled. The PC's whole side of the bond
+                // Repair mode always takes the restore-only path. The PC's whole side of the bond
                 // (registry link key, Devices record, authenticated bond state) is never lost - a
-                // PS5 trip only overwrites the CONTROLLER's onboard half. So Repair just restores
-                // the controller's half of the bond the PC still has, instead of the full
-                // from-scratch pairing Enabled does. Enabled falls through to the existing,
-                // unchanged mechanism below.
-                if (ControllerMappings.AutomaticBluetoothPairingMode(
-                        ControllerMappings.ProfileIdFor(this)) == ControllerMappings.ModeRepair) {
+                // PS5 trip only overwrites the CONTROLLER's onboard half - so Repair just restores
+                // the controller's half of the bond the PC still has.
+                bool repairMode = ControllerMappings.AutomaticBluetoothPairingMode(
+                        ControllerMappings.ProfileIdFor(this)) == ControllerMappings.ModeRepair;
+
+                if (repairMode) {
                     PerformRepairModePairing(controllerMac, hostMacLittleEndian, linkKey);
+                    return;
+                }
+
+                // Enabled confirms over the LIVE Bluetooth connection, not "a registry key exists".
+                // A key existing (created==false) does NOT mean the controller is authenticated or
+                // connectable, so we never trust it blind. Gentle path first when a key already
+                // exists and no prior attempt has timed out: point the bond at this PC (rewrite only
+                // if foreign) and fire a CONNECT trigger, WITHOUT clobbering a good bond and without
+                // sleeping - the manager then watches for the Bluetooth pad to actually come up
+                // (IMU_DATA_OK) and only then sleeps it, or retries. The destructive full ceremony
+                // below runs only when there's genuinely no bond to lose (created==true) or a gentle
+                // attempt already timed out (escalate).
+                bool escalate = Program.mgr.BluetoothPairingAttemptEscalated(controllerMac);
+                if (!created && !escalate) {
+                    PerformEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian, linkKey);
                     return;
                 }
 
@@ -600,6 +640,21 @@ namespace BetterJoyForCemu {
                 // right here - not reactively after observing anything - so every attempt gets the
                 // same uncontended window instead of leaving it to scheduling luck.
                 if (connectRequested) {
+                    // Register this controller's wired path under its profile before stepping off,
+                    // the same way Repair does. Without it, a later PowerOff on the resulting
+                    // Bluetooth pad has no wired interface to recover (TryGetChargeOnlyUsbPath finds
+                    // nothing), so ReassertBluetoothPairingStateOverUsb bails and the controller
+                    // sleeps WITHOUT the link key reasserted (pairingStateReasserted=False) - which
+                    // is what breaks the assert-before-power-off. The 0x0A reassert only works over
+                    // the wired interface (it writes a zero CRC), so the wired path must be
+                    // recoverable at power-off time.
+                    Program.mgr.SuppressUsbControllerForBluetoothPreference(
+                        path, ControllerMappings.ProfileIdFor(this));
+                    // Record the attempt so the manager confirms this MAC actually comes up over
+                    // Bluetooth (IMU_DATA_OK) and only then sleeps it - or retries if it never does.
+                    Program.mgr.RecordBluetoothPairingAttempt(
+                        controllerMac, ControllerMappings.ProfileIdFor(this), path);
+
                     state = state_.DROPPED;
                     Detach(true);
                     Program.mgr.j.Remove(this);
@@ -610,6 +665,59 @@ namespace BetterJoyForCemu {
                 Array.Clear(emptyHost, 0, emptyHost.Length);
                 Array.Clear(emptyKey, 0, emptyKey.Length);
             }
+        }
+
+        // Ensures the controller's onboard bond points at THIS PC. Reads the current host (report
+        // 0x09, readable unlike the write-only link key); if it already matches, does nothing and
+        // returns true with matchedAlready=true (no clobber). If it's foreign/empty, repoints it
+        // (0x0A) and verifies via WaitForBluetoothPairingHost. Returns false only when a foreign
+        // host could not be confirmed repointed - caller must NOT wake it then. Shared by Repair and
+        // the Enabled gentle connect path.
+        private bool EnsureControllerBondPointsToThisPc(byte[] hostMacLittleEndian,
+                byte[] linkKey, out bool matchedAlready) {
+            byte[] currentHost = ReadControllerPairedHost();
+            matchedAlready = currentHost != null &&
+                ByteArraysEqual(currentHost, hostMacLittleEndian);
+            if (matchedAlready)
+                return true;
+            bool reasserted = SendBluetoothPairingFeatureReport(
+                handle, hostMacLittleEndian, linkKey);
+            if (reasserted)
+                reasserted = WaitForBluetoothPairingHost(handle,
+                    hostMacLittleEndian, PairingRecordCommitTimeoutMs);
+            return reasserted;
+        }
+
+        // Enabled "gentle" path: a bond key already exists (created==false) and no prior attempt has
+        // timed out. Point the controller's onboard bond at this PC (rewrite only if foreign), then
+        // fire a CONNECT trigger (not low-power) and register the attempt so the manager can confirm
+        // the pad actually comes up over Bluetooth (IMU_DATA_OK) and only then sleep it - or escalate
+        // to the full ceremony if it never connects. No clobber of a good bond, no sleep here.
+        private void PerformEnabledConnectAndConfirm(byte[] controllerMac,
+                byte[] hostMacLittleEndian, byte[] linkKey) {
+            string profileId = ControllerMappings.ProfileIdFor(this);
+
+            if (!EnsureControllerBondPointsToThisPc(hostMacLittleEndian, linkKey,
+                    out bool matchesPc)) {
+                form.AppendTextBox("DualSense bond could not be reasserted over USB; reconnect " +
+                    "and try again.\r\n");
+                DebugLog.Write("DualSense enabled connect: pad=" + PadId +
+                    " hostMatchedPc=False reasserted=False (aborted)");
+                return;
+            }
+
+            bool connectRequested = SendBluetoothControlFeatureReport(
+                handle, false, DualSenseBluetoothControlOn);
+            Program.mgr.SuppressUsbControllerForBluetoothPreference(path, profileId);
+            Program.mgr.RecordBluetoothPairingAttempt(controllerMac, profileId, path);
+
+            form.AppendTextBox("DualSense connecting over Bluetooth; confirming...\r\n");
+            DebugLog.Write("DualSense enabled connect: pad=" + PadId +
+                " hostMatchedPc=" + matchesPc + " escalate=False connectRequested=" + connectRequested);
+
+            state = state_.DROPPED;
+            Detach(true);
+            Program.mgr.j.Remove(this);
         }
 
         // Repair mode (Automatic BT = Repair, preferred transport Bluetooth). Restores the
@@ -629,27 +737,15 @@ namespace BetterJoyForCemu {
             string profileId = ControllerMappings.ProfileIdFor(this);
             string usbPath = path;
 
-            byte[] currentHost = ReadControllerPairedHost();
-            bool matchesPc = currentHost != null &&
-                ByteArraysEqual(currentHost, hostMacLittleEndian);
-
-            if (!matchesPc) {
-                // Foreign host - repoint the controller at this PC and confirm it took before we
-                // ever wake it.
-                bool reasserted = SendBluetoothPairingFeatureReport(
-                    handle, hostMacLittleEndian, linkKey);
-                if (reasserted)
-                    reasserted = WaitForBluetoothPairingHost(handle,
-                        hostMacLittleEndian, PairingRecordCommitTimeoutMs);
-                if (!reasserted) {
-                    // Couldn't confirm the repoint - do NOT sleep/wake (avoid waking whatever host
-                    // it still points at).
-                    form.AppendTextBox("DualSense bond could not be repaired over USB; reconnect " +
-                        "and try again.\r\n");
-                    DebugLog.Write("DualSense repair: pad=" + PadId +
-                        " hostMatchedPc=False reasserted=False (aborted, not woken)");
-                    return;
-                }
+            if (!EnsureControllerBondPointsToThisPc(hostMacLittleEndian, linkKey,
+                    out bool matchesPc)) {
+                // Couldn't confirm the controller points at this PC - do NOT sleep/wake (avoid
+                // waking whatever host it still holds, e.g. a nearby PS5).
+                form.AppendTextBox("DualSense bond could not be repaired over USB; reconnect " +
+                    "and try again.\r\n");
+                DebugLog.Write("DualSense repair: pad=" + PadId +
+                    " hostMatchedPc=False reasserted=False (aborted, not woken)");
+                return;
             }
 
             // Host is confirmed to be this PC now (either it already matched, or the repoint above
@@ -1195,17 +1291,13 @@ namespace BetterJoyForCemu {
             byte[] dsBuf = new byte[DualSenseMaxReportLen];
             int dsRet = HIDapi.hid_read_timeout(handle, dsBuf, new UIntPtr((uint)DualSenseMaxReportLen), 5);
 
-            // Actual report length distinguishes USB (64 bytes) from Bluetooth (78 bytes) per read -
-            // no separate transport query needed, and more reliable than the Joy-Con-only
-            // placeholder-serial heuristic isUSB otherwise depends on.
+            // Process only real DualSense input reports (64 bytes wired, 78 bytes Bluetooth). Do
+            // NOT re-derive isUSB from this length: Windows pads reads up to the buffer size, so a
+            // wired read can arrive as 78 and be misread as Bluetooth. isUSB is set once from the
+            // authoritative PnP-bus transport in the constructor and stays fixed for this handle's
+            // single interface (one interface = one transport; a real transport switch is a new
+            // device path and therefore a new controller object). connection tracks it in lockstep.
             if (dsRet == 64 || dsRet == 78) {
-                isUSB = dsRet == 64;
-                // connection (the DSU/cemuhook transport byte UpdServer.cs reports to clients) was
-                // otherwise only ever set once in the constructor from the initial isUSB guess and
-                // never updated again - it could silently disagree with isUSB's real per-packet
-                // correction above after a transport switch (e.g. connecting over USB after a
-                // stale Bluetooth link). Keep them in lockstep here, at the one place isUSB itself
-                // is corrected. See DOCS/CONTROLLERS-REFACTOR.md step 7.
                 connection = isUSB ? 0x01 : 0x02;
 
                 // Mic-duplex frames are media, not controller state. They intentionally use the

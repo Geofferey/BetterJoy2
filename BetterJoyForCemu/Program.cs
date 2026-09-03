@@ -83,6 +83,25 @@ namespace BetterJoyForCemu {
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, long> suppressedUsbPowerOffGraceUntil =
             new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+        // An Enabled automatic-BT pairing attempt is confirmed by the LIVE signal - the controller's
+        // Bluetooth pad actually coming up (IMU_DATA_OK on the 00001124 interface) - not by "a key
+        // exists". The USB-side ceremony records the attempt here (keyed by MAC); the reconciliation
+        // confirms it against a live BT pad and sleeps that pad, or - if the pad never comes up
+        // within the window - releases the USB suppression so the wired pad is re-adopted and the
+        // attempt retried (escalated to the full ceremony), capped by attemptCount. Shares
+        // suppressedUsbControllerLock. Keyed by BitConverter.ToString(mac).
+        sealed class BluetoothPairingAttempt {
+            public string profileId;
+            public string wiredPath;
+            public long deadlineTimestamp;
+            public int attemptCount;
+            public bool awaitingReattempt;
+        }
+        readonly Dictionary<string, BluetoothPairingAttempt> pendingBluetoothPairingConfirmations =
+            new Dictionary<string, BluetoothPairingAttempt>(StringComparer.OrdinalIgnoreCase);
+        const long BluetoothPairingConfirmWindowSeconds = 15L;
+        const int BluetoothPairingMaxAttempts = 4;
         readonly object chargeOnlyWakeMonitorLock = new object();
         int activeChargeOnlyWakeMonitors;
 
@@ -206,6 +225,93 @@ namespace BetterJoyForCemu {
                         .Where(path => !suppressedUsbControllerProfiles.ContainsKey(path) ||
                             now >= suppressedUsbPowerOffGraceUntil[path]).ToList())
                     suppressedUsbPowerOffGraceUntil.Remove(path);
+
+                // Drop any pending pairing-confirmation whose wired interface is gone (unplugged),
+                // so a stale record can't linger and later block a fresh attempt.
+                foreach (KeyValuePair<string, BluetoothPairingAttempt> entry in
+                        pendingBluetoothPairingConfirmations.ToList()) {
+                    if (!enumeratedPaths.Contains(entry.Value.wiredPath))
+                        pendingBluetoothPairingConfirmations.Remove(entry.Key);
+                }
+            }
+        }
+
+        // --- Enabled Bluetooth pairing: live-signal confirmation + capped retry ---
+        // All share suppressedUsbControllerLock. MAC key = BitConverter.ToString(mac).
+
+        // Called by the USB-side ceremony (gentle or full) after it fires the connect trigger and
+        // suppresses the wired path. Upserts the attempt and (re)starts the confirmation window.
+        public void RecordBluetoothPairingAttempt(byte[] controllerMac, string profileId,
+                string wiredPath) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return;
+            string mac = BitConverter.ToString(controllerMac).Replace("-", "");
+            long deadline = Stopwatch.GetTimestamp() +
+                Stopwatch.Frequency * BluetoothPairingConfirmWindowSeconds;
+            lock (suppressedUsbControllerLock) {
+                if (!pendingBluetoothPairingConfirmations.TryGetValue(mac,
+                        out BluetoothPairingAttempt attempt)) {
+                    attempt = new BluetoothPairingAttempt { attemptCount = 0 };
+                    pendingBluetoothPairingConfirmations[mac] = attempt;
+                }
+                attempt.profileId = profileId;
+                attempt.wiredPath = wiredPath;
+                attempt.attemptCount++;
+                attempt.deadlineTimestamp = deadline;
+                attempt.awaitingReattempt = false;
+            }
+        }
+
+        // True when a prior gentle attempt already timed out, so the next USB-side run must escalate
+        // straight to the full clear/write/finalize ceremony instead of the gentle connect.
+        public bool BluetoothPairingAttemptEscalated(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return false;
+            string mac = BitConverter.ToString(controllerMac).Replace("-", "");
+            lock (suppressedUsbControllerLock)
+                return pendingBluetoothPairingConfirmations.TryGetValue(mac,
+                        out BluetoothPairingAttempt attempt) && attempt.awaitingReattempt;
+        }
+
+        // Called from the reconciliation when a live BT pad for this MAC reaches IMU_DATA_OK.
+        // Consumes the record (returns true) so the caller can sleep that pad. Suppression is left
+        // in place - the wake monitor the sleep arms needs it.
+        public bool TryConfirmBluetoothPairing(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return false;
+            string mac = BitConverter.ToString(controllerMac).Replace("-", "");
+            lock (suppressedUsbControllerLock)
+                return pendingBluetoothPairingConfirmations.Remove(mac);
+        }
+
+        // Called once per reconciliation pass. For any attempt past its window that never confirmed:
+        // give up after the cap (drop + release suppression), otherwise mark it for re-attempt and
+        // release the USB suppression so the next scan re-adopts the wired pad and re-runs escalated.
+        public void ExpireBluetoothPairingConfirmations() {
+            long now = Stopwatch.GetTimestamp();
+            lock (suppressedUsbControllerLock) {
+                foreach (KeyValuePair<string, BluetoothPairingAttempt> entry in
+                        pendingBluetoothPairingConfirmations.ToList()) {
+                    BluetoothPairingAttempt attempt = entry.Value;
+                    if (attempt.awaitingReattempt || now < attempt.deadlineTimestamp)
+                        continue;
+
+                    if (attempt.attemptCount >= BluetoothPairingMaxAttempts) {
+                        pendingBluetoothPairingConfirmations.Remove(entry.Key);
+                        suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
+                        suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
+                        DebugLog.Write("DualSense BT pairing giving up after " +
+                            attempt.attemptCount + " attempts: mac=" + entry.Key);
+                        continue;
+                    }
+
+                    attempt.awaitingReattempt = true;
+                    suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
+                    suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
+                    DebugLog.Write("DualSense BT pairing timed out: mac=" + entry.Key +
+                        " attempt=" + attempt.attemptCount +
+                        ", releasing USB suppression to retry");
+                }
             }
         }
 
@@ -264,6 +370,23 @@ namespace BetterJoyForCemu {
                 foreach (Controller jc in j) {
                     if (jc.state == Controller.state_.DROPPED)
                         continue;
+                    // Confirm bridge: a live Bluetooth DualSense pad (00001124 interface, receiving
+                    // real input) whose MAC had a pending pairing attempt is the proof the bond
+                    // actually works. Drop it into the roaming sleep (PowerOff on its Poll thread).
+                    // Checked before lighting so a confirmed pad doesn't flash the lightbar first.
+                    if (jc is DualSenseController confirmPad && !confirmPad.isUSB &&
+                            confirmPad.state == Controller.state_.IMU_DATA_OK &&
+                            confirmPad.path != null &&
+                            confirmPad.path.IndexOf("00001124",
+                                StringComparison.OrdinalIgnoreCase) >= 0 &&
+                            TryConfirmBluetoothPairing(
+                                confirmPad.PadMacAddress.GetAddressBytes())) {
+                        confirmPad.RequestRoamingSleepAfterBluetoothConfirmation();
+                        DebugLog.Write("DualSense BT pairing confirmed: pad=" + confirmPad.PadId +
+                            " mac=" + BitConverter.ToString(
+                                confirmPad.PadMacAddress.GetAddressBytes()).Replace("-", "") +
+                            " (IMU_DATA_OK on 00001124)");
+                    }
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
                     if (jc is DualSenseController triggerController) {
@@ -402,6 +525,11 @@ namespace BetterJoyForCemu {
                         DestroyOutputControllers(passive);
                     CreateOutputControllers(active);
                 }
+                // Any Enabled pairing attempt that never confirmed over Bluetooth within its window:
+                // give up (capped) or release USB suppression so the next scan re-adopts the wired
+                // pad and retries. Runs under RunExclusiveOfScanning, so a released suppression is
+                // guaranteed visible to the next CheckForNewControllers pass.
+                ExpireBluetoothPairingConfirmations();
                 form.RefreshControllerState();
                 // The OpenRGB SDK server exposes one fixed device regardless of what's connected
                 // (see OpenRgbServer's own comment on why), so there's no device list to notify
@@ -929,7 +1057,25 @@ namespace BetterJoyForCemu {
                     // controller by PadId alone, so a collision could route a command to the
                     // wrong physical controller, not just misrender a GUI slot.
                     if (isDualSense) {
-                        j.Add(new DualSenseController(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId()));
+                        // Resolve wire vs Bluetooth authoritatively from the PnP bus (USB vs
+                        // BTHENUM) so the pad's isUSB is correct from packet zero - read length is
+                        // unreliable (Windows pads reads). If the PnP tree can't be resolved this
+                        // pass (fresh device / throw), fall back to the interface GUID in the path
+                        // (00001124 = Bluetooth HID) rather than guessing.
+                        bool dualSenseIsUsb;
+                        try {
+                            GetControllerTransport(enumerate.path,
+                                out bool dsIsUsbBus, out bool dsIsBtBus);
+                            dualSenseIsUsb = dsIsBtBus ? false
+                                : dsIsUsbBus ? true
+                                : enumerate.path.IndexOf("00001124",
+                                    StringComparison.OrdinalIgnoreCase) < 0;
+                        } catch {
+                            dualSenseIsUsb = enumerate.path.IndexOf("00001124",
+                                StringComparison.OrdinalIgnoreCase) < 0;
+                        }
+                        j.Add(new DualSenseController(handle, enumerate.path,
+                            enumerate.serial_number, dualSenseIsUsb, NextAvailablePadId()));
                     } else if (isDualShock4) {
                         j.Add(new DualShock4Controller(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId()));
                     } else if (isSnes) {
