@@ -524,6 +524,18 @@ namespace BetterJoyForCemu {
                     return;
                 }
 
+                // Repair mode takes a different path from Enabled. The PC's whole side of the bond
+                // (registry link key, Devices record, authenticated bond state) is never lost - a
+                // PS5 trip only overwrites the CONTROLLER's onboard half. So Repair just restores
+                // the controller's half of the bond the PC still has, instead of the full
+                // from-scratch pairing Enabled does. Enabled falls through to the existing,
+                // unchanged mechanism below.
+                if (ControllerMappings.AutomaticBluetoothPairingMode(
+                        ControllerMappings.ProfileIdFor(this)) == ControllerMappings.ModeRepair) {
+                    PerformRepairModePairing(controllerMac, hostMacLittleEndian, linkKey);
+                    return;
+                }
+
                 bool previousPairingCleared = SendBluetoothPairingFeatureReport(
                     handle, emptyHost, emptyKey);
                 if (previousPairingCleared)
@@ -598,6 +610,84 @@ namespace BetterJoyForCemu {
                 Array.Clear(emptyHost, 0, emptyHost.Length);
                 Array.Clear(emptyKey, 0, emptyKey.Length);
             }
+        }
+
+        // Repair mode (Automatic BT = Repair, preferred transport Bluetooth). Restores the
+        // controller's half of a bond the PC never lost, instead of the full from-scratch pairing.
+        // First give the controller a chance to connect over Bluetooth on its own: send the connect
+        // trigger and watch briefly for its Bluetooth HID interface to appear. If it comes up, the
+        // onboard bond is still intact (it never left this PC) - nothing to repair, leave it. If it
+        // does not come up, the controller lost this PC's bond (e.g. it got re-bonded to a PS5, and
+        // a controller only remembers one host), so rewrite the PC's host+key back over whatever
+        // host it holds now (0x0A) and put it to sleep the same way a long-hold-PS PowerOff does -
+        // low-power OFF plus the charge-only USB wake monitor - so a PS press wakes it and it
+        // connects with the restored bond. Runs on the Poll thread, same as the full path.
+        private const int RepairConnectWaitSeconds = 5;
+
+        private void PerformRepairModePairing(byte[] controllerMac,
+                byte[] hostMacLittleEndian, byte[] linkKey) {
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            string usbPath = path;
+
+            bool connectRequested = SendBluetoothControlFeatureReport(
+                handle, false, DualSenseBluetoothControlOn);
+            bool connectedOverBluetooth = false;
+            if (connectRequested) {
+                long deadline = Stopwatch.GetTimestamp() +
+                    Stopwatch.Frequency * RepairConnectWaitSeconds;
+                while (Stopwatch.GetTimestamp() < deadline) {
+                    if (Program.mgr.IsBluetoothInterfacePresent(controllerMac)) {
+                        connectedOverBluetooth = true;
+                        break;
+                    }
+                    Thread.Sleep(250);
+                }
+            }
+
+            if (connectedOverBluetooth) {
+                form.AppendTextBox("DualSense already connected over Bluetooth; nothing to " +
+                    "repair.\r\n");
+                DebugLog.Write("DualSense repair: pad=" + PadId +
+                    " connectRequested=" + connectRequested +
+                    " connectedOverBluetooth=True (no repair needed)");
+                return;
+            }
+
+            // Didn't come up - restore the controller's half, then sleep it to wait for a PS press.
+            bool reasserted = SendBluetoothPairingFeatureReport(
+                handle, hostMacLittleEndian, linkKey);
+            if (reasserted)
+                reasserted = WaitForBluetoothPairingHost(handle,
+                    hostMacLittleEndian, PairingRecordCommitTimeoutMs);
+            bool sentLowPower = reasserted && SendBluetoothControlFeatureReport(
+                handle, false, DualSenseBluetoothControlOff);
+
+            chargeOnlyUsbPath = usbPath;
+            Program.mgr.SuppressUsbControllerForBluetoothPreference(usbPath, profileId);
+            // Grace window so a brief USB re-enumeration while the controller drops to low power
+            // doesn't release the suppression out from under the wake monitor - same call PowerOff
+            // makes via PrepareChargeOnlyUsbWake.
+            Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(profileId);
+            monitorChargeOnlyWakeAfterPowerOff =
+                Program.mgr.ShouldMonitorChargeOnlyUsbWake(chargeOnlyUsbPath, profileId);
+
+            form.AppendTextBox(reasserted
+                ? "DualSense bond repaired; press PS to connect to this PC.\r\n"
+                : "DualSense bond could not be repaired over USB; reconnect and try again.\r\n");
+            DebugLog.Write("DualSense repair: pad=" + PadId +
+                " connectRequested=" + connectRequested +
+                " connectedOverBluetooth=False reasserted=" + reasserted +
+                " sentLowPower=" + sentLowPower +
+                " wakeMonitorArmed=" + monitorChargeOnlyWakeAfterPowerOff);
+
+            // Same step-off order PowerOff uses: DROPPED (which stops this controller's own Poll
+            // thread) before BeginChargeOnlyUsbWakeMonitor opens its own handle to the same USB
+            // path - never leave both touching the device at once.
+            state = state_.DROPPED;
+            Detach(true);
+            Program.mgr.j.Remove(this);
+            if (monitorChargeOnlyWakeAfterPowerOff)
+                BeginChargeOnlyUsbWakeMonitor();
         }
 
         private bool QueueAutomaticBluetoothPairingFinalization(
@@ -813,6 +903,7 @@ namespace BetterJoyForCemu {
             // its native orange charging state. Let that transition finish first; only then own
             // the input endpoint while waiting for the PS wake edge.
             Thread.Sleep(2500);
+            DebugLog.Write("ChargeOnlyWake: monitor started, path=" + devicePath);
             while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(devicePath, profileId)) {
                 IntPtr wakeHandle = HIDapi.hid_open_path(devicePath);
                 if (wakeHandle == IntPtr.Zero) {
@@ -822,44 +913,60 @@ namespace BetterJoyForCemu {
 
                 try {
                     bool sawPsReleased = false;
-                    bool dormant = false;
+                    bool everQuiet = false;
                     long quietSince = Stopwatch.GetTimestamp();
                     byte[] report = new byte[64];
                     while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(
                             devicePath, profileId)) {
                         int received = HIDapi.hid_read_timeout(wakeHandle, report,
                             new UIntPtr((uint)report.Length), 100);
-                        if (received < 0)
+                        if (received < 0) {
+                            DebugLog.Write("ChargeOnlyWake: read failed (handle invalid), reopening.");
                             break;
+                        }
 
                         long now = Stopwatch.GetTimestamp();
                         if (received == 0) {
-                            if ((now - quietSince) >= Stopwatch.Frequency * 3L / 4L)
-                                dormant = true;
-                            continue;
-                        }
-                        if (received != 64 || report[0] != 0x01) {
-                            quietSince = now;
+                            if (!everQuiet &&
+                                    (now - quietSince) >= Stopwatch.Frequency * 3L / 4L) {
+                                everQuiet = true;
+                                DebugLog.Write("ChargeOnlyWake: interface went dormant; " +
+                                    "any input now counts as the wake.");
+                            }
                             continue;
                         }
 
-                        bool psPressed = (report[10] & 0x01) != 0;
-                        if (!psPressed)
-                            sawPsReleased = true;
-
-                        // A report after the dormant interface went quiet is the wake event even
-                        // if the short PS edge ended before this read completed. While input is
-                        // continuous, require a released-to-pressed PS edge instead.
-                        bool wakeRequested = dormant || (sawPsReleased && psPressed);
+                        // Once the interface has gone quiet (low power / charge-only), ANY report
+                        // is the user waking it - do not require the normal 0x01 input report or a
+                        // specific PS bit, because the low-power/charge report format is not that
+                        // report (this is exactly why the old 0x01-only check missed the press).
+                        // While input is still continuous (never went quiet), fall back to a
+                        // released-to-pressed PS edge on the 0x01 report so ordinary play input
+                        // doesn't wake it.
+                        bool wakeRequested = everQuiet;
+                        if (!wakeRequested && received == 64 && report[0] == 0x01) {
+                            bool psPressed = (report[10] & 0x01) != 0;
+                            if (!psPressed)
+                                sawPsReleased = true;
+                            else if (sawPsReleased)
+                                wakeRequested = true;
+                        }
                         quietSince = now;
-                        if (wakeRequested && SendBluetoothControlFeatureReport(
-                                wakeHandle, false, DualSenseBluetoothControlOn))
-                            return;
+                        if (wakeRequested) {
+                            bool sent = SendBluetoothControlFeatureReport(
+                                wakeHandle, false, DualSenseBluetoothControlOn);
+                            DebugLog.Write("ChargeOnlyWake: wake detected (everQuiet=" +
+                                everQuiet + ", reportId=0x" + report[0].ToString("X2") +
+                                "), connect trigger sent=" + sent);
+                            if (sent)
+                                return;
+                        }
                     }
                 } finally {
                     HIDapi.hid_close(wakeHandle);
                 }
             }
+            DebugLog.Write("ChargeOnlyWake: monitor ended (ShouldMonitor went false).");
         }
 
         public override void SetLightColor(byte red, byte green, byte blue) {
