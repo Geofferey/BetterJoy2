@@ -84,6 +84,15 @@ namespace BetterJoyForCemu {
                     DebugLog.Write("CleanUp: dropping controller pad=" + joycon.PadId +
                         " path=" + joycon.path);
                     joycon.Detach(true);
+                    // A firmware-initiated power off (PS held past the controller's own hardware
+                    // timeout) executes none of our power-off code - the controller just goes dark
+                    // while still cabled, so nothing ever armed the wake monitor and a later PS
+                    // press has no listener. This is the one place every dropped controller passes
+                    // through, so recover from here. No-ops when we powered it off ourselves, mid
+                    // pairing, on a non-Bluetooth-preferred profile, or when the device is really
+                    // gone (its own open fails). Detach above already closed the pad's handle, so
+                    // this opens its own.
+                    (joycon as DualSenseController)?.RecoverFromFirmwarePowerOff();
                     // UsbAudioLoopback lives outside the controller classes entirely (driven
                     // straight from Program.cs/form, not a per-controller Detach hook like
                     // Bluetooth audio's OnDetachingWhileAttached), so nothing else stops it when
