@@ -100,10 +100,13 @@ namespace BetterJoyForCemu {
         }
         readonly Dictionary<string, BluetoothPairingAttempt> pendingBluetoothPairingConfirmations =
             new Dictionary<string, BluetoothPairingAttempt>(StringComparer.OrdinalIgnoreCase);
-        // A successful connect brings the Bluetooth pad up in ~2s (confirmed on hardware), so the
-        // window only needs a little margin over that - anything longer is pure dead time on a
-        // failed attempt before it retries. Short window + more (cheaper) attempts wins faster.
-        const long BluetoothPairingConfirmWindowSeconds = 6L;
+        // We confirm on a STABLE link, not a blip: the BT pad must hold IMU_DATA_OK for this dwell
+        // before we sleep it (so we don't cut the connection off mid-pairing). The confirm window
+        // (retry timeout) must comfortably exceed pad-up (~2s) + dwell so a settling connection
+        // isn't retried out from under itself; failed attempts (pad never holds) still retry within
+        // it. More (cheaper) attempts to win faster.
+        const long BluetoothPairingStableDwellSeconds = 3L;
+        const long BluetoothPairingConfirmWindowSeconds = 10L;
         const int BluetoothPairingMaxAttempts = 6;
         readonly object chargeOnlyWakeMonitorLock = new object();
         int activeChargeOnlyWakeMonitors;
@@ -373,22 +376,31 @@ namespace BetterJoyForCemu {
                 foreach (Controller jc in j) {
                     if (jc.state == Controller.state_.DROPPED)
                         continue;
-                    // Confirm bridge: a live Bluetooth DualSense pad (00001124 interface, receiving
-                    // real input) whose MAC had a pending pairing attempt is the proof the bond
-                    // actually works. Drop it into the roaming sleep (PowerOff on its Poll thread).
-                    // Checked before lighting so a confirmed pad doesn't flash the lightbar first.
+                    // Confirm bridge: proof the bond works is not one blip of input - it's the
+                    // Bluetooth link HOLDING. A single IMU_DATA_OK is just one lap of the pairing
+                    // loop; sleeping on it yanks the connection down mid-authentication. So require
+                    // this BT pad (00001124 interface) to stay live for a dwell before we confirm +
+                    // sleep it (PowerOff on its Poll thread). Checked before lighting so a confirmed
+                    // pad doesn't flash the lightbar first.
                     if (jc is DualSenseController confirmPad && !confirmPad.isUSB &&
                             confirmPad.state == Controller.state_.IMU_DATA_OK &&
                             confirmPad.path != null &&
                             confirmPad.path.IndexOf("00001124",
-                                StringComparison.OrdinalIgnoreCase) >= 0 &&
-                            TryConfirmBluetoothPairing(
-                                confirmPad.PadMacAddress.GetAddressBytes())) {
-                        confirmPad.RequestRoamingSleepAfterBluetoothConfirmation();
-                        DebugLog.Write("DualSense BT pairing confirmed: pad=" + confirmPad.PadId +
-                            " mac=" + BitConverter.ToString(
-                                confirmPad.PadMacAddress.GetAddressBytes()).Replace("-", "") +
-                            " (IMU_DATA_OK on 00001124)");
+                                StringComparison.OrdinalIgnoreCase) >= 0) {
+                        long nowTs = Stopwatch.GetTimestamp();
+                        if (confirmPad.bluetoothImuStableSince == 0)
+                            confirmPad.bluetoothImuStableSince = nowTs;   // start the stability dwell
+                        else if (nowTs - confirmPad.bluetoothImuStableSince >=
+                                     Stopwatch.Frequency * BluetoothPairingStableDwellSeconds &&
+                                 TryConfirmBluetoothPairing(
+                                     confirmPad.PadMacAddress.GetAddressBytes())) {
+                            confirmPad.RequestRoamingSleepAfterBluetoothConfirmation();
+                            DebugLog.Write("DualSense BT pairing confirmed (held): pad=" +
+                                confirmPad.PadId + " mac=" + BitConverter.ToString(
+                                    confirmPad.PadMacAddress.GetAddressBytes()).Replace("-", "") +
+                                " heldMs=" + ((nowTs - confirmPad.bluetoothImuStableSince) *
+                                    1000 / Stopwatch.Frequency));
+                        }
                     }
                     string profileId = ControllerMappings.ProfileIdFor(jc);
                     ApplyControllerProfileLighting(jc, profileId);
