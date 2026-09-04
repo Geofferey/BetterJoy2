@@ -65,6 +65,12 @@ namespace BetterJoyForCemu {
         // (IMU_DATA_OK on the 00001124 interface); drained on the Poll thread to run the roaming
         // sleep (PowerOff) - same scan->Poll hand-off shape as automaticBluetoothPairingPending.
         private int roamingSleepPending;
+        // Stopwatch timestamp of when this pad first reached IMU_DATA_OK, set/read by the manager's
+        // confirm bridge to require the Bluetooth link to HOLD (a stable connection = pairing
+        // actually finished) before sleeping it - a single brief IMU_DATA_OK is just one lap of the
+        // pairing loop, not proof it's done. Resets naturally: a dropped link removes this pad and a
+        // reconnect is a fresh object with this back at 0.
+        internal long bluetoothImuStableSince;
         private bool lightbarTransportKnown;
         private bool lightbarUpdatePending = true;
         private bool openRgbLightbarUpdatePending;
