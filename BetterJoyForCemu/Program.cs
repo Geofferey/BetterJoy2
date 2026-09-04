@@ -100,8 +100,11 @@ namespace BetterJoyForCemu {
         }
         readonly Dictionary<string, BluetoothPairingAttempt> pendingBluetoothPairingConfirmations =
             new Dictionary<string, BluetoothPairingAttempt>(StringComparer.OrdinalIgnoreCase);
-        const long BluetoothPairingConfirmWindowSeconds = 15L;
-        const int BluetoothPairingMaxAttempts = 4;
+        // A successful connect brings the Bluetooth pad up in ~2s (confirmed on hardware), so the
+        // window only needs a little margin over that - anything longer is pure dead time on a
+        // failed attempt before it retries. Short window + more (cheaper) attempts wins faster.
+        const long BluetoothPairingConfirmWindowSeconds = 6L;
+        const int BluetoothPairingMaxAttempts = 6;
         readonly object chargeOnlyWakeMonitorLock = new object();
         int activeChargeOnlyWakeMonitors;
 
