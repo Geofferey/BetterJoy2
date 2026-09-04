@@ -548,6 +548,9 @@ namespace BetterJoyForCemu {
             byte[] emptyKey = new byte[16];
             bool created = false;
             try {
+                DebugLog.Write("DualSense pairing registry BEFORE round: pad=" + PadId + " mac=" +
+                    BitConverter.ToString(controllerMac).Replace("-", "") + " " +
+                    BluetoothRadio.DescribeClassicPairingRegistry(controllerMac));
                 if (!BluetoothRadio.TryGetOrCreateClassicPairing(controllerMac,
                         out hostMacLittleEndian, out linkKey, out created)) {
                     form.AppendTextBox("Automatic DualSense Bluetooth pairing could not access " +
@@ -636,6 +639,9 @@ namespace BetterJoyForCemu {
                     " previousPairingCleared=" + previousPairingCleared +
                     " pairingStateReasserted=" + pairingStateReasserted +
                     " connectRequested=" + connectRequested);
+                DebugLog.Write("DualSense pairing registry AFTER round (pre-finalize): pad=" + PadId +
+                    " mac=" + BitConverter.ToString(controllerMac).Replace("-", "") + " " +
+                    BluetoothRadio.DescribeClassicPairingRegistry(controllerMac));
 
                 // USB's job is to write the pairing record, verify it committed, and trigger the
                 // connection - once that trigger (0x08/ON) is sent, holding this USB attachment
@@ -830,6 +836,9 @@ namespace BetterJoyForCemu {
                         " createdWindowsBond=" + createdWindowsBond +
                         " connectRequested=" + connectRequested +
                         " authenticatedHidRegistered=" + completed);
+                    DebugLog.Write("DualSense pairing registry AFTER finalize: pad=" + PadId +
+                        " mac=" + BitConverter.ToString(controllerCopy).Replace("-", "") + " " +
+                        BluetoothRadio.DescribeClassicPairingRegistry(controllerCopy));
                 } finally {
                     automaticBluetoothPairingInProgress = false;
                     Array.Clear(hostCopy, 0, hostCopy.Length);

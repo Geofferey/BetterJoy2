@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using Microsoft.Win32;
 
@@ -82,6 +83,8 @@ namespace BetterJoyForCemu {
         private const uint BluetoothServiceEnable = 1;
         private const string BluetoothKeysRegistryPath =
             @"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys";
+        private const string BluetoothDevicesRegistryPath =
+            @"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices";
         private static readonly Guid HumanInterfaceDeviceServiceClass =
             new Guid("00001124-0000-1000-8000-00805F9B34FB");
 
@@ -195,6 +198,75 @@ namespace BetterJoyForCemu {
             } catch (System.IO.IOException) {
                 return false;
             }
+        }
+
+        // DIAGNOSTIC ONLY: describe the current BthPort registry state for this controller MAC so we
+        // can watch the bond come into existence across pairing rounds - the link key under each
+        // adapter's Keys value, plus the full Devices\<mac> record subtree (Name, COD, SSP/paired
+        // flags, ServicesFor\<adapter>\{00001124...} enable, CachedServices, etc.). Logs the raw key
+        // on purpose here (diagnostic; not for production). Never throws.
+        internal static string DescribeClassicPairingRegistry(byte[] deviceMac) {
+            if (deviceMac == null || deviceMac.Length != 6)
+                return "(bad mac)";
+            string deviceName = MacRegistryName(deviceMac);
+            StringBuilder sb = new StringBuilder();
+            try {
+                using (RegistryKey localMachine = OpenLocalMachine()) {
+                    foreach (byte[] radioLE in GetLocalRadioAddressesLittleEndian()) {
+                        string adapterName = MacRegistryName(ReverseAddress(radioLE));
+                        using (RegistryKey adapterKey = localMachine.OpenSubKey(
+                                BluetoothKeysRegistryPath + "\\" + adapterName, false)) {
+                            byte[] stored = adapterKey?.GetValue(deviceName, null,
+                                RegistryValueOptions.DoNotExpandEnvironmentNames) as byte[];
+                            sb.Append("Keys[").Append(adapterName).Append("]=")
+                              .Append(stored == null ? "none"
+                                  : BitConverter.ToString(stored).Replace("-", ""))
+                              .Append("; ");
+                        }
+                    }
+                    using (RegistryKey devKey = localMachine.OpenSubKey(
+                            BluetoothDevicesRegistryPath + "\\" + deviceName, false)) {
+                        if (devKey == null) {
+                            sb.Append("Devices[").Append(deviceName).Append("]=none");
+                        } else {
+                            sb.Append("Devices[").Append(deviceName).Append("]{ ");
+                            AppendRegistrySubtree(devKey, sb, 0, 4);
+                            sb.Append('}');
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                sb.Append("(registry read error: ").Append(ex.GetType().Name).Append(')');
+            }
+            return sb.ToString();
+        }
+
+        private static void AppendRegistrySubtree(RegistryKey key, StringBuilder sb,
+                int depth, int maxDepth) {
+            if (key == null)
+                return;
+            foreach (string valueName in key.GetValueNames()) {
+                object val = key.GetValue(valueName, null,
+                    RegistryValueOptions.DoNotExpandEnvironmentNames);
+                sb.Append(valueName.Length == 0 ? "(default)" : valueName)
+                  .Append('=').Append(FormatRegistryValue(val)).Append(' ');
+            }
+            if (depth >= maxDepth)
+                return;
+            foreach (string subName in key.GetSubKeyNames()) {
+                sb.Append('[').Append(subName).Append(": ");
+                using (RegistryKey subKey = key.OpenSubKey(subName, false))
+                    AppendRegistrySubtree(subKey, sb, depth + 1, maxDepth);
+                sb.Append(']');
+            }
+        }
+
+        private static string FormatRegistryValue(object val) {
+            if (val == null)
+                return "null";
+            if (val is byte[] bytes)
+                return "0x" + BitConverter.ToString(bytes).Replace("-", "");
+            return val.ToString();
         }
 
         // Select the local adapter that already owns this controller's bond when possible. For a
