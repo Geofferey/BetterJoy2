@@ -137,6 +137,51 @@ namespace BetterJoyForCemu {
                 suppressedUsbControllerProfiles[devicePath] = profileId;
         }
 
+        // Controllers BetterJoy deliberately powered off (roaming sleep, long-press, inactivity,
+        // app exit). Keyed by MAC and held HERE rather than on the pad object on purpose: the pad
+        // that a power-off ran on is destroyed and rebuilt by the scan as a brand-new object, so
+        // any per-object "we did this" flag is reset by the time a later drop is evaluated - which
+        // would make the disappeared-controller wake fire on a controller we put to sleep on
+        // purpose. Cleared only when the controller is demonstrably awake and streaming again.
+        readonly HashSet<string> deliberatePowerOffMacs =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public void MarkDeliberatePowerOff(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return;
+            lock (suppressedUsbControllerLock)
+                deliberatePowerOffMacs.Add(BitConverter.ToString(controllerMac).Replace("-", ""));
+        }
+
+        public void ClearDeliberatePowerOff(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return;
+            lock (suppressedUsbControllerLock) {
+                if (deliberatePowerOffMacs.Count == 0)
+                    return;
+                deliberatePowerOffMacs.Remove(
+                    BitConverter.ToString(controllerMac).Replace("-", ""));
+            }
+        }
+
+        public bool WasDeliberatelyPoweredOff(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return false;
+            lock (suppressedUsbControllerLock)
+                return deliberatePowerOffMacs.Contains(
+                    BitConverter.ToString(controllerMac).Replace("-", ""));
+        }
+
+        // A pairing attempt for this MAC is still in flight - the Bluetooth pad churning up and
+        // down is that attempt working, not a controller that died. Never wake into it.
+        public bool HasPendingBluetoothPairingAttempt(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return false;
+            lock (suppressedUsbControllerLock)
+                return pendingBluetoothPairingConfirmations.ContainsKey(
+                    BitConverter.ToString(controllerMac).Replace("-", ""));
+        }
+
         public bool ShouldMonitorChargeOnlyUsbWake(string devicePath, string profileId) {
             if (scanningStopped || String.IsNullOrEmpty(devicePath) ||
                     String.IsNullOrEmpty(profileId))
@@ -376,6 +421,11 @@ namespace BetterJoyForCemu {
                 foreach (Controller jc in j) {
                     if (jc.state == Controller.state_.DROPPED)
                         continue;
+                    // Streaming again = genuinely awake, so an earlier deliberate power-off no
+                    // longer describes this controller. Only after this does a later unexplained
+                    // disappearance count as the controller dying on its own.
+                    if (jc.state == Controller.state_.IMU_DATA_OK && jc is DualSenseController awakePad)
+                        ClearDeliberatePowerOff(awakePad.PadMacAddress.GetAddressBytes());
                     // Confirm bridge: proof the bond works is not one blip of input - it's the
                     // Bluetooth link HOLDING. A single IMU_DATA_OK is just one lap of the pairing
                     // loop; sleeping on it yanks the connection down mid-authentication. So require

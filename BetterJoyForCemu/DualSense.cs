@@ -46,6 +46,14 @@ namespace BetterJoyForCemu {
         private const byte DualSenseBluetoothControlFeatureReportId = 0x08;
         private const byte DualSenseBluetoothControlOn = 0x01;
         private const byte DualSenseBluetoothControlOff = 0x02;
+        // Restored from df0514e: the USB-side Bluetooth WAKE control. Note it is a different
+        // command AND a different report length than the 47-byte 0x08/0x01 connect trigger - a
+        // captured PS5 connection sequence uses this exact 17-byte form.
+        private const byte DualSenseUsbBluetoothWakeControl = 0x11;
+        private const int DualSenseUsbBluetoothWakeReportLen = 17;
+        // After waking a fully-powered-off controller, how long to let its radio come up before
+        // parking it dormant-paired. Bounded, and only on this recovery path.
+        private const int FirmwarePowerOffWakeSettleMs = 1200;
         private const byte DualSensePairingInfoFeatureReportId = 0x09;
         private const int DualSensePairingInfoFeatureReportLen = 20;
         private const int DualSensePairingHostAddressOffset = 10;
@@ -55,6 +63,10 @@ namespace BetterJoyForCemu {
         private const int PairingRecordPollIntervalMs = 50;
         private string chargeOnlyUsbPath;
         private bool monitorChargeOnlyWakeAfterPowerOff;
+        // Set when BetterJoy itself powered this controller off, so the firmware-power-off recovery
+        // in CleanUp can tell "we did this deliberately, the monitor is already armed" apart from
+        // "the controller's own firmware killed it behind our back".
+        private volatile bool appInitiatedPowerOff;
         private int chargeOnlyWakeMonitorStarted;
         private bool automaticBluetoothPairingAttempted;
         // Interlocked-exchanged request flag from the scan-timer thread to the Poll thread - see
@@ -473,18 +485,22 @@ namespace BetterJoyForCemu {
         // bond: use the host-side radio disconnect instead.
         public override void PowerOff() {
             if (state > state_.DROPPED && !isUSB) {
+                appInitiatedPowerOff = true;
+                // Also record it against the MAC in the manager: this pad object is about to be
+                // destroyed and rebuilt by the scan, and the flag above dies with it.
+                Program.mgr.MarkDeliberatePowerOff(PadMacAddress.GetAddressBytes());
                 PrepareChargeOnlyUsbWake();
                 StopBluetoothMicrophone();
                 StopBluetoothAudioStream();
                 bool pairingStateReasserted = ReassertBluetoothPairingStateOverUsb();
-                // Send the low-power OFF the same way Repair does and it lands reliably:
-                // bluetoothTransport:false. Passing true appends a CRC Windows' BT HID stack
-                // rejects, so the report never sent (featureReportSent=False) and PowerOff fell back
-                // to DisconnectDevice - which only drops the link, leaving the controller awake so
-                // the wake monitor immediately re-woke it (the sleep/wake loop).
+                // Native Bluetooth power-off (df0514e), restored. The CRC-less variant that had
+                // replaced it never actually landed - featureReportSent=False on every power-off in
+                // real logs - so this silently fell back to the host-side Windows disconnect every
+                // time, which is precisely what df0514e was written to stop doing: that disconnect
+                // only drops the link and leaves the controller awake, so the charge-only wake
+                // monitor could immediately re-wake it (the sleep/wake loop).
                 bool sentFeatureReport = pairingStateReasserted &&
-                    SendBluetoothControlFeatureReport(handle, false,
-                        DualSenseBluetoothControlOff);
+                    SendBluetoothPowerOffFeatureReport();
                 if (!sentFeatureReport)
                     BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 DebugLog.Write("DualSense.PowerOff: pad=" + PadId +
@@ -946,6 +962,141 @@ namespace BetterJoyForCemu {
             } finally {
                 Array.Clear(pairingInfo, 0, pairingInfo.Length);
                 timer.Stop();
+            }
+        }
+
+        // Restored verbatim from df0514e. The USB-side wake that brings a dormant/off controller's
+        // Bluetooth radio back - 17 bytes, not the 47-byte control report, and repeated: "A
+        // captured PS5 connection sequence repeats this exact 17-byte feature report a few times.
+        // Match that behavior so one transient USB control transfer cannot lose the wake request
+        // before the controller's Bluetooth radio begins reconnecting."
+        private static bool SendUsbBluetoothWakeControl(IntPtr wakeHandle) {
+            byte[] report = new byte[DualSenseUsbBluetoothWakeReportLen];
+            report[0] = DualSenseBluetoothControlFeatureReportId;
+            report[1] = DualSenseUsbBluetoothWakeControl;
+
+            bool sent = false;
+            for (int attempt = 0; attempt < 3; attempt++) {
+                sent |= HIDapi.hid_send_feature_report(wakeHandle, report,
+                    new UIntPtr((uint)report.Length)) == report.Length;
+                if (attempt < 2)
+                    Thread.Sleep(20);
+            }
+            return sent;
+        }
+
+        // A firmware-initiated power off - PS held past the controller's OWN hardware timeout -
+        // runs none of BetterJoy's power-off code. The controller simply goes completely dark,
+        // radio included. That is NOT the dormant-paired state PowerOff() leaves behind: there is
+        // no live radio for the charge-only wake monitor to watch, so a later PS press has nothing
+        // on our side listening and the controller is effectively stranded while still cabled.
+        //
+        // Recover it deliberately, in the order the hardware needs: wake the radio back over the
+        // still-present wired interface (0x08/0x11), let it come up, park it dormant-paired
+        // (0x08/0x02), then arm the same wake monitor PowerOff() would have armed.
+        //
+        // Called from the manager's CleanUp pass for every dropped DualSense. Self-limiting: it
+        // opens its own handle (this pad's is already closed), and a genuine unplug simply fails
+        // that open and no-ops. Runs on a worker so the HID round-trip and settle never block the
+        // scan pass.
+        public void RecoverFromFirmwarePowerOff() {
+            // NEVER wake a controller BetterJoy itself shut down. This is deliberately checked
+            // against the manager's MAC-keyed record, not just this object's own flag: the pad a
+            // power-off ran on is destroyed and rebuilt by the scan, so the per-object flag reads
+            // false on every pad after the first and would let the wake fire on a controller we
+            // put to sleep on purpose. The record clears only once the controller streams again.
+            byte[] mac = PadMacAddress.GetAddressBytes();
+            if (appInitiatedPowerOff || Program.mgr.WasDeliberatelyPoweredOff(mac))
+                return;
+            // A pairing attempt in flight churns the Bluetooth pad up and down by design - that is
+            // the attempt working, not a controller that died. Checked in the manager for the same
+            // object-lifetime reason as above.
+            if (automaticBluetoothPairingInProgress ||
+                    Program.mgr.HasPendingBluetoothPairingAttempt(mac))
+                return;
+            // The wake is a BLUETOOTH wake; it only makes sense for a Bluetooth-preferred profile.
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            if (ControllerMappings.PreferredTransport(profileId) !=
+                    ControllerMappings.PreferredTransportBluetooth)
+                return;
+            // A Bluetooth pad the SCAN created (rather than one our own power-off path built) has
+            // never had chargeOnlyUsbPath populated - and that is precisely the pad that drops when
+            // the controller dies on its own. Recover the wired interface by profile, exactly as
+            // PrepareChargeOnlyUsbWake does; without this the whole thing silently no-ops on the
+            // one case it exists for.
+            string wiredPath = isUSB ? path : chargeOnlyUsbPath;
+            if (String.IsNullOrEmpty(wiredPath))
+                Program.mgr.TryGetChargeOnlyUsbPath(profileId, out wiredPath);
+            if (String.IsNullOrEmpty(wiredPath)) {
+                // Never fail silently here again - a missing wired path is a real answer.
+                DebugLog.Write("DualSense disappeared - wake skipped: pad=" + PadId +
+                    " no wired interface known for profile " + profileId);
+                return;
+            }
+
+            ThreadPool.QueueUserWorkItem(_ => {
+                // Give the wired interface a moment: the controller going dark can briefly take the
+                // path with it before it settles back as charge-only. Retry the open rather than
+                // deciding "gone" on one attempt.
+                IntPtr wakeHandle = IntPtr.Zero;
+                for (int attempt = 0; attempt < 8 && wakeHandle == IntPtr.Zero; attempt++) {
+                    if (attempt > 0)
+                        Thread.Sleep(250);
+                    wakeHandle = HIDapi.hid_open_path(wiredPath);
+                }
+                bool wokeOn = false;
+                bool wokeUsb = false;
+                if (wakeHandle != IntPtr.Zero) {
+                    try {
+                        // 0x08/0x01 first: this is the SAME trigger the service sends over the
+                        // wired interface the moment it adopts a DualSense at startup, and the same
+                        // one MonitorChargeOnlyUsbWake sends on a PS press. Restarting the service
+                        // waking a dark controller is exactly this report landing - so it is the
+                        // one wake with real evidence behind it on this hardware.
+                        wokeOn = SendBluetoothControlFeatureReport(
+                            wakeHandle, false, DualSenseBluetoothControlOn);
+                        // Then df0514e's 17-byte USB wake (0x08/0x11, x3) as a second chance -
+                        // taken from a captured PS5 connection sequence, but never confirmed on
+                        // current hardware. Harmless if the controller is already coming up.
+                        wokeUsb = SendUsbBluetoothWakeControl(wakeHandle);
+                    } finally {
+                        HIDapi.hid_close(wakeHandle);
+                    }
+                }
+                DebugLog.Write("DualSense disappeared - wake attempt: pad=" + PadId +
+                    " wiredPath=" + (wakeHandle != IntPtr.Zero ? "open" : "unavailable") +
+                    " sentConnectTrigger=" + wokeOn + " sentUsbWake=" + wokeUsb);
+                // Deliberately nothing further: no low-power park, no wake monitor. If the
+                // controller comes back, the normal scan adopts it like any other connection.
+            });
+        }
+
+        // NATIVE Bluetooth power-off - restored verbatim from df0514e. Sony's own low-power command
+        // (0x08 / 0x02) sent over the BLUETOOTH handle with the CRC32 (seed 0x53) that Bluetooth
+        // feature reports require, and taken under outputReportLock so it cannot interleave with
+        // this pad's other output traffic on the same handle. Deliberately an instance method, not
+        // the static generic sender, for exactly that lock.
+        //
+        // Why this exists rather than a Windows-side disconnect: an OS-level disconnect bypasses
+        // the controller's own shutdown/reconnect lifecycle and leaves a cable-powered controller
+        // unable to reconnect on a PS press. DisconnectDevice is the fallback for when the
+        // controller actually rejects this command - never the normal path.
+        private bool SendBluetoothPowerOffFeatureReport() {
+            if (handle == IntPtr.Zero || isUSB)
+                return false;
+
+            byte[] report = new byte[DualSenseBluetoothControlFeatureReportLen];
+            report[0] = DualSenseBluetoothControlFeatureReportId;
+            report[1] = DualSenseBluetoothControlOff;
+            uint crc = Crc32(0x53, report, report.Length - 4);
+            report[report.Length - 4] = (byte)crc;
+            report[report.Length - 3] = (byte)(crc >> 8);
+            report[report.Length - 2] = (byte)(crc >> 16);
+            report[report.Length - 1] = (byte)(crc >> 24);
+
+            lock (outputReportLock) {
+                return HIDapi.hid_send_feature_report(handle, report,
+                    new UIntPtr((uint)report.Length)) == report.Length;
             }
         }
 
