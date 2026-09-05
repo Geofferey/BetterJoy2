@@ -633,6 +633,23 @@ namespace BetterJoyForCemu {
         private static bool TryEnableHidService(IntPtr radioHandle,
                 ulong targetDeviceAddress, string fallbackName,
                 bool discoverUnknownDevice) {
+            // A newly authenticated controller can already have a transient device record by the
+            // time this worker runs. Probe that cache without inquiry first: BluetoothFindFirstDevice
+            // returns immediately in this mode and BluetoothSetServiceState can finish the HID
+            // registration on the same pass. Only perform the slower inquiry when the cache really
+            // has no matching record. This keeps the fresh-pair path fast without sacrificing the
+            // discovery needed for a genuinely unknown device.
+            if (discoverUnknownDevice && TryEnableHidServicePass(radioHandle,
+                    targetDeviceAddress, fallbackName, false, 0))
+                return true;
+
+            return TryEnableHidServicePass(radioHandle, targetDeviceAddress, fallbackName,
+                discoverUnknownDevice, discoverUnknownDevice ? (byte)4 : (byte)0);
+        }
+
+        private static bool TryEnableHidServicePass(IntPtr radioHandle,
+                ulong targetDeviceAddress, string fallbackName,
+                bool issueInquiry, byte timeoutMultiplier) {
             // A new controller has no Windows device record for a cache-only query to return, so its
             // first handoff needs inquiry to create that record. Existing bonds use the fast cache
             // path; repeatedly running a multi-second inquiry there only widens the retry race.
@@ -642,8 +659,8 @@ namespace BetterJoyForCemu {
                 returnRemembered = true,
                 returnUnknown = true,
                 returnConnected = true,
-                issueInquiry = discoverUnknownDevice,
-                timeoutMultiplier = discoverUnknownDevice ? (byte)4 : (byte)0,
+                issueInquiry = issueInquiry,
+                timeoutMultiplier = timeoutMultiplier,
                 radioHandle = radioHandle,
             };
             var device = new BLUETOOTH_DEVICE_INFO {

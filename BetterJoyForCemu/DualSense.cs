@@ -773,6 +773,20 @@ namespace BetterJoyForCemu {
                 return;
             }
 
+            // This path powers the controller down over its USB interface. Re-assert even when
+            // report 0x09 already matched: the controller can lose the volatile key during a prior
+            // sleep, and the following 0x08/0x02 must never be sent against an uncommitted record.
+            bool pairingStateReasserted = SendBluetoothPairingFeatureReport(
+                handle, hostMacLittleEndian, linkKey) &&
+                WaitForBluetoothPairingHost(handle, hostMacLittleEndian,
+                    PairingRecordCommitTimeoutMs);
+            if (!pairingStateReasserted) {
+                form.AppendTextBox("DualSense bond could not be reasserted before USB sleep; " +
+                    "reconnect and try again.\r\n");
+                DebugLog.Write("DualSense repair: forced USB sleep reassert failed; not sleeping");
+                return;
+            }
+
             // Host is confirmed to be this PC now (either it already matched, or the repoint above
             // verified). Settle to low power and hand off to the charge-only Bluetooth wake path -
             // the controller comes up over Bluetooth on its own / on a PS press. The low-power OFF
@@ -794,6 +808,7 @@ namespace BetterJoyForCemu {
                 : "DualSense bond repaired; using Bluetooth.\r\n");
             DebugLog.Write("DualSense repair: pad=" + PadId +
                 " hostMatchedPc=" + matchesPc +
+                " pairingStateReasserted=" + pairingStateReasserted +
                 " sentLowPower=" + sentLowPower +
                 " wakeMonitorArmed=" + monitorChargeOnlyWakeAfterPowerOff);
 
@@ -875,20 +890,34 @@ namespace BetterJoyForCemu {
             if (usbHandle == IntPtr.Zero)
                 return false;
 
+            try {
+                return ReassertBluetoothPairingStateOverUsb(usbHandle,
+                    PadMacAddress.GetAddressBytes());
+            } finally {
+                HIDapi.hid_close(usbHandle);
+            }
+        }
+
+        private static bool ReassertBluetoothPairingStateOverUsb(IntPtr usbHandle,
+                byte[] expectedControllerMac) {
+            if (usbHandle == IntPtr.Zero)
+                return false;
+
+            byte[] pairingInfo = new byte[DualSensePairingInfoFeatureReportLen];
             byte[] linkKey = null;
             try {
-                byte[] pairingInfo = new byte[DualSensePairingInfoFeatureReportLen];
                 pairingInfo[0] = DualSensePairingInfoFeatureReportId;
                 int received = HIDapi.hid_get_feature_report(usbHandle, pairingInfo,
                     new UIntPtr((uint)pairingInfo.Length));
                 if (received < DualSensePairingHostAddressOffset + 6)
                     return false;
 
-                byte[] controllerMac = PadMacAddress.GetAddressBytes();
-                for (int i = 0; i < controllerMac.Length; i++) {
-                    if (pairingInfo[1 + i] != controllerMac[controllerMac.Length - 1 - i])
-                        return false;
-                }
+                byte[] controllerMac = new byte[6];
+                for (int i = 0; i < controllerMac.Length; i++)
+                    controllerMac[i] = pairingInfo[1 + (5 - i)];
+                if (expectedControllerMac != null &&
+                        !ByteArraysEqual(controllerMac, expectedControllerMac))
+                    return false;
 
                 byte[] hostMacLittleEndian = new byte[6];
                 Buffer.BlockCopy(pairingInfo, DualSensePairingHostAddressOffset,
@@ -907,7 +936,7 @@ namespace BetterJoyForCemu {
             } finally {
                 if (linkKey != null)
                     Array.Clear(linkKey, 0, linkKey.Length);
-                HIDapi.hid_close(usbHandle);
+                Array.Clear(pairingInfo, 0, pairingInfo.Length);
             }
         }
 
@@ -1133,6 +1162,16 @@ namespace BetterJoyForCemu {
         }
 
         public override void PrepareLongPressPowerOff() {
+            // A USB-side firmware power-off can clear the controller's volatile pairing state just
+            // like the Bluetooth-side low-power command. Assert the exact Windows bond first while
+            // this live wired handle is still available; PowerOff() is intentionally a no-op for
+            // USB because the controller's own long-press timeout performs the actual shutdown.
+            if (state > state_.DROPPED && isUSB) {
+                bool pairingStateReasserted = ReassertBluetoothPairingStateOverUsb(handle,
+                    PadMacAddress.GetAddressBytes());
+                DebugLog.Write("DualSense USB power-off preparation: pairingStateReasserted=" +
+                    pairingStateReasserted);
+            }
             PrepareChargeOnlyUsbWake();
         }
 
@@ -1179,7 +1218,7 @@ namespace BetterJoyForCemu {
             // Opening the USB HID interface during teardown prevents the firmware from reaching
             // its native orange charging state. Let that transition finish first; only then own
             // the input endpoint while waiting for the PS wake edge.
-            Thread.Sleep(2500);
+            Thread.Sleep(FirmwarePowerOffWakeSettleMs);
             DebugLog.Write("ChargeOnlyWake: monitor started, path=" + devicePath);
             while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(devicePath, profileId)) {
                 IntPtr wakeHandle = HIDapi.hid_open_path(devicePath);
