@@ -1005,6 +1005,12 @@ namespace BetterJoyForCemu {
             // power-off ran on is destroyed and rebuilt by the scan, so the per-object flag reads
             // false on every pad after the first and would let the wake fire on a controller we
             // put to sleep on purpose. The record clears only once the controller streams again.
+            // One and done. This pad never received a single input report, so it isn't a working
+            // controller that disappeared - it's the pad a previous wake produced, which came up
+            // and died without ever streaming. Waking it again just loops (drop -> wake -> connect
+            // -> drop, every ~4s on real hardware). Only a pad that actually worked gets a wake.
+            if (!lightbarTransportKnown)
+                return;
             byte[] mac = PadMacAddress.GetAddressBytes();
             if (appInitiatedPowerOff || Program.mgr.WasDeliberatelyPoweredOff(mac))
                 return;
@@ -1638,6 +1644,15 @@ namespace BetterJoyForCemu {
             // raw subtraction/division doesn't know about BetterJoy's own "up is positive" stick
             // convention - only the sign needs flipping, not the calibration math.
             UInt16[] stickRaw = { r[0 + o], r[1 + o] };
+            // Gyro auto-calibration's stick-center pass samples stick_precal/stick2_precal, not the
+            // locals below (see GyroMath.PublishAutoCalStickCenter). Those were only ever written by
+            // NintendoController, so on a DualSense they stayed at their {0,0} initializer forever -
+            // auto-cal then published a center of (0,0) over the 128,128 seeded in Attach(), and
+            // CenterSticks read every resting sample as a large positive deflection: both sticks
+            // pinned down and to the right, persisted to disk. Populate them here so the existing
+            // pass sees real values.
+            stick_precal[0] = stickRaw[0];
+            stick_precal[1] = stickRaw[1];
             CalibrationState.AddStickSample(this, false, stickRaw[0], stickRaw[1]);
             float[] stickResult = CenterSticks(stickRaw, stick_cal, deadzone,
                 float.Parse(ConfigurationManager.AppSettings["StickScalingFactor"]));
@@ -1645,6 +1660,8 @@ namespace BetterJoyForCemu {
             stick[1] = -stickResult[1];
 
             UInt16[] stick2Raw = { r[2 + o], r[3 + o] };
+            stick2_precal[0] = stick2Raw[0];
+            stick2_precal[1] = stick2Raw[1];
             CalibrationState.AddStickSample(this, true, stick2Raw[0], stick2Raw[1]);
             float[] stick2Result = CenterSticks(stick2Raw, stick2_cal, deadzone2,
                 float.Parse(ConfigurationManager.AppSettings["StickScalingFactor2"]));

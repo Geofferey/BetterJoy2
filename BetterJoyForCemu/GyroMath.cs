@@ -1376,16 +1376,41 @@ namespace BetterJoyForCemu {
             return sorted[sorted.Count / 2];
         }
 
+        // A resting stick never reads at or near the bottom of its range: a center of 0 (or any
+        // value that low) means the samples were never real - e.g. a device whose report parser
+        // doesn't populate stick_precal, which reads {0,0} forever. Publishing that overwrites the
+        // real center and pins the stick to a corner permanently, saved to disk. Refuse instead:
+        // keeping the existing center is always safer than persisting a center we know is wrong.
+        // Compared against the stick's own calibrated center so it scales with the report format
+        // (DualSense ~128 of 255, Joy-Con ~2048 of 4095) rather than hardcoding a range.
+        private static bool PlausibleAutoCalCenter(int center, ushort currentCenter) {
+            return currentCenter == 0 || (center > currentCenter / 4 && center < currentCenter * 4);
+        }
+
         protected void PublishAutoCalStickCenter() {
             if (autoCalStickCenterX.Count > 0) {
-                CalibrationState.PublishStickCenter(serial_number, false, stick_cal,
-                    Median(autoCalStickCenterX), Median(autoCalStickCenterY));
-                getActiveStickData();
+                int cx = Median(autoCalStickCenterX), cy = Median(autoCalStickCenterY);
+                if (PlausibleAutoCalCenter(cx, stick_cal[2]) &&
+                        PlausibleAutoCalCenter(cy, stick_cal[3])) {
+                    CalibrationState.PublishStickCenter(serial_number, false, stick_cal, cx, cy);
+                    getActiveStickData();
+                } else {
+                    DebugLog.Write("AutoCal stick center rejected (implausible): serial=" +
+                        serial_number + " stick1 center=" + cx + "," + cy +
+                        " current=" + stick_cal[2] + "," + stick_cal[3]);
+                }
             }
             if (HasDualSticks && autoCalStick2CenterX.Count > 0) {
-                CalibrationState.PublishStickCenter(serial_number, true, stick2_cal,
-                    Median(autoCalStick2CenterX), Median(autoCalStick2CenterY));
-                getActiveStickData();
+                int cx = Median(autoCalStick2CenterX), cy = Median(autoCalStick2CenterY);
+                if (PlausibleAutoCalCenter(cx, stick2_cal[2]) &&
+                        PlausibleAutoCalCenter(cy, stick2_cal[3])) {
+                    CalibrationState.PublishStickCenter(serial_number, true, stick2_cal, cx, cy);
+                    getActiveStickData();
+                } else {
+                    DebugLog.Write("AutoCal stick center rejected (implausible): serial=" +
+                        serial_number + " stick2 center=" + cx + "," + cy +
+                        " current=" + stick2_cal[2] + "," + stick2_cal[3]);
+                }
             }
             ClearAutoCalStickSamples();
         }
