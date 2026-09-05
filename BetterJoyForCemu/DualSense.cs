@@ -53,7 +53,7 @@ namespace BetterJoyForCemu {
         private const int DualSenseUsbBluetoothWakeReportLen = 17;
         // After waking a fully-powered-off controller, how long to let its radio come up before
         // parking it dormant-paired. Bounded, and only on this recovery path.
-        private const int FirmwarePowerOffWakeSettleMs = 1200;
+        private const int FirmwarePowerOffWakeSettleMs = 2000;
         private const byte DualSensePairingInfoFeatureReportId = 0x09;
         private const int DualSensePairingInfoFeatureReportLen = 20;
         private const int DualSensePairingHostAddressOffset = 10;
@@ -1321,7 +1321,7 @@ namespace BetterJoyForCemu {
                 // OpenRGB color has ever been queued. A later managed-profile update must revoke a
                 // stale OpenRGB bypass before any standalone lighting report is built.
                 openRgbLightbarUpdatePending = fromOpenRgbServer;
-                if (lightbarTransportKnown) {
+                if (lightbarTransportKnown && !LightingSuppressedForUsbHandoff()) {
                     // Lighting remains a standalone controller-output request even while the
                     // Bluetooth media lane is active. Audio carriers never need RGB state
                     // interleaved into them; the controller retains the last LED command itself.
@@ -1368,7 +1368,7 @@ namespace BetterJoyForCemu {
                 // Reuses the exact same "not yet known, retry once ReceiveRaw confirms transport"
                 // path SetLightColor already relies on - SendDualSenseLightbar publishes both the
                 // lightbar color and currentPlayerLeds together in one report either way.
-                if (lightbarTransportKnown)
+                if (lightbarTransportKnown && !LightingSuppressedForUsbHandoff())
                     SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
                 else
                     lightbarUpdatePending = true;
@@ -1378,6 +1378,19 @@ namespace BetterJoyForCemu {
         private bool PrefersBluetoothTransport() {
             return ControllerMappings.PreferredTransport(ControllerMappings.ProfileIdFor(this)) ==
                 ControllerMappings.PreferredTransportBluetooth;
+        }
+
+        // During automatic Bluetooth pairing/repair, the wired HID interface is only the
+        // controller's charge/configuration lane. Do not send lightbar or player-LED output while
+        // that USB object is being handed off; the firmware's startup lighting must remain in charge
+        // until the Bluetooth HID transport is fully established.
+        private bool LightingSuppressedForUsbHandoff() {
+            if (!isUSB)
+                return false;
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            return ControllerMappings.PreferredTransport(profileId) ==
+                    ControllerMappings.PreferredTransportBluetooth &&
+                ControllerMappings.AutomaticBluetoothPairingEnabled(profileId);
         }
 
         // Whichever transport proves itself alive second normally wins shared MAC deduplication.
@@ -1542,11 +1555,14 @@ namespace BetterJoyForCemu {
                     openRgbLightbarUpdatePending = false;
                     lightbarUpdatePending = false;
                 }
-                if (lightbarUpdatePending && openRgbLightbarUpdatePending) {
+                bool lightingSuppressedForUsbHandoff = LightingSuppressedForUsbHandoff();
+                if (lightbarUpdatePending && openRgbLightbarUpdatePending &&
+                        !lightingSuppressedForUsbHandoff) {
                     SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue, true);
                     lightbarUpdatePending = false;
                     openRgbLightbarUpdatePending = false;
-                } else if (lightbarUpdatePending && !LightingModeIsHandsOff()) {
+                } else if (lightbarUpdatePending && !lightingSuppressedForUsbHandoff &&
+                        !LightingModeIsHandsOff()) {
                     long lightbarNow = Stopwatch.GetTimestamp();
                     if (!connectionLightFlashStarted) {
                         // Confirm every new USB or Bluetooth connection with a short blue light,
@@ -2937,8 +2953,10 @@ namespace BetterJoyForCemu {
             // conditionally dropped so Lighting Mode: Default leaves the physical lightbar alone -
             // see that constant's own comment.
             byte validFlag1 = (byte)(0x55 | DualSensePowerSaveControlEnable);
-            if (LightingModeIsHandsOff())
+            if (LightingModeIsHandsOff() || LightingSuppressedForUsbHandoff())
                 validFlag1 &= unchecked((byte)~DualSenseValidLightingFlag1);
+            if (LightingSuppressedForUsbHandoff())
+                report[commonOffset + 38] &= unchecked((byte)~DualSenseValidLightingFlag2);
             report[commonOffset + 1] = validFlag1;
             report[commonOffset + 2] = rightMotor;
             report[commonOffset + 3] = leftMotor;
