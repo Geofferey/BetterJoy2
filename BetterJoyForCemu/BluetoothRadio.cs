@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -85,8 +87,52 @@ namespace BetterJoyForCemu {
             @"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys";
         private const string BluetoothDevicesRegistryPath =
             @"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices";
+        private const string BluetoothPerDevicesRegistryPath =
+            @"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\PerDevices";
+        private const string BluetoothParametersRegistryPath =
+            @"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters";
+        private const string BluetoothEnumRegistryPath =
+            @"SYSTEM\CurrentControlSet\Enum\BTHENUM";
+        private const string HidEnumRegistryPath =
+            @"SYSTEM\CurrentControlSet\Enum\HID";
+        private const uint RegistryNotifyChangeName = 0x00000001;
+        private const uint RegistryNotifyChangeLastSet = 0x00000004;
+        private const int PairingRegistryTraceDurationMs = 90000;
         private static readonly Guid HumanInterfaceDeviceServiceClass =
             new Guid("00001124-0000-1000-8000-00805F9B34FB");
+        private static readonly object pairingRegistryTraceLock = new object();
+        private static PairingRegistryTrace activePairingRegistryTrace;
+
+        private sealed class PairingRegistryTrace {
+            internal readonly byte[] deviceMac;
+            internal readonly string deviceName;
+            internal readonly ConcurrentQueue<string> markers = new ConcurrentQueue<string>();
+            internal readonly AutoResetEvent markerReady = new AutoResetEvent(false);
+            internal long expiresAt;
+
+            internal PairingRegistryTrace(byte[] mac) {
+                deviceMac = (byte[])mac.Clone();
+                deviceName = MacRegistryName(mac);
+                expiresAt = Stopwatch.GetTimestamp() +
+                    Stopwatch.Frequency * PairingRegistryTraceDurationMs / 1000L;
+            }
+        }
+
+        private sealed class RegistryWatch : IDisposable {
+            internal readonly string label;
+            internal readonly RegistryKey key;
+            internal readonly AutoResetEvent changed = new AutoResetEvent(false);
+
+            internal RegistryWatch(string watchLabel, RegistryKey watchKey) {
+                label = watchLabel;
+                key = watchKey;
+            }
+
+            public void Dispose() {
+                key.Dispose();
+                changed.Dispose();
+            }
+        }
 
         [DllImport("bthprops.cpl", CharSet = CharSet.Auto)]
         private static extern IntPtr BluetoothFindFirstRadio(ref BLUETOOTH_FIND_RADIO_PARAMS pbtfrp, ref IntPtr phRadio);
@@ -128,6 +174,11 @@ namespace BetterJoyForCemu {
 
         [DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true, CharSet = CharSet.Auto)]
         private static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern int RegNotifyChangeKeyValue(IntPtr key,
+            [MarshalAs(UnmanagedType.Bool)] bool watchSubtree, uint notifyFilter,
+            IntPtr eventHandle, [MarshalAs(UnmanagedType.Bool)] bool asynchronous);
 
         // mac must be 6 bytes in normal display order (mac[0] is the first octet you'd show -
         // matches PhysicalAddress.GetAddressBytes()). Tries every local radio in turn, same as
@@ -212,16 +263,17 @@ namespace BetterJoyForCemu {
             StringBuilder sb = new StringBuilder();
             try {
                 using (RegistryKey localMachine = OpenLocalMachine()) {
-                    foreach (byte[] radioLE in GetLocalRadioAddressesLittleEndian()) {
-                        string adapterName = MacRegistryName(ReverseAddress(radioLE));
-                        using (RegistryKey adapterKey = localMachine.OpenSubKey(
-                                BluetoothKeysRegistryPath + "\\" + adapterName, false)) {
+                    using (RegistryKey keysRoot = localMachine.OpenSubKey(
+                            BluetoothKeysRegistryPath, false)) {
+                        foreach (string adapterName in SortedSubKeyNames(keysRoot)) {
+                            using (RegistryKey adapterKey = keysRoot.OpenSubKey(adapterName, false)) {
                             byte[] stored = adapterKey?.GetValue(deviceName, null,
                                 RegistryValueOptions.DoNotExpandEnvironmentNames) as byte[];
                             sb.Append("Keys[").Append(adapterName).Append("]=")
                               .Append(stored == null ? "none"
                                   : BitConverter.ToString(stored).Replace("-", ""))
                               .Append("; ");
+                            }
                         }
                     }
                     using (RegistryKey devKey = localMachine.OpenSubKey(
@@ -234,11 +286,60 @@ namespace BetterJoyForCemu {
                             sb.Append('}');
                         }
                     }
+                    using (RegistryKey perDevicesRoot = localMachine.OpenSubKey(
+                            BluetoothPerDevicesRegistryPath, false)) {
+                        foreach (string adapterName in SortedSubKeyNames(perDevicesRoot)) {
+                            AppendNamedRegistrySubtree(localMachine,
+                                BluetoothPerDevicesRegistryPath + "\\" + adapterName,
+                                "PerDevices[" + adapterName + "]", sb, 2);
+                        }
+                    }
+                    string upperDeviceName = deviceName.ToUpperInvariant();
+                    AppendNamedRegistrySubtree(localMachine,
+                        BluetoothEnumRegistryPath + "\\Dev_" + upperDeviceName,
+                        "BTHENUM.Dev_" + upperDeviceName, sb, 5);
+                    AppendDualSenseHidTrees(localMachine, BluetoothEnumRegistryPath,
+                        "BTHENUM.HID", sb);
+                    AppendDualSenseHidTrees(localMachine, HidEnumRegistryPath,
+                        "HID", sb);
                 }
             } catch (Exception ex) {
                 sb.Append("(registry read error: ").Append(ex.GetType().Name).Append(')');
             }
             return sb.ToString();
+        }
+
+        private static string[] SortedSubKeyNames(RegistryKey key) {
+            if (key == null)
+                return new string[0];
+            string[] names = key.GetSubKeyNames();
+            Array.Sort(names, StringComparer.OrdinalIgnoreCase);
+            return names;
+        }
+
+        private static void AppendDualSenseHidTrees(RegistryKey localMachine,
+                string parentPath, string label, StringBuilder sb) {
+            string[] productIds = { "0ce6", "0df2" };
+            foreach (string productId in productIds) {
+                string serviceName = "{00001124-0000-1000-8000-00805f9b34fb}" +
+                    "_VID&0002054c_PID&" + productId;
+                AppendNamedRegistrySubtree(localMachine, parentPath + "\\" + serviceName,
+                    label + "." + serviceName, sb, 5);
+            }
+        }
+
+        private static void AppendNamedRegistrySubtree(RegistryKey localMachine,
+                string path, string label, StringBuilder sb, int maxDepth) {
+            sb.Append("\r\n").Append(label).Append("=");
+            using (RegistryKey key = localMachine.OpenSubKey(path, false)) {
+                if (key == null) {
+                    sb.Append("none");
+                    return;
+                }
+                sb.Append("{ ");
+                AppendRegistrySubtree(key, sb, 0, maxDepth);
+                sb.Append('}');
+            }
         }
 
         private static void AppendRegistrySubtree(RegistryKey key, StringBuilder sb,
@@ -269,10 +370,164 @@ namespace BetterJoyForCemu {
             return val.ToString();
         }
 
+        // Pairing diagnostics must not alter the timing they are measuring. The controller thread
+        // only starts this worker or enqueues a short marker. A dedicated background thread uses
+        // read-only RegNotifyChangeKeyValue subscriptions and captures state only when Windows says
+        // BTHPORT/Enum changed. It never performs inquiry, service, PnP, adapter, or registry writes.
+        // General Debug logging is the existing user-controlled gate. The separate output file is
+        // intentionally ephemeral diagnostic data and includes the Classic link key.
+        internal static void BeginClassicPairingRegistryTrace(byte[] deviceMac) {
+            if (!DebugLog.Enabled || deviceMac == null || deviceMac.Length != 6)
+                return;
+
+            PairingRegistryTrace trace;
+            lock (pairingRegistryTraceLock) {
+                if (activePairingRegistryTrace != null) {
+                    if (activePairingRegistryTrace.deviceName == MacRegistryName(deviceMac)) {
+                        activePairingRegistryTrace.expiresAt = Stopwatch.GetTimestamp() +
+                            Stopwatch.Frequency * PairingRegistryTraceDurationMs / 1000L;
+                        activePairingRegistryTrace.markers.Enqueue("pairing-reentered");
+                        activePairingRegistryTrace.markerReady.Set();
+                    }
+                    return;
+                }
+
+                trace = new PairingRegistryTrace(deviceMac);
+                trace.markers.Enqueue("pairing-start");
+                activePairingRegistryTrace = trace;
+            }
+
+            new Thread(() => RunClassicPairingRegistryTrace(trace)) {
+                IsBackground = true,
+                Name = "DualSensePairingRegistryTrace"
+            }.Start();
+        }
+
+        internal static void MarkClassicPairingRegistryTrace(byte[] deviceMac, string marker) {
+            if (!DebugLog.Enabled || deviceMac == null || deviceMac.Length != 6 ||
+                    String.IsNullOrWhiteSpace(marker))
+                return;
+            MarkClassicPairingRegistryTrace(MacRegistryName(deviceMac), marker);
+        }
+
+        internal static void MarkClassicPairingRegistryTrace(string deviceName, string marker) {
+            if (!DebugLog.Enabled || String.IsNullOrWhiteSpace(deviceName) ||
+                    String.IsNullOrWhiteSpace(marker))
+                return;
+            lock (pairingRegistryTraceLock) {
+                if (activePairingRegistryTrace == null ||
+                        !String.Equals(activePairingRegistryTrace.deviceName, deviceName,
+                            StringComparison.OrdinalIgnoreCase))
+                    return;
+                activePairingRegistryTrace.markers.Enqueue(marker);
+                activePairingRegistryTrace.markerReady.Set();
+            }
+        }
+
+        private static void RunClassicPairingRegistryTrace(PairingRegistryTrace trace) {
+            var watches = new List<RegistryWatch>();
+            try {
+                using (RegistryKey localMachine = OpenLocalMachine()) {
+                    AddRegistryWatch(localMachine, BluetoothParametersRegistryPath,
+                        "BTHPORT.Parameters", watches);
+                    AddRegistryWatch(localMachine, BluetoothEnumRegistryPath,
+                        "Enum.BTHENUM", watches);
+                    AddRegistryWatch(localMachine, HidEnumRegistryPath,
+                        "Enum.HID", watches);
+                }
+
+                foreach (RegistryWatch watch in watches)
+                    ArmRegistryWatch(watch);
+
+                string lastState = null;
+                WritePairingRegistrySnapshot(trace, "trace-open", ref lastState, true);
+                while (true) {
+                    long remainingTicks = trace.expiresAt - Stopwatch.GetTimestamp();
+                    if (remainingTicks <= 0)
+                        break;
+                    int remainingMs = (int)Math.Min(Int32.MaxValue,
+                        Math.Max(1L, remainingTicks * 1000L / Stopwatch.Frequency));
+
+                    WaitHandle[] signals = new WaitHandle[watches.Count + 1];
+                    signals[0] = trace.markerReady;
+                    for (int i = 0; i < watches.Count; i++)
+                        signals[i + 1] = watches[i].changed;
+                    int signaled = WaitHandle.WaitAny(signals, remainingMs);
+                    if (signaled == WaitHandle.WaitTimeout)
+                        continue;
+
+                    if (signaled == 0) {
+                        var labels = new StringBuilder();
+                        while (trace.markers.TryDequeue(out string label)) {
+                            if (labels.Length != 0)
+                                labels.Append(',');
+                            labels.Append(label);
+                        }
+                        WritePairingRegistrySnapshot(trace,
+                            labels.Length == 0 ? "marker" : labels.ToString(),
+                            ref lastState, true);
+                    } else {
+                        RegistryWatch watch = watches[signaled - 1];
+                        ArmRegistryWatch(watch);
+                        WritePairingRegistrySnapshot(trace, "changed:" + watch.label,
+                            ref lastState, false);
+                    }
+                }
+                WritePairingRegistrySnapshot(trace, "trace-close", ref lastState, true);
+            } catch (Exception ex) {
+                AppendPairingRegistryTrace(DateTime.Now.ToString("HH:mm:ss.fff") +
+                    " trace-error mac=" + trace.deviceName + " " +
+                    ex.GetType().Name + ": " + ex.Message + "\r\n");
+            } finally {
+                foreach (RegistryWatch watch in watches)
+                    watch.Dispose();
+                trace.markerReady.Dispose();
+                Array.Clear(trace.deviceMac, 0, trace.deviceMac.Length);
+                lock (pairingRegistryTraceLock) {
+                    if (ReferenceEquals(activePairingRegistryTrace, trace))
+                        activePairingRegistryTrace = null;
+                }
+            }
+        }
+
+        private static void AddRegistryWatch(RegistryKey localMachine, string path,
+                string label, List<RegistryWatch> watches) {
+            RegistryKey key = localMachine.OpenSubKey(path, false);
+            if (key != null)
+                watches.Add(new RegistryWatch(label, key));
+        }
+
+        private static void ArmRegistryWatch(RegistryWatch watch) {
+            RegNotifyChangeKeyValue(watch.key.Handle.DangerousGetHandle(), true,
+                RegistryNotifyChangeName | RegistryNotifyChangeLastSet,
+                watch.changed.SafeWaitHandle.DangerousGetHandle(), true);
+        }
+
+        private static void WritePairingRegistrySnapshot(PairingRegistryTrace trace,
+                string reason, ref string lastState, bool writeEvenWhenUnchanged) {
+            string state = DescribeClassicPairingRegistry(trace.deviceMac);
+            if (!writeEvenWhenUnchanged && String.Equals(state, lastState,
+                    StringComparison.Ordinal))
+                return;
+            lastState = state;
+            AppendPairingRegistryTrace(DateTime.Now.ToString("HH:mm:ss.fff") +
+                " snapshot mac=" + trace.deviceName + " reason=" + reason + "\r\n" +
+                state + "\r\n\r\n");
+        }
+
+        private static void AppendPairingRegistryTrace(string text) {
+            try {
+                File.AppendAllText(Path.Combine(AppPaths.DataDir,
+                    "dualsense_pairing_registry_debug.log"), text);
+            } catch { }
+        }
+
         // Select the local adapter that already owns this controller's bond when possible. For a
-        // controller Windows has never seen, create one cryptographically random classic link key
-        // under the first available radio. The caller writes the same key to the controller with
-        // feature report 0x0A, making both sides agree without a Windows pairing dialog.
+        // controller Windows has never seen, generate one cryptographically random Classic link
+        // key but DO NOT put it in BthPort yet. The caller first writes/verifies that exact key on
+        // the controller, then calls TryCommitClassicLinkKey immediately before triggering the
+        // incoming connection. That gives BthPort the credential before authentication begins while
+        // preserving the required controller-first write order.
         internal static bool TryGetOrCreateClassicPairing(byte[] deviceMac,
                 out byte[] hostMacLittleEndian, out byte[] linkKey, out bool created) {
             hostMacLittleEndian = null;
@@ -292,20 +547,11 @@ namespace BetterJoyForCemu {
             if (localRadios.Count == 0)
                 return false;
 
-            byte[] selectedRadio = localRadios[0];
-            byte[] generated = new byte[16];
+            hostMacLittleEndian = localRadios[0];
+            linkKey = new byte[16];
             using (RandomNumberGenerator random = RandomNumberGenerator.Create())
-                random.GetBytes(generated);
-
-            if (!TryStoreClassicLinkKey(selectedRadio, deviceMac, generated,
-                    out byte[] effectiveKey, out created)) {
-                Array.Clear(generated, 0, generated.Length);
-                return false;
-            }
-
-            Array.Clear(generated, 0, generated.Length);
-            hostMacLittleEndian = selectedRadio;
-            linkKey = effectiveKey;
+                random.GetBytes(linkKey);
+            created = true;
             return true;
         }
 
@@ -324,7 +570,8 @@ namespace BetterJoyForCemu {
         // callback never fired even once across many attempts - the simpler version is the one
         // that got furthest (real connections observed staying up on their own).
         internal static bool TryFinalizeClassicHidPairing(byte[] hostMacLittleEndian,
-                byte[] deviceMac, string fallbackName, int timeoutMilliseconds) {
+                byte[] deviceMac, string fallbackName, bool discoverUnknownDevice,
+                int timeoutMilliseconds) {
             if (hostMacLittleEndian == null || hostMacLittleEndian.Length != 6 ||
                     deviceMac == null || deviceMac.Length != 6)
                 return false;
@@ -333,7 +580,7 @@ namespace BetterJoyForCemu {
             long started = Stopwatch.GetTimestamp();
             while (true) {
                 if (TryFinalizeClassicHidPairingOnce(hostMacLittleEndian,
-                        deviceMac, fallbackName))
+                        deviceMac, fallbackName, discoverUnknownDevice))
                     return true;
 
                 long elapsedMilliseconds = (Stopwatch.GetTimestamp() - started) * 1000L /
@@ -345,7 +592,8 @@ namespace BetterJoyForCemu {
         }
 
         private static bool TryFinalizeClassicHidPairingOnce(
-                byte[] hostMacLittleEndian, byte[] deviceMac, string fallbackName) {
+                byte[] hostMacLittleEndian, byte[] deviceMac, string fallbackName,
+                bool discoverUnknownDevice) {
             ulong targetDeviceAddress = AddressValue(deviceMac);
             var radioSearch = new BLUETOOTH_FIND_RADIO_PARAMS {
                 dwSize = Marshal.SizeOf(typeof(BLUETOOTH_FIND_RADIO_PARAMS))
@@ -365,8 +613,8 @@ namespace BetterJoyForCemu {
                         ref radioInfo) == ErrorSuccess &&
                         AddressMatchesLittleEndian(radioInfo.address,
                             hostMacLittleEndian);
-                    if (matchingRadio && TryEnableHidService(
-                            radioHandle, targetDeviceAddress, fallbackName))
+                    if (matchingRadio && TryEnableHidService(radioHandle,
+                            targetDeviceAddress, fallbackName, discoverUnknownDevice))
                         return true;
 
                     CloseHandle(radioHandle);
@@ -383,22 +631,19 @@ namespace BetterJoyForCemu {
         }
 
         private static bool TryEnableHidService(IntPtr radioHandle,
-                ulong targetDeviceAddress, string fallbackName) {
-            // issueInquiry=true tells Windows to actively scan for nearby discoverable devices
-            // rather than only checking devices it already knows about - a cache-only search
-            // never finds a device Windows has never seen before, no matter how correctly the
-            // controller is broadcasting. Confirmed on real hardware across extensive testing:
-            // substantially more reliable pairing with this on than the cache-only search it
-            // replaced. timeoutMultiplier is in units of 1.28 seconds (Win32
-            // BLUETOOTH_DEVICE_SEARCH_PARAMS); 4 gives a real ~5.1-second scan window per attempt.
+                ulong targetDeviceAddress, string fallbackName,
+                bool discoverUnknownDevice) {
+            // A new controller has no Windows device record for a cache-only query to return, so its
+            // first handoff needs inquiry to create that record. Existing bonds use the fast cache
+            // path; repeatedly running a multi-second inquiry there only widens the retry race.
             var search = new BLUETOOTH_DEVICE_SEARCH_PARAMS {
                 dwSize = Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_SEARCH_PARAMS)),
                 returnAuthenticated = true,
                 returnRemembered = true,
                 returnUnknown = true,
                 returnConnected = true,
-                issueInquiry = true,
-                timeoutMultiplier = 4,
+                issueInquiry = discoverUnknownDevice,
+                timeoutMultiplier = discoverUnknownDevice ? (byte)4 : (byte)0,
                 radioHandle = radioHandle,
             };
             var device = new BLUETOOTH_DEVICE_INFO {
@@ -433,6 +678,21 @@ namespace BetterJoyForCemu {
                 BluetoothFindDeviceClose(deviceFindHandle);
             }
             return false;
+        }
+
+        internal static bool TryCommitClassicLinkKey(byte[] hostMacLittleEndian,
+                byte[] deviceMac, byte[] linkKey) {
+            if (!TryStoreClassicLinkKey(hostMacLittleEndian, deviceMac, linkKey,
+                    out byte[] effectiveKey, out bool created))
+                return false;
+            try {
+                // Never silently replace a concurrently-created, different bond. The controller
+                // only knows linkKey, so a different effective Windows key cannot authenticate it.
+                return ByteArraysEqual(effectiveKey, linkKey);
+            } finally {
+                if (effectiveKey != null)
+                    Array.Clear(effectiveKey, 0, effectiveKey.Length);
+            }
         }
 
         private static bool ResetDeviceInfoAndFindNext(IntPtr findHandle,

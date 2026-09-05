@@ -290,8 +290,8 @@ namespace BetterJoyForCemu {
         // --- Enabled Bluetooth pairing: live-signal confirmation + capped retry ---
         // All share suppressedUsbControllerLock. MAC key = BitConverter.ToString(mac).
 
-        // Called by the USB-side ceremony (gentle or full) after it fires the connect trigger and
-        // suppresses the wired path. Upserts the attempt and (re)starts the confirmation window.
+        // Called by the USB-side ceremony after it fires the connect trigger and suppresses the
+        // wired path. Upserts the attempt and (re)starts the confirmation window.
         public void RecordBluetoothPairingAttempt(byte[] controllerMac, string profileId,
                 string wiredPath) {
             if (controllerMac == null || controllerMac.Length != 6)
@@ -311,17 +311,6 @@ namespace BetterJoyForCemu {
                 attempt.deadlineTimestamp = deadline;
                 attempt.awaitingReattempt = false;
             }
-        }
-
-        // True when a prior gentle attempt already timed out, so the next USB-side run must escalate
-        // straight to the full clear/write/finalize ceremony instead of the gentle connect.
-        public bool BluetoothPairingAttemptEscalated(byte[] controllerMac) {
-            if (controllerMac == null || controllerMac.Length != 6)
-                return false;
-            string mac = BitConverter.ToString(controllerMac).Replace("-", "");
-            lock (suppressedUsbControllerLock)
-                return pendingBluetoothPairingConfirmations.TryGetValue(mac,
-                        out BluetoothPairingAttempt attempt) && attempt.awaitingReattempt;
         }
 
         // Called from the reconciliation when a live BT pad for this MAC reaches IMU_DATA_OK.
@@ -353,6 +342,8 @@ namespace BetterJoyForCemu {
                         suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
                         DebugLog.Write("DualSense BT pairing giving up after " +
                             attempt.attemptCount + " attempts: mac=" + entry.Key);
+                        BluetoothRadio.MarkClassicPairingRegistryTrace(entry.Key,
+                            "pairing-gave-up");
                         continue;
                     }
 
@@ -362,6 +353,8 @@ namespace BetterJoyForCemu {
                     DebugLog.Write("DualSense BT pairing timed out: mac=" + entry.Key +
                         " attempt=" + attempt.attemptCount +
                         ", releasing USB suppression to retry");
+                    BluetoothRadio.MarkClassicPairingRegistryTrace(entry.Key,
+                        "pairing-attempt-" + attempt.attemptCount + "-timed-out");
                 }
             }
         }
@@ -450,6 +443,9 @@ namespace BetterJoyForCemu {
                                     confirmPad.PadMacAddress.GetAddressBytes()).Replace("-", "") +
                                 " heldMs=" + ((nowTs - confirmPad.bluetoothImuStableSince) *
                                     1000 / Stopwatch.Frequency));
+                            BluetoothRadio.MarkClassicPairingRegistryTrace(
+                                confirmPad.PadMacAddress.GetAddressBytes(),
+                                "pairing-confirmed-held");
                         }
                     }
                     string profileId = ControllerMappings.ProfileIdFor(jc);

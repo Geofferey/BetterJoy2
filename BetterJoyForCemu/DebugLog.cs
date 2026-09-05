@@ -17,8 +17,18 @@ namespace BetterJoyForCemu {
         private static readonly ConcurrentQueue<string> queue = new ConcurrentQueue<string>();
         private static int writerStarted = 0;
 
+        internal static bool Enabled {
+            get {
+                try {
+                    return Boolean.Parse(ConfigurationManager.AppSettings["DebugLogging"]);
+                } catch {
+                    return false;
+                }
+            }
+        }
+
         public static void Write(string message) {
-            if (!Boolean.Parse(ConfigurationManager.AppSettings["DebugLogging"]))
+            if (!Enabled)
                 return;
 
             if (Interlocked.CompareExchange(ref writerStarted, 1, 0) == 0) {

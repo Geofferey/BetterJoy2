@@ -558,6 +558,7 @@ namespace BetterJoyForCemu {
 
         private void PerformAutomaticBluetoothPairing() {
             byte[] controllerMac = PadMacAddress.GetAddressBytes();
+            BluetoothRadio.BeginClassicPairingRegistryTrace(controllerMac);
             byte[] hostMacLittleEndian = null;
             byte[] linkKey = null;
             byte[] emptyHost = new byte[6];
@@ -578,25 +579,23 @@ namespace BetterJoyForCemu {
                 bool repairMode = ControllerMappings.AutomaticBluetoothPairingMode(
                         ControllerMappings.ProfileIdFor(this)) == ControllerMappings.ModeRepair;
 
-                if (repairMode) {
+                // Repair can only restore the controller half of a bond Windows already owns.
+                // With no existing Windows key, fall through to the normal fresh-pair sequence.
+                if (repairMode && !created) {
                     PerformRepairModePairing(controllerMac, hostMacLittleEndian, linkKey);
                     return;
                 }
 
-                // Enabled confirms over the LIVE Bluetooth connection, not "a registry key exists".
-                // A key existing (created==false) does NOT mean the controller is authenticated or
-                // connectable, so we never trust it blind. Gentle path first when a key already
-                // exists and no prior attempt has timed out: point the bond at this PC (rewrite only
-                // if foreign) and fire a CONNECT trigger, WITHOUT clobbering a good bond and without
-                // sleeping - the manager then watches for the Bluetooth pad to actually come up
-                // (IMU_DATA_OK) and only then sleeps it, or retries. The destructive full ceremony
-                // below runs only when there's genuinely no bond to lose (created==true) or a gentle
-                // attempt already timed out (escalate).
-                bool escalate = Program.mgr.BluetoothPairingAttemptEscalated(controllerMac);
-                if (!created && !escalate) {
+                // A Windows key which already exists must never be cleared just because the live
+                // Bluetooth link failed to hold. Registry-state testing proved the persistent bond
+                // is complete in round one; later rounds were only repeating the live transition.
+                // Reuse that bond and retry only the controller-native low-power handoff below.
+                if (!created) {
                     PerformEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian, linkKey);
                     return;
                 }
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                    created ? "windows-bond-missing" : "windows-bond-reused");
 
                 bool previousPairingCleared = SendBluetoothPairingFeatureReport(
                     handle, emptyHost, emptyKey);
@@ -604,13 +603,12 @@ namespace BetterJoyForCemu {
                     previousPairingCleared = WaitForBluetoothPairingHost(handle,
                         emptyHost, PairingRecordCommitTimeoutMs);
                 if (!previousPairingCleared) {
-                    if (created)
-                        BluetoothRadio.RemoveClassicLinkKeyIfMatches(
-                            hostMacLittleEndian, controllerMac, linkKey);
                     form.AppendTextBox("Automatic DualSense Bluetooth pairing could not verify " +
                         "that the controller cleared its previous bond.\r\n");
                     return;
                 }
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                    "controller-bond-cleared");
 
                 bool controllerUpdated = SendBluetoothPairingFeatureReport(
                     handle, hostMacLittleEndian, linkKey);
@@ -618,13 +616,12 @@ namespace BetterJoyForCemu {
                     controllerUpdated = WaitForBluetoothPairingHost(handle,
                         hostMacLittleEndian, PairingRecordCommitTimeoutMs);
                 if (!controllerUpdated) {
-                    if (created)
-                        BluetoothRadio.RemoveClassicLinkKeyIfMatches(
-                            hostMacLittleEndian, controllerMac, linkKey);
                     form.AppendTextBox("Automatic DualSense Bluetooth pairing was rejected by " +
                         "the controller; the Windows bond was left unchanged.\r\n");
                     return;
                 }
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                    "controller-bond-written");
 
                 bool pairingStateReasserted = SendBluetoothPairingFeatureReport(
                     handle, hostMacLittleEndian, linkKey);
@@ -636,51 +633,27 @@ namespace BetterJoyForCemu {
                         "state could not be reasserted and verified; reconnect USB and try again.\r\n");
                     return;
                 }
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                    "controller-bond-reasserted");
 
-                automaticBluetoothPairingInProgress = true;
-                bool connectRequested = SendBluetoothControlFeatureReport(
-                    handle, false, DualSenseBluetoothControlOn);
-                bool queued = QueueAutomaticBluetoothPairingFinalization(hostMacLittleEndian,
-                    controllerMac, connectRequested, created);
-                if (!queued)
-                    automaticBluetoothPairingInProgress = false;
-                form.AppendTextBox(connectRequested
-                    ? "DualSense Bluetooth bond saved; completing Windows device setup.\r\n"
-                    : "DualSense Bluetooth bond saved; press PS to finish Windows device setup.\r\n");
+                // Authentication starts as soon as 0x08/ON brings up the incoming link. BthPort
+                // must already have the same controller-verified key at that instant; waiting for
+                // device.connected is circular because that flag requires authentication first.
+                if (!BluetoothRadio.TryCommitClassicLinkKey(
+                        hostMacLittleEndian, controllerMac, linkKey)) {
+                    form.AppendTextBox("DualSense accepted its Bluetooth bond, but BetterJoy " +
+                        "could not commit the matching key to Windows.\r\n");
+                    return;
+                }
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                    "windows-link-key-committed");
+
                 DebugLog.Write("DualSense automatic Bluetooth pairing: pad=" + PadId +
                     " createdWindowsBond=" + created +
                     " previousPairingCleared=" + previousPairingCleared +
-                    " pairingStateReasserted=" + pairingStateReasserted +
-                    " connectRequested=" + connectRequested);
-
-                // USB's job is to write the pairing record, verify it committed, and trigger the
-                // connection - once that trigger (0x08/ON) is sent, holding this USB attachment
-                // open any longer only contends with the Bluetooth connection it just started for
-                // the controller's attention. Confirmed on real hardware earlier this session:
-                // leaving USB's own Poll thread running is enough by itself to keep the new
-                // Bluetooth side from ever getting serviced. Step off immediately, synchronously,
-                // right here - not reactively after observing anything - so every attempt gets the
-                // same uncontended window instead of leaving it to scheduling luck.
-                if (connectRequested) {
-                    // Register this controller's wired path under its profile before stepping off,
-                    // the same way Repair does. Without it, a later PowerOff on the resulting
-                    // Bluetooth pad has no wired interface to recover (TryGetChargeOnlyUsbPath finds
-                    // nothing), so ReassertBluetoothPairingStateOverUsb bails and the controller
-                    // sleeps WITHOUT the link key reasserted (pairingStateReasserted=False) - which
-                    // is what breaks the assert-before-power-off. The 0x0A reassert only works over
-                    // the wired interface (it writes a zero CRC), so the wired path must be
-                    // recoverable at power-off time.
-                    Program.mgr.SuppressUsbControllerForBluetoothPreference(
-                        path, ControllerMappings.ProfileIdFor(this));
-                    // Record the attempt so the manager confirms this MAC actually comes up over
-                    // Bluetooth (IMU_DATA_OK) and only then sleeps it - or retries if it never does.
-                    Program.mgr.RecordBluetoothPairingAttempt(
-                        controllerMac, ControllerMappings.ProfileIdFor(this), path);
-
-                    state = state_.DROPPED;
-                    Detach(true);
-                    Program.mgr.j.Remove(this);
-                }
+                    " pairingStateReasserted=" + pairingStateReasserted);
+                BeginEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian,
+                    created, "fresh bond");
             } finally {
                 if (linkKey != null)
                     Array.Clear(linkKey, 0, linkKey.Length);
@@ -710,15 +683,10 @@ namespace BetterJoyForCemu {
             return reasserted;
         }
 
-        // Enabled "gentle" path: a bond key already exists (created==false) and no prior attempt has
-        // timed out. Point the controller's onboard bond at this PC (rewrite only if foreign), then
-        // fire a CONNECT trigger (not low-power) and register the attempt so the manager can confirm
-        // the pad actually comes up over Bluetooth (IMU_DATA_OK) and only then sleep it - or escalate
-        // to the full ceremony if it never connects. No clobber of a good bond, no sleep here.
+        // Existing-bond path: confirm the controller points at this PC, then retry only the live
+        // connect trigger. Never clear or rewrite an already-correct bond to solve a link problem.
         private void PerformEnabledConnectAndConfirm(byte[] controllerMac,
                 byte[] hostMacLittleEndian, byte[] linkKey) {
-            string profileId = ControllerMappings.ProfileIdFor(this);
-
             if (!EnsureControllerBondPointsToThisPc(hostMacLittleEndian, linkKey,
                     out bool matchesPc)) {
                 form.AppendTextBox("DualSense bond could not be reasserted over USB; reconnect " +
@@ -728,14 +696,49 @@ namespace BetterJoyForCemu {
                 return;
             }
 
+            DebugLog.Write("DualSense enabled connect: pad=" + PadId +
+                " hostMatchedPc=" + matchesPc + " reusingWindowsBond=True");
+            BeginEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian,
+                false, matchesPc ? "existing bond" : "repaired bond");
+        }
+
+        // Trigger the controller's incoming link, register the already-existing production attempt,
+        // then release USB immediately. A fresh caller has already committed the controller-verified
+        // key to BthPort immediately before reaching this method.
+        private void BeginEnabledConnectAndConfirm(byte[] controllerMac,
+                byte[] hostMacLittleEndian, bool createdWindowsBond, string bondState) {
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            string usbPath = path;
+
             bool connectRequested = SendBluetoothControlFeatureReport(
                 handle, false, DualSenseBluetoothControlOn);
-            Program.mgr.SuppressUsbControllerForBluetoothPreference(path, profileId);
-            Program.mgr.RecordBluetoothPairingAttempt(controllerMac, profileId, path);
+            BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                connectRequested ? "bluetooth-on-sent" : "bluetooth-on-rejected");
+            if (!connectRequested) {
+                form.AppendTextBox("DualSense bond was saved, but its Bluetooth connection " +
+                    "trigger was rejected.\r\n");
+                DebugLog.Write("DualSense pairing handoff: pad=" + PadId +
+                    " bond=" + bondState + " connectRequested=False (aborted)");
+                return;
+            }
 
-            form.AppendTextBox("DualSense connecting over Bluetooth; confirming...\r\n");
-            DebugLog.Write("DualSense enabled connect: pad=" + PadId +
-                " hostMatchedPc=" + matchesPc + " escalate=False connectRequested=" + connectRequested);
+            automaticBluetoothPairingInProgress = true;
+            Program.mgr.SuppressUsbControllerForBluetoothPreference(usbPath, profileId);
+            Program.mgr.RecordBluetoothPairingAttempt(controllerMac, profileId, usbPath);
+            bool queued = QueueAutomaticBluetoothPairingFinalization(
+                hostMacLittleEndian, controllerMac, connectRequested, createdWindowsBond);
+            if (!queued) {
+                automaticBluetoothPairingInProgress = false;
+                form.AppendTextBox("DualSense bond was saved, but Windows device setup could " +
+                    "not be scheduled.\r\n");
+                return;
+            }
+
+            form.AppendTextBox("DualSense " + bondState +
+                " saved; waiting for its incoming Bluetooth connection.\r\n");
+            DebugLog.Write("DualSense pairing handoff: pad=" + PadId +
+                " bond=" + bondState + " connectRequested=True finalizerQueued=True" +
+                " windowsKeyCommitted=" + createdWindowsBond);
 
             state = state_.DROPPED;
             Detach(true);
@@ -828,24 +831,27 @@ namespace BetterJoyForCemu {
             bool queued = ThreadPool.QueueUserWorkItem(_ => {
                 try {
                     bool completed = BluetoothRadio.TryFinalizeClassicHidPairing(
-                        hostCopy, controllerCopy, "DualSense Wireless Controller", 10000);
+                        hostCopy, controllerCopy, "DualSense Wireless Controller",
+                        createdWindowsBond, 10000);
                     // Previously also reopened a fresh USB handle here and rewrote the pairing-info
                     // feature report (0x0A) once more as a "final key reassert" once Windows
                     // finished authenticating - confirmed on real hardware to knock the controller
                     // back into pairing/low-power broadcast mode right as the connection was
                     // settling, so Windows kept showing Connected while the controller itself
-                    // stopped actually being a working HID endpoint. completed already means
-                    // Windows authenticated the bond and registered the HID service - nothing left
-                    // to do on top of that.
+                    // stopped actually being a working HID endpoint. A successful return below only
+                    // means Windows accepted the live device's HID-service setup request. The
+                    // manager's existing sustained IMU dwell remains the real success criterion.
                     form.AppendTextBox(completed
-                        ? "DualSense Bluetooth pairing completed; Windows authenticated the bond " +
-                            "and registered its HID service.\r\n"
-                        : "DualSense Bluetooth bond was saved, but Windows did not keep an " +
-                            "authenticated HID registration. Press PS once and try again.\r\n");
+                        ? "DualSense Bluetooth HID setup requested; confirming sustained input.\r\n"
+                        : "DualSense Bluetooth bond was saved, but its live incoming connection " +
+                            "did not reach Windows HID setup. Press PS once and try again.\r\n");
                     DebugLog.Write("DualSense automatic Bluetooth registration: pad=" + PadId +
                         " createdWindowsBond=" + createdWindowsBond +
                         " connectRequested=" + connectRequested +
-                        " authenticatedHidRegistered=" + completed);
+                        " liveHidSetupRequested=" + completed);
+                    BluetoothRadio.MarkClassicPairingRegistryTrace(controllerCopy,
+                        completed ? "windows-hid-setup-requested" :
+                            "windows-hid-setup-not-reached");
                 } finally {
                     automaticBluetoothPairingInProgress = false;
                     Array.Clear(hostCopy, 0, hostCopy.Length);
