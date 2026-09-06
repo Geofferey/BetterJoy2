@@ -397,6 +397,37 @@ namespace BetterJoyForCemu {
         private const byte GyroCalibrationFeatureReportId = 0x05;
         private const int GyroCalibrationFeatureReportLen = 41;
 
+        internal static bool ProbeBluetoothInputChannel(IntPtr targetHandle) {
+            if (targetHandle == IntPtr.Zero)
+                return false;
+
+            byte[] buf = new byte[DualSenseMaxReportLen];
+            Stopwatch sw = Stopwatch.StartNew();
+
+            // This probe runs before a pending-pairing Bluetooth HID node is promoted into a full
+            // controller. Do NOT use hid_get_feature_report here: a dead Windows BT HID feature
+            // channel can block inside hidapi for ~5 seconds before returning, which burns the
+            // pairing lane before the manager can release USB suppression and retry.
+            //
+            // Liveness, not full-mode: a live BT DualSense streams the basic 0x01 input report on
+            // its own the moment the link is up; it only switches to the full 0x31 report AFTER the
+            // attach/Poll path kicks it there with an output report. Requiring 0x31 here is
+            // chicken-and-egg - attach never runs to send that kick, so 0x31 never arrives and every
+            // node is rejected. So accept ANY DualSense input report (0x01 basic or 0x31 full),
+            // keyed on the report-ID byte, never the length (Windows pads reads to buffer size - see
+            // ReceiveRaw). Seeing no report at all inside the window is the real zombie signal.
+            while (sw.ElapsedMilliseconds < 300) {
+                int ret = HIDapi.hid_read_timeout(targetHandle, buf,
+                    new UIntPtr((uint)DualSenseMaxReportLen), 25);
+                if (ret > 0 && (buf[0] == 0x31 || buf[0] == 0x01))
+                    return true;
+
+                Thread.Sleep(25);
+            }
+
+            return false;
+        }
+
         // DualSense's own factory gyro/accel calibration, read via a HID feature report - its
         // equivalent of Joy-Con's SPI-flash calibration read (Joycon.dump_calibration_data).
         // Report ID 0x05, 41 bytes (1 report-ID byte + 36 calibration bytes + trailing CRC32).

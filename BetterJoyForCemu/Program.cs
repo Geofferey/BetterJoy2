@@ -97,6 +97,12 @@ namespace BetterJoyForCemu {
             public long deadlineTimestamp;
             public int attemptCount;
             public bool awaitingReattempt;
+            // The controller's Bluetooth-side MAC as the BT HID node will present it (serial_number
+            // form) - kept SEPARATE from the dictionary key, which is the cable/PadMacAddress form
+            // (the byte-reversed feature-report(0x09) MAC). A DualSense's BT serial equals one byte
+            // order on some units and the reverse on others, so the pre-attach quarantine matches a
+            // candidate against this OR the key rather than conflating the two into one identity.
+            public byte[] btMac;
         }
         readonly Dictionary<string, BluetoothPairingAttempt> pendingBluetoothPairingConfirmations =
             new Dictionary<string, BluetoothPairingAttempt>(StringComparer.OrdinalIgnoreCase);
@@ -180,6 +186,73 @@ namespace BetterJoyForCemu {
             lock (suppressedUsbControllerLock)
                 return pendingBluetoothPairingConfirmations.ContainsKey(
                     BitConverter.ToString(controllerMac).Replace("-", ""));
+        }
+
+        public bool HasAnyPendingBluetoothPairingAttempt() {
+            lock (suppressedUsbControllerLock)
+                return pendingBluetoothPairingConfirmations.Count > 0;
+        }
+
+        // A BT HID node resolves its MAC from serial_number, which is the byte-reversed form of the
+        // cable/PadMacAddress MAC the attempt is keyed by on some units. Match a candidate against
+        // the SEPARATE stored BT-side MAC so the real controller's own node is not quarantined as
+        // "another DualSense's" just because the two identity forms differ.
+        public bool HasPendingBluetoothPairingBtMac(byte[] btMac) {
+            if (btMac == null || btMac.Length != 6)
+                return false;
+            lock (suppressedUsbControllerLock) {
+                foreach (BluetoothPairingAttempt attempt in
+                        pendingBluetoothPairingConfirmations.Values) {
+                    if (attempt.btMac == null)
+                        continue;
+                    bool equal = true;
+                    for (int i = 0; i < 6; i++) {
+                        if (attempt.btMac[i] != btMac[i]) {
+                            equal = false;
+                            break;
+                        }
+                    }
+                    if (equal)
+                        return true;
+                }
+                return false;
+            }
+        }
+
+        public bool RejectBluetoothPairingCandidate(byte[] controllerMac,
+                string reason) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return false;
+
+            string mac = BitConverter.ToString(controllerMac).Replace("-", "");
+            lock (suppressedUsbControllerLock) {
+                if (!pendingBluetoothPairingConfirmations.TryGetValue(mac,
+                        out BluetoothPairingAttempt attempt))
+                    return false;
+
+                if (attempt.attemptCount >= BluetoothPairingMaxAttempts) {
+                    pendingBluetoothPairingConfirmations.Remove(mac);
+                    suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
+                    suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
+                    DebugLog.Write("DualSense BT pairing giving up after " +
+                        attempt.attemptCount + " attempts: mac=" + mac +
+                        " lastRejected=" + reason);
+                    BluetoothRadio.MarkClassicPairingRegistryTrace(mac,
+                        "pairing-gave-up-candidate-rejected-" + reason);
+                    return true;
+                }
+
+                attempt.awaitingReattempt = true;
+                suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
+                suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
+                DebugLog.Write("DualSense BT pairing candidate rejected: mac=" +
+                    mac + " attempt=" + attempt.attemptCount + " reason=" +
+                    reason + ", releasing USB suppression to retry");
+                BluetoothRadio.MarkClassicPairingRegistryTrace(mac,
+                    "pairing-attempt-" + attempt.attemptCount +
+                    "-candidate-rejected-" + reason);
+                return true;
+            }
         }
 
         public bool ShouldMonitorChargeOnlyUsbWake(string devicePath, string profileId) {
@@ -310,6 +383,13 @@ namespace BetterJoyForCemu {
                 attempt.attemptCount++;
                 attempt.deadlineTimestamp = deadline;
                 attempt.awaitingReattempt = false;
+                // controllerMac is the cable/PadMacAddress form (byte-reversed feature-report MAC);
+                // the BT node presents its MAC in the opposite byte order on some units. Store that
+                // reversed form so the quarantine can match either without conflating the two.
+                byte[] btMac = new byte[6];
+                for (int i = 0; i < 6; i++)
+                    btMac[i] = controllerMac[5 - i];
+                attempt.btMac = btMac;
                 return attempt.attemptCount;
             }
         }
@@ -1234,6 +1314,33 @@ namespace BetterJoyForCemu {
                     newController.PadMacAddress = new PhysicalAddress(mac);
                     newController.InvalidateMappingProfileCache();
                     newController.form = form;
+
+                    if (newDualSense != null && !newDualSense.isUSB &&
+                            HasAnyPendingBluetoothPairingAttempt()) {
+                        // Separate identities: the BT node's serial-form MAC may equal the cable
+                        // key OR its byte-reversed (BT-side) form, depending on the unit. Match
+                        // either so the controller being paired is never quarantined as another's.
+                        bool expectedPairingCandidate =
+                            HasPendingBluetoothPairingAttempt(mac) ||
+                            HasPendingBluetoothPairingBtMac(mac);
+                        if (!expectedPairingCandidate) {
+                            newDualSense.LogDualSenseRawDump(
+                                "Bluetooth HID candidate quarantined during another " +
+                                "DualSense pairing attempt; skipping before attach.");
+                            HIDapi.hid_close(handle);
+                            ptr = enumerate.next;
+                            continue;
+                        }
+
+                        if (!DualSenseController.ProbeBluetoothInputChannel(handle)) {
+                            newDualSense.LogDualSenseRawDump(
+                                "Bluetooth input channel not ready during pending pairing; " +
+                                "skipping BT HID candidate before attach.");
+                            HIDapi.hid_close(handle);
+                            ptr = enumerate.next;
+                            continue;
+                        }
+                    }
 
                     if (newDualSense != null &&
                             newDualSense.TryRunAutomaticBluetoothPairingBeforeAttach()) {
