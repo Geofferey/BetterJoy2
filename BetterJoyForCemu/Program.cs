@@ -1133,6 +1133,8 @@ namespace BetterJoyForCemu {
                     // Remote-mode commands (TestRumble/JoinOrSplit/StartCalibration) resolve a
                     // controller by PadId alone, so a collision could route a command to the
                     // wrong physical controller, not just misrender a GUI slot.
+                    Controller newController;
+                    DualSenseController newDualSense = null;
                     if (isDualSense) {
                         // Resolve wire vs Bluetooth authoritatively from the PnP bus (USB vs
                         // BTHENUM) so the pad's isUSB is correct from packet zero - read length is
@@ -1151,26 +1153,20 @@ namespace BetterJoyForCemu {
                             dualSenseIsUsb = enumerate.path.IndexOf("00001124",
                                 StringComparison.OrdinalIgnoreCase) < 0;
                         }
-                        j.Add(new DualSenseController(handle, enumerate.path,
-                            enumerate.serial_number, dualSenseIsUsb, NextAvailablePadId()));
+                        newDualSense = new DualSenseController(handle, enumerate.path,
+                            enumerate.serial_number, dualSenseIsUsb, NextAvailablePadId());
+                        newController = newDualSense;
                     } else if (isDualShock4) {
-                        j.Add(new DualShock4Controller(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId()));
+                        newController = new DualShock4Controller(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId());
                     } else if (isSnes) {
-                        j.Add(new SnesController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null));
+                        newController = new SnesController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
                     } else if (is64) {
-                        j.Add(new N64Controller(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null));
+                        newController = new N64Controller(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
                     } else if (isPro) {
-                        j.Add(new ProController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null));
+                        newController = new ProController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
                     } else {
-                        j.Add(new JoyconController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null));
+                        newController = new JoyconController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
                     }
-                    DumpState("Connect: new controller added, pad=" + j.Last().PadId.ToString(CultureInfo.InvariantCulture));
-                    ResolveStalePadIdCollisions();
-                    DumpState("Connect: after ResolveStalePadIdCollisions");
-
-                    foundNew = true;
-                    j.Last().form = form;
-                    form.AssignSlot(j.Last());
 
                     byte[] mac = new byte[6];
                     bool macParsed = false;
@@ -1231,12 +1227,28 @@ namespace BetterJoyForCemu {
                         // same physical DualSense, since real hardware testing found they don't
                         // currently match. Gated behind DualSenseDebugLogging (see
                         // LogDualSenseRawDump) - file-only, never the GUI panel.
-                        (j.Last() as DualSenseController)?.LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
+                        newDualSense?.LogDualSenseRawDump(string.Format(CultureInfo.InvariantCulture,
                             "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")",
                             BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     }
-                    j[j.Count - 1].PadMacAddress = new PhysicalAddress(mac);
-                    j[j.Count - 1].InvalidateMappingProfileCache();
+                    newController.PadMacAddress = new PhysicalAddress(mac);
+                    newController.InvalidateMappingProfileCache();
+                    newController.form = form;
+
+                    if (newDualSense != null &&
+                            newDualSense.TryRunAutomaticBluetoothPairingBeforeAttach()) {
+                        foundNew = true;
+                        ptr = enumerate.next;
+                        continue;
+                    }
+
+                    j.Add(newController);
+                    DumpState("Connect: new controller added, pad=" + newController.PadId.ToString(CultureInfo.InvariantCulture));
+                    ResolveStalePadIdCollisions();
+                    DumpState("Connect: after ResolveStalePadIdCollisions");
+
+                    foundNew = true;
+                    form.AssignSlot(newController);
                 }
 
                 ptr = enumerate.next;

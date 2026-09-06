@@ -540,6 +540,25 @@ namespace BetterJoyForCemu {
             Interlocked.Exchange(ref automaticBluetoothPairingPending, 1);
         }
 
+        internal bool TryRunAutomaticBluetoothPairingBeforeAttach() {
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            if (!isUSB || state != state_.NOT_ATTACHED ||
+                    !ControllerMappings.AutomaticBluetoothPairingEnabled(profileId))
+                return false;
+
+            // Automatic Bluetooth pairing owns the controller before the normal pad lifecycle
+            // does: no Attach(), no virtual output, no lighting/audio/adaptive-trigger writes.
+            // If the ceremony cannot actually hand off to Bluetooth, fall through to the caller's
+            // ordinary USB attach path so "Preferred transport = Bluetooth" never means "USB is
+            // unusable when Bluetooth cannot be made."
+            automaticBluetoothPairingAttempted = true;
+            PerformAutomaticBluetoothPairing();
+            byte[] mac = PadMacAddress?.GetAddressBytes();
+            return automaticBluetoothPairingInProgress ||
+                Program.mgr.HasPendingBluetoothPairingAttempt(mac) ||
+                Program.mgr.ShouldMonitorChargeOnlyUsbWake(path, profileId);
+        }
+
         protected override void ApplyQueuedAutomaticBluetoothPairingIfAny() {
             if (Interlocked.Exchange(ref automaticBluetoothPairingPending, 0) != 0)
                 PerformAutomaticBluetoothPairing();
