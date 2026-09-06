@@ -13,6 +13,7 @@ using System.Text;
 using System.Threading;
 using System.Timers;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using BetterJoyForCemu.Collections;
 using Nefarius.Drivers.HidHide;
 using Nefarius.Utilities.DeviceManagement.PnP;
@@ -97,12 +98,6 @@ namespace BetterJoyForCemu {
             public long deadlineTimestamp;
             public int attemptCount;
             public bool awaitingReattempt;
-            // The controller's Bluetooth-side MAC as the BT HID node will present it (serial_number
-            // form) - kept SEPARATE from the dictionary key, which is the cable/PadMacAddress form
-            // (the byte-reversed feature-report(0x09) MAC). A DualSense's BT serial equals one byte
-            // order on some units and the reverse on others, so the pre-attach quarantine matches a
-            // candidate against this OR the key rather than conflating the two into one identity.
-            public byte[] btMac;
         }
         readonly Dictionary<string, BluetoothPairingAttempt> pendingBluetoothPairingConfirmations =
             new Dictionary<string, BluetoothPairingAttempt>(StringComparer.OrdinalIgnoreCase);
@@ -186,73 +181,6 @@ namespace BetterJoyForCemu {
             lock (suppressedUsbControllerLock)
                 return pendingBluetoothPairingConfirmations.ContainsKey(
                     BitConverter.ToString(controllerMac).Replace("-", ""));
-        }
-
-        public bool HasAnyPendingBluetoothPairingAttempt() {
-            lock (suppressedUsbControllerLock)
-                return pendingBluetoothPairingConfirmations.Count > 0;
-        }
-
-        // A BT HID node resolves its MAC from serial_number, which is the byte-reversed form of the
-        // cable/PadMacAddress MAC the attempt is keyed by on some units. Match a candidate against
-        // the SEPARATE stored BT-side MAC so the real controller's own node is not quarantined as
-        // "another DualSense's" just because the two identity forms differ.
-        public bool HasPendingBluetoothPairingBtMac(byte[] btMac) {
-            if (btMac == null || btMac.Length != 6)
-                return false;
-            lock (suppressedUsbControllerLock) {
-                foreach (BluetoothPairingAttempt attempt in
-                        pendingBluetoothPairingConfirmations.Values) {
-                    if (attempt.btMac == null)
-                        continue;
-                    bool equal = true;
-                    for (int i = 0; i < 6; i++) {
-                        if (attempt.btMac[i] != btMac[i]) {
-                            equal = false;
-                            break;
-                        }
-                    }
-                    if (equal)
-                        return true;
-                }
-                return false;
-            }
-        }
-
-        public bool RejectBluetoothPairingCandidate(byte[] controllerMac,
-                string reason) {
-            if (controllerMac == null || controllerMac.Length != 6)
-                return false;
-
-            string mac = BitConverter.ToString(controllerMac).Replace("-", "");
-            lock (suppressedUsbControllerLock) {
-                if (!pendingBluetoothPairingConfirmations.TryGetValue(mac,
-                        out BluetoothPairingAttempt attempt))
-                    return false;
-
-                if (attempt.attemptCount >= BluetoothPairingMaxAttempts) {
-                    pendingBluetoothPairingConfirmations.Remove(mac);
-                    suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
-                    suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
-                    DebugLog.Write("DualSense BT pairing giving up after " +
-                        attempt.attemptCount + " attempts: mac=" + mac +
-                        " lastRejected=" + reason);
-                    BluetoothRadio.MarkClassicPairingRegistryTrace(mac,
-                        "pairing-gave-up-candidate-rejected-" + reason);
-                    return true;
-                }
-
-                attempt.awaitingReattempt = true;
-                suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
-                suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
-                DebugLog.Write("DualSense BT pairing candidate rejected: mac=" +
-                    mac + " attempt=" + attempt.attemptCount + " reason=" +
-                    reason + ", releasing USB suppression to retry");
-                BluetoothRadio.MarkClassicPairingRegistryTrace(mac,
-                    "pairing-attempt-" + attempt.attemptCount +
-                    "-candidate-rejected-" + reason);
-                return true;
-            }
         }
 
         public bool ShouldMonitorChargeOnlyUsbWake(string devicePath, string profileId) {
@@ -383,13 +311,6 @@ namespace BetterJoyForCemu {
                 attempt.attemptCount++;
                 attempt.deadlineTimestamp = deadline;
                 attempt.awaitingReattempt = false;
-                // controllerMac is the cable/PadMacAddress form (byte-reversed feature-report MAC);
-                // the BT node presents its MAC in the opposite byte order on some units. Store that
-                // reversed form so the quarantine can match either without conflating the two.
-                byte[] btMac = new byte[6];
-                for (int i = 0; i < 6; i++)
-                    btMac[i] = controllerMac[5 - i];
-                attempt.btMac = btMac;
                 return attempt.attemptCount;
             }
         }
@@ -815,27 +736,168 @@ namespace BetterJoyForCemu {
             if (!Program.useHidHide)
                 return true;
 
-            string instanceId = null;
-            for (int hideAttempt = 0; hideAttempt < 5 && instanceId == null; hideAttempt++) {
+            bool hidden = false;
+            for (int hideAttempt = 0; hideAttempt < 5 && !hidden; hideAttempt++) {
                 if (hideAttempt > 0)
                     Thread.Sleep(50);
 
+                string instanceId;
                 try {
                     instanceId = PnPDevice.GetInstanceIdFromInterfaceId(enumerate.path);
-                    lock (Program.hiddenInstanceIdsLock) {
-                        if (Program.hiddenInstanceIds.Contains(instanceId))
-                            return true;
-                    }
-                    Program.hidHide.AddBlockedInstanceId(instanceId);
-                    lock (Program.hiddenInstanceIdsLock) {
-                        Program.hiddenInstanceIds.Add(instanceId);
-                    }
                 } catch {
-                    instanceId = null;
+                    continue;
                 }
+                // Prune the stale siblings of a churning Bluetooth child HID instance first (Windows
+                // renumbers it on every reconnect), then block the current one. The MAC-stable
+                // BTHENUM bond that actually hides the whole subtree is blocked separately, keyed off
+                // the resolved MAC (HideBluetoothBondByMacAsync) - this child block stays as the
+                // immediate per-interface hide and is kept from growing unbounded by the de-dupe.
+                DeDupeStaleBluetoothChildSiblings(instanceId);
+                hidden = BlockInstance(instanceId);
             }
 
-            return instanceId != null;
+            return hidden;
+        }
+
+        // Serializes a single HidHide blocklist ADD with the shared driver lock, keeping the cache in
+        // step. Idempotent: no driver call when the id is already known-blocked (don't duplicate the
+        // persisted registry entry). Returns true if the id is blocked afterward. AddBlockedInstanceId
+        // is a read-modify-write of the driver's list, so the lock is what stops the async bond/de-dupe
+        // paths from racing the scan thread and wedging it (#83/#215).
+        private static bool BlockInstance(string instanceId) {
+            if (!Program.useHidHide || Program.hidHide == null || String.IsNullOrEmpty(instanceId))
+                return false;
+            lock (Program.hidHideDriverLock) {
+                lock (Program.hiddenInstanceIdsLock) {
+                    if (Program.hiddenInstanceIds.Contains(instanceId))
+                        return true;
+                }
+                try {
+                    Program.hidHide.AddBlockedInstanceId(instanceId);
+                } catch {
+                    return false;
+                }
+                lock (Program.hiddenInstanceIdsLock) {
+                    if (!Program.hiddenInstanceIds.Contains(instanceId))
+                        Program.hiddenInstanceIds.Add(instanceId);
+                }
+                return true;
+            }
+        }
+
+        // Serialized counterpart of BlockInstance - REMOVE. Idempotent: no driver call when the id
+        // isn't known-blocked. Returns true if it was blocked and is now removed.
+        private static bool UnblockInstance(string instanceId) {
+            if (!Program.useHidHide || Program.hidHide == null || String.IsNullOrEmpty(instanceId))
+                return false;
+            lock (Program.hidHideDriverLock) {
+                lock (Program.hiddenInstanceIdsLock) {
+                    if (!Program.hiddenInstanceIds.Contains(instanceId))
+                        return false;
+                }
+                try {
+                    Program.hidHide.RemoveBlockedInstanceId(instanceId);
+                } catch {
+                    return false;
+                }
+                lock (Program.hiddenInstanceIdsLock) {
+                    Program.hiddenInstanceIds.Remove(instanceId);
+                }
+                return true;
+            }
+        }
+
+        // The "A&<radio>&0&" middle of a BTHENUM instance id is the local Bluetooth radio - identical
+        // for every BT device on this PC (proven: all Enum\BTHENUM instances share it). Read it once
+        // from the live tree (not hardcoded - it changes only if the adapter changes) so any
+        // controller's bond id can be manufactured from just its MAC.
+        private static string GetBluetoothRadioSegment() {
+            string cached = Program.cachedBluetoothRadioSegment;
+            if (cached != null)
+                return cached;
+            try {
+                using (RegistryKey bthenum = RegistryKey
+                        .OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
+                        .OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\BTHENUM", false)) {
+                    if (bthenum != null) {
+                        foreach (string svc in bthenum.GetSubKeyNames()) {
+                            using (RegistryKey svcKey = bthenum.OpenSubKey(svc, false)) {
+                                if (svcKey == null)
+                                    continue;
+                                foreach (string inst in svcKey.GetSubKeyNames()) {
+                                    int p = inst.IndexOf("&0&", StringComparison.OrdinalIgnoreCase);
+                                    if (p > 0) {
+                                        Program.cachedBluetoothRadioSegment =
+                                            inst.Substring(0, p + 3).ToUpperInvariant();
+                                        return Program.cachedBluetoothRadioSegment;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch { }
+            return null;
+        }
+
+        // Manufacture a controller's MAC-stable BTHENUM bond instance id (uppercased for HidHide) from
+        // its VID/PID/MAC + the local radio segment. Template proven from Enum\BTHENUM:
+        //   BTHENUM\{00001124-...}_VID&<source><vid>_PID&<pid>\A&<radio>&0&<MAC>_C00000000
+        // The 0x0002 VID source is USB-IF, matching every observed Sony BT entry (DualSense/DualShock).
+        private static bool TryManufactureBluetoothBondInstanceId(
+                ushort vid, ushort pid, byte[] mac, out string bondId) {
+            bondId = null;
+            if (mac == null || mac.Length != 6)
+                return false;
+            string radio = GetBluetoothRadioSegment();
+            if (String.IsNullOrEmpty(radio))
+                return false;
+            uint vidField = 0x00020000u | vid;
+            string macHex = BitConverter.ToString(mac).Replace("-", "").ToUpperInvariant();
+            bondId = String.Format(CultureInfo.InvariantCulture,
+                "BTHENUM\\{{00001124-0000-1000-8000-00805F9B34FB}}_VID&{0:X8}_PID&{1:X4}\\{2}{3}_C00000000",
+                vidField, pid, radio, macHex);
+            return true;
+        }
+
+        // Preemptively block a controller's BTHENUM bond the moment we know its MAC - manufactured, so
+        // it works even before the BT node exists (born hidden on the first BT connect) and covers
+        // every future re-pair (the bond is MAC-stable). Async so it never delays the scan; BlockInstance
+        // is idempotent so it never duplicates the persistent registry entry.
+        private void HideBluetoothBondByMacAsync(ushort vid, ushort pid, byte[] mac) {
+            if (!Program.useHidHide || Program.hidHide == null || mac == null || mac.Length != 6)
+                return;
+            byte[] macCopy = (byte[])mac.Clone();
+            ThreadPool.QueueUserWorkItem(_ => {
+                if (TryManufactureBluetoothBondInstanceId(vid, pid, macCopy, out string bondId))
+                    BlockInstance(bondId);
+            });
+        }
+
+        // A Bluetooth child HID instance id ("HID\{00001124-...}_VID&...PID&...\b&<bus>&<N>&0000") is
+        // renumbered (<N>) on every reconnect; the "\b&<bus>&" prefix is stable per physical device.
+        // Before blocking the current one, drop stale siblings (same prefix, different <N>) so the
+        // blocklist never grows unbounded (the #83/#215 wedge). Only touches BT HID children.
+        private static void DeDupeStaleBluetoothChildSiblings(string currentChildInstanceId) {
+            if (String.IsNullOrEmpty(currentChildInstanceId) ||
+                    !currentChildInstanceId.StartsWith("HID\\", StringComparison.OrdinalIgnoreCase) ||
+                    currentChildInstanceId.IndexOf("{00001124", StringComparison.OrdinalIgnoreCase) < 0)
+                return;
+            int tail = currentChildInstanceId.LastIndexOf('&');           // before "&0000"
+            if (tail <= 0)
+                return;
+            int nSep = currentChildInstanceId.LastIndexOf('&', tail - 1);  // before "&<N>"
+            if (nSep <= 0)
+                return;
+            string prefix = currentChildInstanceId.Substring(0, nSep + 1); // "...\b&<bus>&"
+            List<string> stale;
+            lock (Program.hiddenInstanceIdsLock) {
+                stale = Program.hiddenInstanceIds.FindAll(id =>
+                    id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                    !String.Equals(id, currentChildInstanceId, StringComparison.OrdinalIgnoreCase));
+            }
+            foreach (string id in stale)
+                UnblockInstance(id);
         }
 
         // Adds or removes jc's own HidHide block after the fact - the one case that needs this is
@@ -860,37 +922,17 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            try {
-                if (wantHidden) {
-                    bool alreadyHidden;
-                    lock (Program.hiddenInstanceIdsLock) {
-                        alreadyHidden = Program.hiddenInstanceIds.Contains(instanceId);
-                    }
-                    if (alreadyHidden)
-                        return;
-
-                    Program.hidHide.AddBlockedInstanceId(instanceId);
-                    lock (Program.hiddenInstanceIdsLock) {
-                        if (!Program.hiddenInstanceIds.Contains(instanceId))
-                            Program.hiddenInstanceIds.Add(instanceId);
-                    }
-                } else {
-                    bool wasHidden;
-                    lock (Program.hiddenInstanceIdsLock) {
-                        wasHidden = Program.hiddenInstanceIds.Remove(instanceId);
-                    }
-                    if (!wasHidden)
-                        return;
-                    Program.hidHide.RemoveBlockedInstanceId(instanceId);
-                    // We only get here on a real hidden->visible transition (returned above
-                    // otherwise), which is the only time OpenRGB's raw HID access just changed.
-                    if (ControllerMappings.LightingMode(ControllerMappings.ProfileIdFor(jc)) ==
-                            ControllerMappings.LightingModeOpenRgb) {
-                        DebugLog.Write("OpenRgbRescan: triggered from HidHide hidden->visible, instanceId=" + instanceId);
-                        OpenRgbRescan.RequestRescan();
-                    }
+            if (wantHidden) {
+                BlockInstance(instanceId);
+            } else if (UnblockInstance(instanceId)) {
+                // We only get here on a real hidden->visible transition (UnblockInstance returns
+                // false otherwise), which is the only time OpenRGB's raw HID access just changed.
+                if (ControllerMappings.LightingMode(ControllerMappings.ProfileIdFor(jc)) ==
+                        ControllerMappings.LightingModeOpenRgb) {
+                    DebugLog.Write("OpenRgbRescan: triggered from HidHide hidden->visible, instanceId=" + instanceId);
+                    OpenRgbRescan.RequestRescan();
                 }
-            } catch { }
+            }
         }
 
         // A joined Joy-Con pair is two separate physical devices sharing one profile/logical
@@ -1312,35 +1354,15 @@ namespace BetterJoyForCemu {
                             BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     }
                     newController.PadMacAddress = new PhysicalAddress(mac);
+                    // As soon as we know a DualSense's real Bluetooth MAC (feature-report over USB, or
+                    // serial over BT - never the path-hash fallback), preemptively block its MAC-stable
+                    // BTHENUM bond so its whole BT HID subtree is hidden the instant it connects
+                    // wirelessly, even on a first-ever pair before the BT node exists.
+                    if (isDualSense && macParsed &&
+                            !String.Equals(macSource, "path-hash", StringComparison.Ordinal))
+                        HideBluetoothBondByMacAsync(enumerate.vendor_id, enumerate.product_id, mac);
                     newController.InvalidateMappingProfileCache();
                     newController.form = form;
-
-                    if (newDualSense != null && !newDualSense.isUSB &&
-                            HasAnyPendingBluetoothPairingAttempt()) {
-                        // Separate identities: the BT node's serial-form MAC may equal the cable
-                        // key OR its byte-reversed (BT-side) form, depending on the unit. Match
-                        // either so the controller being paired is never quarantined as another's.
-                        bool expectedPairingCandidate =
-                            HasPendingBluetoothPairingAttempt(mac) ||
-                            HasPendingBluetoothPairingBtMac(mac);
-                        if (!expectedPairingCandidate) {
-                            newDualSense.LogDualSenseRawDump(
-                                "Bluetooth HID candidate quarantined during another " +
-                                "DualSense pairing attempt; skipping before attach.");
-                            HIDapi.hid_close(handle);
-                            ptr = enumerate.next;
-                            continue;
-                        }
-
-                        if (!DualSenseController.ProbeBluetoothInputChannel(handle)) {
-                            newDualSense.LogDualSenseRawDump(
-                                "Bluetooth input channel not ready during pending pairing; " +
-                                "skipping BT HID candidate before attach.");
-                            HIDapi.hid_close(handle);
-                            ptr = enumerate.next;
-                            continue;
-                        }
-                    }
 
                     if (newDualSense != null &&
                             newDualSense.TryRunAutomaticBluetoothPairingBeforeAttach()) {
@@ -1576,6 +1598,17 @@ namespace BetterJoyForCemu {
         // in flight to finish - this lock is what actually guarantees no concurrent mutation.
         public static readonly object hiddenInstanceIdsLock = new object();
 
+        // Serializes every HidHide blocklist driver mutation (AddBlockedInstanceId/
+        // RemoveBlockedInstanceId). Those are read-modify-write of the driver's persisted list, so
+        // concurrent calls from the scan thread and the async bond/de-dupe ThreadPool paths can
+        // corrupt it - the documented wedge (#83/#215). Always acquired BEFORE hiddenInstanceIdsLock
+        // where both are held (see BlockInstance/UnblockInstance).
+        public static readonly object hidHideDriverLock = new object();
+
+        // The "A&<radio>&0&" segment shared by every Enum\BTHENUM instance on this PC - the local
+        // Bluetooth radio, resolved once and reused to manufacture controller bond ids from a MAC.
+        public static volatile string cachedBluetoothRadioSegment;
+
         public static List<SController> thirdPartyCons = new List<SController>();
         public static List<SController> blacklistedCons = new List<SController>();
 
@@ -1620,6 +1653,33 @@ namespace BetterJoyForCemu {
                         if (!hidHide.ApplicationPaths.Contains(exePath, StringComparer.OrdinalIgnoreCase))
                             hidHide.AddApplicationPath(exePath);
                         hidHide.IsActive = true;
+
+                        // Seed the in-memory cache from HidHide's PERSISTENT blocklist so an
+                        // already-blocked device (hidden in a prior session; UnhideOnExit defaults
+                        // false) is recognized and NOT re-hidden. Without this, TryHideController's
+                        // first-touch cache miss re-issues AddBlockedInstanceId on an already-blocked
+                        // node - a redundant re-hide that lands on the settling BT node mid-pairing.
+                        // Read the registry MULTI_SZ directly (the API's own persisted store):
+                        // HKLM\SYSTEM\CurrentControlSet\Services\HidHide\Parameters
+                        //   \BlacklistedDeviceInstancePaths (REG_MULTI_SZ).
+                        try {
+                            using (RegistryKey hidHideParams = RegistryKey
+                                    .OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
+                                    .OpenSubKey(
+                                        @"SYSTEM\CurrentControlSet\Services\HidHide\Parameters",
+                                        false)) {
+                                if (hidHideParams?.GetValue("BlacklistedDeviceInstancePaths")
+                                        is string[] blocked) {
+                                    lock (hiddenInstanceIdsLock) {
+                                        foreach (string blockedId in blocked) {
+                                            if (!String.IsNullOrEmpty(blockedId) &&
+                                                    !hiddenInstanceIds.Contains(blockedId))
+                                                hiddenInstanceIds.Add(blockedId);
+                                        }
+                                    }
+                                }
+                            }
+                        } catch { }
                     }
                 } catch (Exception e) {
                     form.AppendTextBox("Unable to configure HidHide - everything should work fine without it. (" + e.GetType().Name + ": " + e.Message + ")\r\n");
