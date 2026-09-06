@@ -667,10 +667,26 @@ namespace BetterJoyForCemu {
                 BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
                     "windows-link-key-committed");
 
+                // Fresh controller-side bonds behave best when the controller sees one low-power
+                // edge after the 0x0A host/key write is verified, but this is NOT the charge-only
+                // wake-monitor path: no settle wait, no parked USB monitor. Immediately follow
+                // with Bluetooth ON so Windows can create/complete the live bond and HID nodes.
+                bool freshBondLowPowerSent = SendBluetoothControlFeatureReport(
+                    handle, false, DualSenseBluetoothControlOff);
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                    freshBondLowPowerSent ? "fresh-bond-low-power-sent" :
+                        "fresh-bond-low-power-rejected");
+                if (!freshBondLowPowerSent) {
+                    form.AppendTextBox("DualSense accepted its Bluetooth bond, but its " +
+                        "fresh-bond low-power edge was rejected.\r\n");
+                    return;
+                }
+
                 DebugLog.Write("DualSense automatic Bluetooth pairing: pad=" + PadId +
                     " createdWindowsBond=" + created +
                     " previousPairingCleared=" + previousPairingCleared +
-                    " pairingStateReasserted=" + pairingStateReasserted);
+                    " pairingStateReasserted=" + pairingStateReasserted +
+                    " freshBondLowPowerSent=" + freshBondLowPowerSent);
                 BeginEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian,
                     created, "fresh bond");
             } finally {
