@@ -697,6 +697,11 @@ namespace BetterJoyForCemu {
                 if (scanningStopped)
                     return;
 
+                // Refresh the hidden-instance cache from the real blocklist each pass so an external
+                // change (a device manually unhidden in the HidHide UI) is seen and the controller
+                // re-hidden below, instead of a stale cache making BlockInstance skip it forever.
+                SyncHiddenInstanceCacheFromRegistry();
+
                 CleanUp();
                 if (Boolean.Parse(ConfigurationManager.AppSettings["PassiveScan"])) {
                     CheckForNewControllers();
@@ -757,6 +762,39 @@ namespace BetterJoyForCemu {
             }
 
             return hidden;
+        }
+
+        // Refreshes the in-memory cache to MIRROR HidHide's persisted blocklist (registry MULTI_SZ
+        // HKLM\...\Services\HidHide\Parameters\BlacklistedDeviceInstancePaths). The cache only exists
+        // to skip redundant driver writes, so it must track EXTERNAL changes too: if a device is
+        // manually unhidden (removed from the blocklist), a stale cache would make BlockInstance
+        // wrongly skip re-hiding it. Called at startup and once per scan pass, so a manual unhide is
+        // picked up and the controller re-hidden on its next enumeration. Leaves the cache unchanged
+        // on a read failure rather than dropping every entry.
+        public static void SyncHiddenInstanceCacheFromRegistry() {
+            if (!Program.useHidHide)
+                return;
+            string[] blocked;
+            try {
+                using (RegistryKey hidHideParams = RegistryKey
+                        .OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
+                        .OpenSubKey(@"SYSTEM\CurrentControlSet\Services\HidHide\Parameters", false)) {
+                    blocked = hidHideParams?.GetValue("BlacklistedDeviceInstancePaths") as string[];
+                }
+            } catch {
+                return;
+            }
+            if (blocked == null)
+                blocked = Array.Empty<string>();
+            lock (Program.hidHideDriverLock) {
+                lock (Program.hiddenInstanceIdsLock) {
+                    Program.hiddenInstanceIds.Clear();
+                    foreach (string id in blocked) {
+                        if (!String.IsNullOrEmpty(id) && !Program.hiddenInstanceIds.Contains(id))
+                            Program.hiddenInstanceIds.Add(id);
+                    }
+                }
+            }
         }
 
         // Serializes a single HidHide blocklist ADD with the shared driver lock, keeping the cache in
@@ -1654,32 +1692,9 @@ namespace BetterJoyForCemu {
                             hidHide.AddApplicationPath(exePath);
                         hidHide.IsActive = true;
 
-                        // Seed the in-memory cache from HidHide's PERSISTENT blocklist so an
-                        // already-blocked device (hidden in a prior session; UnhideOnExit defaults
-                        // false) is recognized and NOT re-hidden. Without this, TryHideController's
-                        // first-touch cache miss re-issues AddBlockedInstanceId on an already-blocked
-                        // node - a redundant re-hide that lands on the settling BT node mid-pairing.
-                        // Read the registry MULTI_SZ directly (the API's own persisted store):
-                        // HKLM\SYSTEM\CurrentControlSet\Services\HidHide\Parameters
-                        //   \BlacklistedDeviceInstancePaths (REG_MULTI_SZ).
-                        try {
-                            using (RegistryKey hidHideParams = RegistryKey
-                                    .OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
-                                    .OpenSubKey(
-                                        @"SYSTEM\CurrentControlSet\Services\HidHide\Parameters",
-                                        false)) {
-                                if (hidHideParams?.GetValue("BlacklistedDeviceInstancePaths")
-                                        is string[] blocked) {
-                                    lock (hiddenInstanceIdsLock) {
-                                        foreach (string blockedId in blocked) {
-                                            if (!String.IsNullOrEmpty(blockedId) &&
-                                                    !hiddenInstanceIds.Contains(blockedId))
-                                                hiddenInstanceIds.Add(blockedId);
-                                        }
-                                    }
-                                }
-                            }
-                        } catch { }
+                        // Mirror the in-memory cache to HidHide's persisted blocklist at startup (the
+                        // scan pass refreshes it thereafter - see SyncHiddenInstanceCacheFromRegistry).
+                        JoyconManager.SyncHiddenInstanceCacheFromRegistry();
                     }
                 } catch (Exception e) {
                     form.AppendTextBox("Unable to configure HidHide - everything should work fine without it. (" + e.GetType().Name + ": " + e.Message + ")\r\n");
