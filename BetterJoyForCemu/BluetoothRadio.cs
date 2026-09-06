@@ -633,26 +633,21 @@ namespace BetterJoyForCemu {
         private static bool TryEnableHidService(IntPtr radioHandle,
                 ulong targetDeviceAddress, string fallbackName,
                 bool discoverUnknownDevice) {
-            // A newly authenticated controller can already have a transient device record by the
-            // time this worker runs. Probe that cache without inquiry first: BluetoothFindFirstDevice
-            // returns immediately in this mode and BluetoothSetServiceState can finish the HID
-            // registration on the same pass. Only perform the slower inquiry when the cache really
-            // has no matching record. This keeps the fresh-pair path fast without sacrificing the
-            // discovery needed for a genuinely unknown device.
-            if (discoverUnknownDevice && TryEnableHidServicePass(radioHandle,
-                    targetDeviceAddress, fallbackName, false, 0))
-                return true;
-
+            // Easy-pair already has the controller making a targeted incoming Classic connection
+            // to this radio. Do not issue a separate inquiry here: Windows discovery/service
+            // probing can overlap that incoming authentication and bind the wrong transient HID
+            // path. Poll only the cache/connected records the incoming connection itself creates,
+            // then enable HID on that exact record once Windows exposes it.
             return TryEnableHidServicePass(radioHandle, targetDeviceAddress, fallbackName,
-                discoverUnknownDevice, discoverUnknownDevice ? (byte)4 : (byte)0);
+                false, 0);
         }
 
         private static bool TryEnableHidServicePass(IntPtr radioHandle,
                 ulong targetDeviceAddress, string fallbackName,
                 bool issueInquiry, byte timeoutMultiplier) {
-            // A new controller has no Windows device record for a cache-only query to return, so its
-            // first handoff needs inquiry to create that record. Existing bonds use the fast cache
-            // path; repeatedly running a multi-second inquiry there only widens the retry race.
+            // A new controller has no Windows device record until its incoming connection starts
+            // creating one. Keep this pass cache-only so finalization follows that record instead
+            // of starting independent discovery while authentication is still settling.
             var search = new BLUETOOTH_DEVICE_SEARCH_PARAMS {
                 dwSize = Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_SEARCH_PARAMS)),
                 returnAuthenticated = true,

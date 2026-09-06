@@ -724,9 +724,11 @@ namespace BetterJoyForCemu {
 
             automaticBluetoothPairingInProgress = true;
             Program.mgr.SuppressUsbControllerForBluetoothPreference(usbPath, profileId);
-            Program.mgr.RecordBluetoothPairingAttempt(controllerMac, profileId, usbPath);
+            int attemptNumber = Program.mgr.RecordBluetoothPairingAttempt(
+                controllerMac, profileId, usbPath);
             bool queued = QueueAutomaticBluetoothPairingFinalization(
-                hostMacLittleEndian, controllerMac, connectRequested, createdWindowsBond);
+                hostMacLittleEndian, controllerMac, connectRequested, createdWindowsBond,
+                attemptNumber);
             if (!queued) {
                 automaticBluetoothPairingInProgress = false;
                 form.AppendTextBox("DualSense bond was saved, but Windows device setup could " +
@@ -737,6 +739,7 @@ namespace BetterJoyForCemu {
             form.AppendTextBox("DualSense " + bondState +
                 " saved; waiting for its incoming Bluetooth connection.\r\n");
             DebugLog.Write("DualSense pairing handoff: pad=" + PadId +
+                " attempt=" + attemptNumber +
                 " bond=" + bondState + " connectRequested=True finalizerQueued=True" +
                 " windowsKeyCommitted=" + createdWindowsBond);
 
@@ -840,13 +843,13 @@ namespace BetterJoyForCemu {
 
         private bool QueueAutomaticBluetoothPairingFinalization(
                 byte[] hostMacLittleEndian, byte[] controllerMac,
-                bool connectRequested, bool createdWindowsBond) {
+                bool connectRequested, bool createdWindowsBond, int attemptNumber) {
             byte[] hostCopy = (byte[])hostMacLittleEndian.Clone();
             byte[] controllerCopy = (byte[])controllerMac.Clone();
             bool queued = ThreadPool.QueueUserWorkItem(_ => {
                 try {
                     bool completed = BluetoothRadio.TryFinalizeClassicHidPairing(
-                        hostCopy, controllerCopy, "DualSense Wireless Controller",
+                        hostCopy, controllerCopy, BluetoothPairingFallbackName(),
                         createdWindowsBond, 10000);
                     // Previously also reopened a fresh USB handle here and rewrote the pairing-info
                     // feature report (0x0A) once more as a "final key reassert" once Windows
@@ -861,6 +864,7 @@ namespace BetterJoyForCemu {
                         : "DualSense Bluetooth bond was saved, but its live incoming connection " +
                             "did not reach Windows HID setup. Press PS once and try again.\r\n");
                     DebugLog.Write("DualSense automatic Bluetooth registration: pad=" + PadId +
+                        " attempt=" + attemptNumber +
                         " createdWindowsBond=" + createdWindowsBond +
                         " connectRequested=" + connectRequested +
                         " liveHidSetupRequested=" + completed);
@@ -880,6 +884,13 @@ namespace BetterJoyForCemu {
                     "registration could not be started.\r\n");
             }
             return queued;
+        }
+
+        private string BluetoothPairingFallbackName() {
+            return path != null &&
+                path.IndexOf("PID_0DF2", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "DualSense Edge Wireless Controller"
+                    : "DualSense Wireless Controller";
         }
 
         private bool ReassertBluetoothPairingStateOverUsb() {

@@ -292,10 +292,10 @@ namespace BetterJoyForCemu {
 
         // Called by the USB-side ceremony after it fires the connect trigger and suppresses the
         // wired path. Upserts the attempt and (re)starts the confirmation window.
-        public void RecordBluetoothPairingAttempt(byte[] controllerMac, string profileId,
+        public int RecordBluetoothPairingAttempt(byte[] controllerMac, string profileId,
                 string wiredPath) {
             if (controllerMac == null || controllerMac.Length != 6)
-                return;
+                return 0;
             string mac = BitConverter.ToString(controllerMac).Replace("-", "");
             long deadline = Stopwatch.GetTimestamp() +
                 Stopwatch.Frequency * BluetoothPairingConfirmWindowSeconds;
@@ -310,18 +310,27 @@ namespace BetterJoyForCemu {
                 attempt.attemptCount++;
                 attempt.deadlineTimestamp = deadline;
                 attempt.awaitingReattempt = false;
+                return attempt.attemptCount;
             }
         }
 
         // Called from the reconciliation when a live BT pad for this MAC reaches IMU_DATA_OK.
         // Consumes the record (returns true) so the caller can sleep that pad. Suppression is left
         // in place - the wake monitor the sleep arms needs it.
-        public bool TryConfirmBluetoothPairing(byte[] controllerMac) {
+        public bool TryConfirmBluetoothPairing(byte[] controllerMac,
+                out int attemptNumber) {
+            attemptNumber = 0;
             if (controllerMac == null || controllerMac.Length != 6)
                 return false;
             string mac = BitConverter.ToString(controllerMac).Replace("-", "");
-            lock (suppressedUsbControllerLock)
-                return pendingBluetoothPairingConfirmations.Remove(mac);
+            lock (suppressedUsbControllerLock) {
+                if (!pendingBluetoothPairingConfirmations.TryGetValue(mac,
+                        out BluetoothPairingAttempt attempt))
+                    return false;
+                attemptNumber = attempt.attemptCount;
+                pendingBluetoothPairingConfirmations.Remove(mac);
+                return true;
+            }
         }
 
         // Called once per reconciliation pass. For any attempt past its window that never confirmed:
@@ -436,11 +445,13 @@ namespace BetterJoyForCemu {
                         else if (nowTs - confirmPad.bluetoothImuStableSince >=
                                      Stopwatch.Frequency * BluetoothPairingStableDwellSeconds &&
                                  TryConfirmBluetoothPairing(
-                                     confirmPad.PadMacAddress.GetAddressBytes())) {
+                                     confirmPad.PadMacAddress.GetAddressBytes(),
+                                     out int confirmedAttempt)) {
                             confirmPad.RequestRoamingSleepAfterBluetoothConfirmation();
                             DebugLog.Write("DualSense BT pairing confirmed (held): pad=" +
                                 confirmPad.PadId + " mac=" + BitConverter.ToString(
                                     confirmPad.PadMacAddress.GetAddressBytes()).Replace("-", "") +
+                                " attempt=" + confirmedAttempt +
                                 " heldMs=" + ((nowTs - confirmPad.bluetoothImuStableSince) *
                                     1000 / Stopwatch.Frequency));
                             BluetoothRadio.MarkClassicPairingRegistryTrace(
@@ -995,6 +1006,11 @@ namespace BetterJoyForCemu {
                     (enumerate.product_id == product_dualsense || enumerate.product_id == product_dualsense_edge);
                 bool isDualShock4Device = enumerate.vendor_id == vendor_sony &&
                     enumerate.product_id == product_dualshock4_v2;
+                if ((isDualSenseDevice || isDualShock4Device) &&
+                        !IsGameController(enumerate)) {
+                    ptr = enumerate.next;
+                    continue;
+                }
                 bool validController = isDualSenseDevice || isDualShock4Device ||
                     ((enumerate.product_id == product_l || enumerate.product_id == product_r ||
                       enumerate.product_id == product_pro || enumerate.product_id == product_snes || enumerate.product_id == product_n64) && enumerate.vendor_id == vendor_id);
