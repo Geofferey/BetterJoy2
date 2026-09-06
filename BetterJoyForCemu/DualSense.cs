@@ -111,8 +111,19 @@ namespace BetterJoyForCemu {
         private bool adaptiveTriggerUpdatePending = true;
         private bool bluetoothOutputStateDirty = true;
         private bool lightbarControlReleased;
-        private bool connectionLightFlashStarted;
-        private long connectionLightColorTimestamp;
+        private enum LightbarConnectState {
+            WaitingForInput,
+            Settling,
+            Applied
+        }
+
+        // Connect-time lighting handoff (see the ReceiveRaw lighting block): let the firmware own
+        // the lightbar until input is actually streaming, then give it a short settle window before
+        // applying the profile color directly. No intermediate black/off packet.
+        private const double LightbarConnectSettleSeconds = 4.5;
+        private LightbarConnectState lightbarConnectState =
+            LightbarConnectState.WaitingForInput;
+        private long lightbarConnectStreamingSince;
         // DualSense common input status[1] bits 0/1 report headphone/microphone presence. -1
         // means no valid input report has established the physical jack state yet.
         private int headphoneConnectionState = -1;
@@ -1367,7 +1378,8 @@ namespace BetterJoyForCemu {
                 // OpenRGB color has ever been queued. A later managed-profile update must revoke a
                 // stale OpenRGB bypass before any standalone lighting report is built.
                 openRgbLightbarUpdatePending = fromOpenRgbServer;
-                if (lightbarTransportKnown && !LightingSuppressedForUsbHandoff()) {
+                if (lightbarTransportKnown && !LightingSuppressedForUsbHandoff() &&
+                        LightbarConnectReady()) {
                     // Lighting remains a standalone controller-output request even while the
                     // Bluetooth media lane is active. Audio carriers never need RGB state
                     // interleaved into them; the controller retains the last LED command itself.
@@ -1375,6 +1387,7 @@ namespace BetterJoyForCemu {
                         fromOpenRgbServer);
                     lightbarUpdatePending = false;
                     openRgbLightbarUpdatePending = false;
+                    MarkLightbarConnectApplied();
                 }
             }
         }
@@ -1602,26 +1615,22 @@ namespace BetterJoyForCemu {
                     lightbarUpdatePending = false;
                 }
                 bool lightingSuppressedForUsbHandoff = LightingSuppressedForUsbHandoff();
-                if (lightbarUpdatePending && openRgbLightbarUpdatePending &&
-                        !lightingSuppressedForUsbHandoff) {
-                    SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue, true);
-                    lightbarUpdatePending = false;
-                    openRgbLightbarUpdatePending = false;
-                } else if (lightbarUpdatePending && !lightingSuppressedForUsbHandoff &&
-                        !LightingModeIsHandsOff()) {
-                    long lightbarNow = Stopwatch.GetTimestamp();
-                    if (!connectionLightFlashStarted) {
-                        // Confirm every new USB or Bluetooth connection with a short blue light,
-                        // then replace it with the controller profile's assigned color.
-                        string profileId = ControllerMappings.ProfileIdFor(this);
-                        (byte flashRed, byte flashGreen, byte flashBlue) =
-                            ControllerMappings.ApplyLightBrightness(profileId, 0, 0, 255);
-                        SendDualSenseLightbar(flashRed, flashGreen, flashBlue);
-                        connectionLightFlashStarted = true;
-                        connectionLightColorTimestamp = lightbarNow + Stopwatch.Frequency / 4;
-                    } else if (lightbarNow >= connectionLightColorTimestamp) {
+                // The DualSense firmware runs its own lighting routine as it connects, including a
+                // blue flash. Do not send our own lighting until the pad is fully connected,
+                // streaming input (state IMU_DATA_OK, set only after a good HID report), and past a
+                // short settle window; then apply the profile color directly.
+                if (LightbarConnectReady()) {
+                    if (lightbarUpdatePending && openRgbLightbarUpdatePending &&
+                            !lightingSuppressedForUsbHandoff) {
+                        SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue, true);
+                        lightbarUpdatePending = false;
+                        openRgbLightbarUpdatePending = false;
+                        MarkLightbarConnectApplied();
+                    } else if (lightbarUpdatePending && !lightingSuppressedForUsbHandoff &&
+                            !LightingModeIsHandsOff()) {
                         SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
                         lightbarUpdatePending = false;
+                        MarkLightbarConnectApplied();
                     }
                 }
                 // hid_read_timeout does NOT strip the leading report-ID byte for either transport -
@@ -2978,6 +2987,27 @@ namespace BetterJoyForCemu {
             return CurrentLightingMode() == ControllerMappings.LightingModeOpenRgb;
         }
 
+        private bool LightbarConnectReady() {
+            if (lightbarConnectState == LightbarConnectState.Applied)
+                return true;
+            if (state != state_.IMU_DATA_OK)
+                return false;
+
+            long now = Stopwatch.GetTimestamp();
+            if (lightbarConnectState == LightbarConnectState.WaitingForInput) {
+                lightbarConnectStreamingSince = now;
+                lightbarConnectState = LightbarConnectState.Settling;
+                return false;
+            }
+
+            return (now - lightbarConnectStreamingSince) >=
+                Stopwatch.Frequency * LightbarConnectSettleSeconds;
+        }
+
+        private void MarkLightbarConnectApplied() {
+            lightbarConnectState = LightbarConnectState.Applied;
+        }
+
         private void WriteRetainedRumbleAndTriggerState(byte[] report, int commonOffset,
                                                         byte leftMotor, byte rightMotor) {
             // A rumble publication enables both compatibility-rumble bits and both trigger
@@ -3199,6 +3229,21 @@ namespace BetterJoyForCemu {
                                            bool fromOpenRgbServer = false) {
             lock (outputReportLock) {
                 bool bt = !isUSB;
+                // Hard gate: never write lighting to the hardware until the pad is fully connected
+                // and streaming input (IMU_DATA_OK). During connect the firmware owns the lightbar
+                // (its own routine, incl. a blue flash); our writes there collide with it. Defer the
+                // request as pending so the ReceiveRaw lighting block applies it once streaming.
+                if (state != state_.IMU_DATA_OK) {
+                    lightbarUpdatePending = true;
+                    return;
+                }
+                // TEMPORARY lighting-timing trace (gated on DualSenseDebugLogging): every actual
+                // color that reaches the pad funnels through here, now only at IMU_DATA_OK.
+                LogDualSenseRawDump(String.Format(CultureInfo.InvariantCulture,
+                    "LIGHT SendLightbar rgb={0:X2}{1:X2}{2:X2} isUSB={3} mode={4} fromOpenRgb={5} " +
+                    "pending={6} state={7}",
+                    red, green, blue, isUSB, CurrentLightingMode(), fromOpenRgbServer,
+                    lightbarUpdatePending, state));
                 // This helper carries both RGB and player-indicator state. Default delegates all
                 // lighting, even when the separate Player LEDs option is enabled. Retain the
                 // desired state as pending so leaving Default can apply it without reconnecting,
