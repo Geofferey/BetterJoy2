@@ -744,6 +744,21 @@ namespace BetterJoyForCemu {
             if (!Program.useHidHide)
                 return true;
 
+            // A DualSense over Bluetooth is hidden by its MAC-stable BTHENUM bond
+            // (HideBluetoothBondByMac), which - confirmed on hardware in c8afd2e - cloaks the whole
+            // child subtree. The child HID instance id (b&<bus>&<N>&0000) renumbers on every
+            // reconnect, so blocking it too only churns the blocklist. Skip it and let the bond
+            // cover it; the bond is added from the resolved MAC in the same scan pass. Non-Sony
+            // Bluetooth (no manufacturable bond) and every wired node still fall through and block
+            // their own instance id below.
+            bool isBluetoothInterface = enumerate.path != null &&
+                enumerate.path.IndexOf("00001124", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool bondCoveredType = enumerate.vendor_id == vendor_sony &&
+                (enumerate.product_id == product_dualsense ||
+                 enumerate.product_id == product_dualsense_edge);
+            if (isBluetoothInterface && bondCoveredType)
+                return true;
+
             bool hidden = false;
             for (int hideAttempt = 0; hideAttempt < 5 && !hidden; hideAttempt++) {
                 if (hideAttempt > 0)
@@ -833,6 +848,15 @@ namespace BetterJoyForCemu {
                 current = new List<string>(Program.hiddenInstanceIds);
             List<string> gone = null;
             foreach (string id in current) {
+                // A manufactured BTHENUM bond is intentionally persistent: it is preemptively added
+                // so the pad is born hidden on its first/next Bluetooth connect, and it has NO live
+                // Enum key whenever the controller is powered off. An absence check would delete the
+                // very preemptive hide we want to keep, so never prune our own bonds here - they are
+                // removed only when their profile is retired.
+                if (id.StartsWith("BTHENUM\\", StringComparison.OrdinalIgnoreCase) &&
+                        id.EndsWith("_C00000000", StringComparison.OrdinalIgnoreCase) &&
+                        id.IndexOf("{00001124", StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
                 bool exists;
                 try {
                     using (RegistryKey k = RegistryKey
