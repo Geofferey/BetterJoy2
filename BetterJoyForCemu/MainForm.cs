@@ -23,6 +23,24 @@ namespace BetterJoyForCemu {
         private Timer rightClickTimer;
         private readonly DesktopInputBackend desktopInput;
         private readonly string[] displayedConfigKeys;
+        private static readonly Bitmap SlotIconCross = Properties.Resources.cross;
+        private static readonly Bitmap SlotIconPlus = Properties.Resources.plus;
+        private static readonly Bitmap SlotIconCalibrate = Properties.Resources.calibrate;
+        private static readonly Bitmap SlotIconPro = Properties.Resources.pro;
+        private static readonly Bitmap SlotIconDualSense = Properties.Resources.dualsense;
+        private static readonly Bitmap SlotIconDualShock4 = Properties.Resources.ds4;
+        private static readonly Bitmap SlotIconSnes = Properties.Resources.snes;
+        private static readonly Bitmap SlotIconN64 = Properties.Resources.ultra;
+        private static readonly Bitmap SlotIconJoyconLeft = Properties.Resources.jc_left;
+        private static readonly Bitmap SlotIconJoyconLeftSideways = Properties.Resources.jc_left_s;
+        private static readonly Bitmap SlotIconJoyconRight = Properties.Resources.jc_right;
+        private static readonly Bitmap SlotIconJoyconRightSideways = Properties.Resources.jc_right_s;
+        private static readonly Rectangle SlotIconJoyconLeftBounds =
+            GetOpaqueBounds(SlotIconJoyconLeft);
+        private static readonly Rectangle SlotIconJoyconRightBounds =
+            GetOpaqueBounds(SlotIconJoyconRight);
+        private readonly Dictionary<string, Bitmap> joinedIconCache =
+            new Dictionary<string, Bitmap>(StringComparer.Ordinal);
         private static readonly HashSet<string> ProfileOwnedConfigKeys =
             new HashSet<string>(StringComparer.Ordinal) {
                 "ShowAsXInput", "ShowAsDS4", "AutoPowerOff", "PowerOffInactivity",
@@ -482,7 +500,7 @@ namespace BetterJoyForCemu {
             foreach (Button b in con) {
                 b.Tag = null;
                 b.BackColor = Color.FromArgb(0x00, SystemColors.Control);
-                b.BackgroundImage = Properties.Resources.cross;
+                b.BackgroundImage = SlotIconCross;
                 b.Text = String.Empty;
                 SetEmptySlotTooltip(b);
             }
@@ -528,15 +546,15 @@ namespace BetterJoyForCemu {
 
         private Bitmap IconFor(ControllerRecord record) {
             switch (record.Kind) {
-                case ControllerKind.Pro: return Properties.Resources.pro;
-                case ControllerKind.DualSense: return Properties.Resources.dualsense;
-                case ControllerKind.DualShock4: return Properties.Resources.ds4;
-                case ControllerKind.Snes: return Properties.Resources.snes;
-                case ControllerKind.N64: return Properties.Resources.ultra;
+                case ControllerKind.Pro: return SlotIconPro;
+                case ControllerKind.DualSense: return SlotIconDualSense;
+                case ControllerKind.DualShock4: return SlotIconDualShock4;
+                case ControllerKind.Snes: return SlotIconSnes;
+                case ControllerKind.N64: return SlotIconN64;
                 case ControllerKind.Left:
-                    return record.IsVertical ? Properties.Resources.jc_left : Properties.Resources.jc_left_s;
+                    return record.IsVertical ? SlotIconJoyconLeft : SlotIconJoyconLeftSideways;
                 default:
-                    return record.IsVertical ? Properties.Resources.jc_right : Properties.Resources.jc_right_s;
+                    return record.IsVertical ? SlotIconJoyconRight : SlotIconJoyconRightSideways;
             }
         }
 
@@ -612,7 +630,7 @@ namespace BetterJoyForCemu {
 
                 calibrateIconButton = button;
                 calibrateIconOriginalImage = button.BackgroundImage;
-                button.BackgroundImage = Properties.Resources.calibrate;
+                button.BackgroundImage = SlotIconCalibrate;
 
                 clickTimer.Start();
             }
@@ -678,13 +696,13 @@ namespace BetterJoyForCemu {
         public void conBtnMouseEnter(object sender, EventArgs e) {
             Button button = sender as Button;
             if (button.Tag == null)
-                button.BackgroundImage = Properties.Resources.plus;
+                button.BackgroundImage = SlotIconPlus;
         }
 
         public void conBtnMouseLeave(object sender, EventArgs e) {
             Button button = sender as Button;
             if (button.Tag == null)
-                button.BackgroundImage = Properties.Resources.cross;
+                button.BackgroundImage = SlotIconCross;
         }
 
         public void SetConnectionTooltip(Button button, bool isPro, ControllerRecord record) {
@@ -693,7 +711,7 @@ namespace BetterJoyForCemu {
                 tip += ", double click to calibrate";
             if (record.BatteryPercent >= 0)
                 tip = BatteryStatusText(record) + "\r\n" + tip;
-            btnTip.SetToolTip(button, tip);
+            SetTooltipIfChanged(button, tip);
         }
 
         private static string BatteryStatusText(ControllerRecord record) {
@@ -709,7 +727,12 @@ namespace BetterJoyForCemu {
         }
 
         public void SetEmptySlotTooltip(Button button) {
-            btnTip.SetToolTip(button, "Add a controller");
+            SetTooltipIfChanged(button, "Add a controller");
+        }
+
+        private void SetTooltipIfChanged(Control control, string tip) {
+            if (btnTip.GetToolTip(control) != tip)
+                btnTip.SetToolTip(control, tip);
         }
 
         // jc_left.png/jc_right.png are drawn as literal left/right halves of one combined-pair
@@ -720,10 +743,15 @@ namespace BetterJoyForCemu {
         // slot - edges touching in the middle, matching margin on the outer edges - instead of
         // either spanning two slots or looking stretched/warped filling the box edge to edge.
         public Bitmap ComposeJoinedIcon(int width, int height) {
-            Bitmap leftSource = Properties.Resources.jc_left;
-            Bitmap rightSource = Properties.Resources.jc_right;
-            Rectangle leftBounds = GetOpaqueBounds(leftSource);
-            Rectangle rightBounds = GetOpaqueBounds(rightSource);
+            string cacheKey = width.ToString() + "x" + height.ToString();
+            Bitmap cached;
+            if (joinedIconCache.TryGetValue(cacheKey, out cached))
+                return cached;
+
+            Bitmap leftSource = SlotIconJoyconLeft;
+            Bitmap rightSource = SlotIconJoyconRight;
+            Rectangle leftBounds = SlotIconJoyconLeftBounds;
+            Rectangle rightBounds = SlotIconJoyconRightBounds;
 
             const float fit = 0.58f; // leaves margin similar to the other slot icons, which
                                       // have padding baked into their own source canvas
@@ -738,6 +766,7 @@ namespace BetterJoyForCemu {
                 DrawHalfFlushToSeam(g, leftSource, leftBounds, 0, halfWidth, height, targetHeight, flushRight: true, seamGap: 0);
                 DrawHalfFlushToSeam(g, rightSource, rightBounds, halfWidth, width - halfWidth, height, targetHeight, flushRight: false, seamGap: seamGap);
             }
+            joinedIconCache[cacheKey] = composite;
             return composite;
         }
 
