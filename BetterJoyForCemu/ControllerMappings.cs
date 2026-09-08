@@ -50,6 +50,14 @@ namespace BetterJoyForCemu {
         public const string MicIndicatorModeInverted = "inverted";
         public const string MicIndicatorModeEnabled = "enabled";
         public const string MicIndicatorModeEnabledWhileDisabled = "enabled_while_disabled";
+        // When a DualSense is connected over USB: Bluetooth = today's behavior (only parks the
+        // controller to its wait-for-PS-press sleep once a Bluetooth connection has been established
+        // while wired); Enabled = always park it to wait-for-press on USB regardless of transport;
+        // Disabled = never park it - just connect via the preferred transport (falling back to USB)
+        // and stay put, no PS press needed. See DualSense's charge-only/wake handling.
+        public const string UsbSleepBluetooth = "bluetooth";
+        public const string UsbSleepEnabled = "enabled";
+        public const string UsbSleepDisabled = "disabled";
         // Default: BetterJoy never sends a lighting command at all for this profile - see
         // Program.cs's ApplyControllerProfileLighting. Disabled: same forced-black output as the
         // LightingOff runtime toggle, but as a persistent saved mode instead. OpenRGB: identical
@@ -83,6 +91,10 @@ namespace BetterJoyForCemu {
         };
         public static readonly (string Value, string Label)[] AutomaticBluetoothPairingModes = {
             (ModeEnable, "Enabled"), (ModeRepair, "Repair"), (ModeDisable, "Disabled"),
+        };
+        public static readonly (string Value, string Label)[] UsbSleepModes = {
+            (UsbSleepBluetooth, "Bluetooth"), (UsbSleepEnabled, "Enabled"),
+            (UsbSleepDisabled, "Disabled"),
         };
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
@@ -139,6 +151,7 @@ namespace BetterJoyForCemu {
         // persisted beside bindings once a profile is edited.
         public static readonly string[] OptionKeys = {
             "UseAs", "PreferredTransport", "AutomaticBluetoothPairing",
+            "UsbSleep",
             "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "HomeLongPowerOffHoldSeconds",
             "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
@@ -586,6 +599,18 @@ namespace BetterJoyForCemu {
         // trigger the automatic-BT flow; the mode above decides which path it takes.
         public static bool AutomaticBluetoothPairingEnabled(string profileId) {
             return AutomaticBluetoothPairingMode(profileId) != ModeDisable;
+        }
+
+        // How a USB-connected DualSense parks itself. Bluetooth (default, unchanged behavior),
+        // Enabled (always wait-for-press on USB), or Disabled (never park). Anything unset or
+        // unrecognized is Bluetooth so every existing profile keeps today's behavior.
+        public static string UsbSleepMode(string profileId) {
+            string value = OptionValue(profileId, "UsbSleep");
+            if (String.Equals(value, UsbSleepEnabled, StringComparison.OrdinalIgnoreCase))
+                return UsbSleepEnabled;
+            if (String.Equals(value, UsbSleepDisabled, StringComparison.OrdinalIgnoreCase))
+                return UsbSleepDisabled;
+            return UsbSleepBluetooth;
         }
 
         public static int LightBrightness(string profileId) {
