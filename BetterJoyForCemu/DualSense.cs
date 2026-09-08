@@ -61,6 +61,8 @@ namespace BetterJoyForCemu {
         private const int DualSenseSetPairingFeatureReportLen = 27;
         private const int PairingRecordCommitTimeoutMs = 3000;
         private const int PairingRecordPollIntervalMs = 50;
+        private const int UsbChargeGlowFrameMs = 80;
+        private const double UsbChargeGlowPeriodMs = 10000.0;
         private string chargeOnlyUsbPath;
         private bool monitorChargeOnlyWakeAfterPowerOff;
         // Set when BetterJoy itself powered this controller off, so the firmware-power-off recovery
@@ -77,6 +79,13 @@ namespace BetterJoyForCemu {
         // (IMU_DATA_OK on the 00001124 interface); drained on the Poll thread to run the roaming
         // sleep (PowerOff) - same scan->Poll hand-off shape as automaticBluetoothPairingPending.
         private int roamingSleepPending;
+        // Initial USB-connect sleep is separate from long-press/inactivity/app-exit power-off. The
+        // critical decision is snapshotted once, while the USB object is born: was this same
+        // controller already live over Bluetooth at that moment? If yes, do not let a fresh USB
+        // node kick the already-good Bluetooth session into charge-only sleep.
+        private int usbSleepOnConnectPending;
+        private bool usbSleepOnConnectInitialBluetoothStateKnown;
+        private bool usbSleepOnConnectBluetoothWasLive;
         // Stopwatch timestamp of when this pad first reached IMU_DATA_OK, set/read by the manager's
         // confirm bridge to require the Bluetooth link to HOLD (a stable connection = pairing
         // actually finished) before sleeping it - a single brief IMU_DATA_OK is just one lap of the
@@ -495,7 +504,17 @@ namespace BetterJoyForCemu {
         // report 0x0A reasserts those exact values. If any part cannot be verified, never risk the
         // bond: use the host-side radio disconnect instead.
         public override void PowerOff() {
-            if (state > state_.DROPPED && !isUSB) {
+            if (state <= state_.DROPPED)
+                return;
+            // USB-only: there is no real power-off over a wired handle, so pseudo-sleep instead -
+            // park the wired HID, re-enumerate it, and let the charge-only wake monitor wait for
+            // the next PS/Home/Capture press. A Bluetooth-connected controller is a separate
+            // (non-USB) pad object and still takes the real Bluetooth power-off path below.
+            if (isUSB) {
+                EnterUsbPseudoSleep();
+                return;
+            }
+            if (!isUSB) {
                 appInitiatedPowerOff = true;
                 // Also record it against the MAC in the manager: this pad object is about to be
                 // destroyed and rebuilt by the scan, and the flag above dies with it.
@@ -525,6 +544,68 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // USB-only pseudo-sleep. Over USB the controller cannot be truly powered off like a live
+        // Bluetooth HID pad, but it can be parked as charge-only: BetterJoy closes its HID handle,
+        // suppresses re-adoption, nudges Windows to re-enumerate the USB interface, then a wake
+        // monitor waits for the next PS/Home report before releasing the USB path back to scanning.
+        private void EnterUsbPseudoSleep() {
+            if (!isUSB || state <= state_.DROPPED)
+                return;
+
+            appInitiatedPowerOff = true;
+            Program.mgr.MarkDeliberatePowerOff(PadMacAddress.GetAddressBytes());
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            chargeOnlyUsbPath = path;
+            Program.mgr.MarkChargeOnlyUsbParked(chargeOnlyUsbPath, profileId);
+            Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(profileId);
+            monitorChargeOnlyWakeAfterPowerOff =
+                Program.mgr.ShouldMonitorChargeOnlyUsbWake(chargeOnlyUsbPath, profileId);
+
+            ForwardNeutralVirtualInput();
+            string parkedPath = chargeOnlyUsbPath;
+            DebugLog.Write("DualSense USB pseudo-sleep entered: pad=" + PadId +
+                " wakeMonitorArmed=" + monitorChargeOnlyWakeAfterPowerOff);
+
+            state = state_.DROPPED;
+            AbandonBluetoothMediaTransport();
+            Detach(true);
+            Program.mgr.j.Remove(this);
+
+            ThreadPool.QueueUserWorkItem(_ => {
+                Thread.Sleep(100);
+                bool reenumerated = UsbDeviceReenumerator.TryReenumerateHidInterface(
+                    parkedPath, out string detail);
+                DebugLog.Write("DualSense USB pseudo-sleep re-enumeration: path=" +
+                    parkedPath + " result=" + reenumerated + " detail=" + detail);
+            });
+
+            if (monitorChargeOnlyWakeAfterPowerOff)
+                BeginChargeOnlyUsbWakeMonitor();
+        }
+
+        // Forward a fully neutral state to whatever virtual controller(s) this pad drives, so games
+        // see it present and idle rather than frozen on the last real input. Mirrors ReceiveRaw's
+        // own output dispatch; zeroing the parsed fields makes MapTo*Input produce a rest state.
+        private void ForwardNeutralVirtualInput() {
+            for (int i = 0; i < buttons.Length; i++)
+                buttons[i] = false;
+            stick[0] = stick[1] = 0f;
+            stick2[0] = stick2[1] = 0f;
+            triggerVal[0] = triggerVal[1] = 0;
+            if (out_xbox != null) {
+                try { out_xbox.UpdateInput(MapToXbox360Input(this)); } catch (Exception) { }
+            }
+            if (out_ds4 != null || out_dualsense != null) {
+                var ds4State = MapToDualShock4Input(this);
+                if (out_ds4 != null) {
+                    try { out_ds4.UpdateInput(ds4State); } catch (Exception) { }
+                }
+                if (out_dualsense != null) {
+                    try { out_dualsense.UpdateInput(ds4State); } catch (Exception) { }
+                }
+            }
+        }
+
         // Called by the same periodic profile reconciliation that applies lighting, audio, and
         // trigger options - but that reconciliation runs on the manager's scan-timer thread, not
         // this controller's own Poll thread, and the actual pairing sequence below issues many
@@ -547,6 +628,7 @@ namespace BetterJoyForCemu {
             if (!isUSB || state <= state_.DROPPED || automaticBluetoothPairingAttempted)
                 return;
 
+            CaptureUSBSleepOnConnectInitialBluetoothState();
             automaticBluetoothPairingAttempted = true;
             Interlocked.Exchange(ref automaticBluetoothPairingPending, 1);
         }
@@ -557,13 +639,17 @@ namespace BetterJoyForCemu {
                     !ControllerMappings.AutomaticBluetoothPairingEnabled(profileId))
                 return false;
 
-            // Automatic Bluetooth pairing owns the controller before the normal pad lifecycle
-            // does: no Attach(), no virtual output, no lighting/audio/adaptive-trigger writes.
-            // If the ceremony cannot actually hand off to Bluetooth, fall through to the caller's
-            // ordinary USB attach path so "Preferred transport = Bluetooth" never means "USB is
-            // unusable when Bluetooth cannot be made."
+            CaptureUSBSleepOnConnectInitialBluetoothState();
+            // Bluetooth-preferred automatic pairing owns the controller before the normal pad
+            // lifecycle does: no Attach(), no virtual output, no lighting/audio/adaptive-trigger
+            // writes. USB-preferred automatic pairing is only bond maintenance; after the feature
+            // reports/connect trigger are sent, fall through to the ordinary USB attach path.
             automaticBluetoothPairingAttempted = true;
+            bool preferBluetooth = ControllerMappings.PreferredTransport(profileId) ==
+                ControllerMappings.PreferredTransportBluetooth;
             PerformAutomaticBluetoothPairing();
+            if (!preferBluetooth)
+                return false;
             byte[] mac = PadMacAddress?.GetAddressBytes();
             return automaticBluetoothPairingInProgress ||
                 Program.mgr.HasPendingBluetoothPairingAttempt(mac) ||
@@ -578,12 +664,59 @@ namespace BetterJoyForCemu {
             // on the Poll thread because PowerOff issues feature reports on the handle.
             if (Interlocked.Exchange(ref roamingSleepPending, 0) != 0)
                 PowerOff();
+            // Initial USB-only sleep also runs on the Poll thread for the same reason. This is not
+            // driven by Hold Home/Capture or inactivity; it is only the first-attach USB policy.
+            if (Interlocked.Exchange(ref usbSleepOnConnectPending, 0) != 0)
+                PowerOff();
         }
 
         // Called by the manager reconciliation once this Bluetooth pad reaches IMU_DATA_OK and its
         // MAC had a pending pairing attempt. Records the request; the Poll thread runs PowerOff.
         public void RequestRoamingSleepAfterBluetoothConfirmation() {
             Interlocked.Exchange(ref roamingSleepPending, 1);
+        }
+
+        public bool ApplyUSBSleepOnConnectAfterAttach() {
+            if (!isUSB || state <= state_.DROPPED)
+                return false;
+            CaptureUSBSleepOnConnectInitialBluetoothState();
+            string profileId = ControllerMappings.ProfileIdFor(this);
+            if (usbSleepOnConnectBluetoothWasLive)
+                return false;
+            if (ControllerMappings.USBSleepOnConnectMode(profileId) !=
+                    ControllerMappings.USBSleepOnConnectEnabled)
+                return false;
+            QueueUSBSleepOnConnect("initial-usb-attach-enabled");
+            return true;
+        }
+
+        private void CaptureUSBSleepOnConnectInitialBluetoothState() {
+            if (usbSleepOnConnectInitialBluetoothStateKnown || !isUSB)
+                return;
+            byte[] mac = PadMacAddress?.GetAddressBytes();
+            usbSleepOnConnectBluetoothWasLive =
+                Program.mgr.HasLiveBluetoothDualSense(mac);
+            usbSleepOnConnectInitialBluetoothStateKnown = true;
+            DebugLog.Write("DualSense USB sleep-on-connect snapshot: pad=" + PadId +
+                " bluetoothWasLive=" + usbSleepOnConnectBluetoothWasLive);
+        }
+
+        private bool ShouldUSBSleepOnConnectAfterBluetoothEstablished() {
+            if (!isUSB || state <= state_.DROPPED)
+                return false;
+            CaptureUSBSleepOnConnectInitialBluetoothState();
+            if (usbSleepOnConnectBluetoothWasLive)
+                return false;
+            string mode = ControllerMappings.USBSleepOnConnectMode(
+                ControllerMappings.ProfileIdFor(this));
+            return mode == ControllerMappings.USBSleepOnConnectBluetooth ||
+                mode == ControllerMappings.USBSleepOnConnectEnabled;
+        }
+
+        private void QueueUSBSleepOnConnect(string reason) {
+            Interlocked.Exchange(ref usbSleepOnConnectPending, 1);
+            DebugLog.Write("DualSense USB sleep-on-connect queued: pad=" + PadId +
+                " reason=" + reason);
         }
 
         private void PerformAutomaticBluetoothPairing() {
@@ -755,6 +888,11 @@ namespace BetterJoyForCemu {
                 byte[] hostMacLittleEndian, bool createdWindowsBond, string bondState) {
             string profileId = ControllerMappings.ProfileIdFor(this);
             string usbPath = path;
+            bool preferBluetooth =
+                ControllerMappings.PreferredTransport(profileId) ==
+                ControllerMappings.PreferredTransportBluetooth;
+            bool sleepOnConnectAfterBluetoothEstablished =
+                ShouldUSBSleepOnConnectAfterBluetoothEstablished();
 
             bool connectRequested = SendBluetoothControlFeatureReport(
                 handle, false, DualSenseBluetoothControlOn);
@@ -768,13 +906,35 @@ namespace BetterJoyForCemu {
                 return;
             }
 
+            if (!preferBluetooth) {
+                bool queuedUsbMaintenance = QueueAutomaticBluetoothPairingFinalization(
+                    hostMacLittleEndian, controllerMac, connectRequested, createdWindowsBond,
+                    0, sleepOnConnectAfterBluetoothEstablished);
+                if (!queuedUsbMaintenance) {
+                    form.AppendTextBox("DualSense bond was saved, but Windows device setup could " +
+                        "not be scheduled.\r\n");
+                    return;
+                }
+
+                form.AppendTextBox("DualSense " + bondState +
+                    " saved; keeping USB active while Bluetooth setup completes.\r\n");
+                DebugLog.Write("DualSense Bluetooth maintenance: pad=" + PadId +
+                    " bond=" + bondState +
+                    " preferredTransport=USB connectRequested=True" +
+                    " sleepOnConnectAfterBluetooth=" +
+                    sleepOnConnectAfterBluetoothEstablished +
+                    " finalizerQueued=True windowsKeyCommitted=" + createdWindowsBond);
+                return;
+            }
+
             automaticBluetoothPairingInProgress = true;
             Program.mgr.SuppressUsbControllerForBluetoothPreference(usbPath, profileId);
             int attemptNumber = Program.mgr.RecordBluetoothPairingAttempt(
-                controllerMac, profileId, usbPath);
+                controllerMac, profileId, usbPath,
+                sleepOnConnectAfterBluetoothEstablished);
             bool queued = QueueAutomaticBluetoothPairingFinalization(
                 hostMacLittleEndian, controllerMac, connectRequested, createdWindowsBond,
-                attemptNumber);
+                attemptNumber, sleepOnConnectAfterBluetoothEstablished);
             if (!queued) {
                 automaticBluetoothPairingInProgress = false;
                 form.AppendTextBox("DualSense bond was saved, but Windows device setup could " +
@@ -787,6 +947,8 @@ namespace BetterJoyForCemu {
             DebugLog.Write("DualSense pairing handoff: pad=" + PadId +
                 " attempt=" + attemptNumber +
                 " bond=" + bondState + " connectRequested=True finalizerQueued=True" +
+                " sleepOnConnectAfterBluetooth=" +
+                sleepOnConnectAfterBluetoothEstablished +
                 " windowsKeyCommitted=" + createdWindowsBond);
 
             state = state_.DROPPED;
@@ -833,6 +995,15 @@ namespace BetterJoyForCemu {
                 form.AppendTextBox("DualSense bond could not be reasserted before USB sleep; " +
                     "reconnect and try again.\r\n");
                 DebugLog.Write("DualSense repair: forced USB sleep reassert failed; not sleeping");
+                return;
+            }
+
+            if (!PrefersBluetoothTransport()) {
+                DebugLog.Write("DualSense repair: pad=" + PadId +
+                    " hostMatchedPc=" + matchesPc +
+                    " pairingStateReasserted=True preferredTransport=USB");
+                BeginEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian,
+                    false, matchesPc ? "existing bond" : "repaired bond");
                 return;
             }
 
@@ -889,11 +1060,13 @@ namespace BetterJoyForCemu {
 
         private bool QueueAutomaticBluetoothPairingFinalization(
                 byte[] hostMacLittleEndian, byte[] controllerMac,
-                bool connectRequested, bool createdWindowsBond, int attemptNumber) {
+                bool connectRequested, bool createdWindowsBond, int attemptNumber,
+                bool sleepOnConnectAfterBluetoothEstablished) {
             byte[] hostCopy = (byte[])hostMacLittleEndian.Clone();
             byte[] controllerCopy = (byte[])controllerMac.Clone();
             bool queued = ThreadPool.QueueUserWorkItem(_ => {
                 try {
+                    bool bluetoothHandoff = attemptNumber > 0;
                     bool completed = BluetoothRadio.TryFinalizeClassicHidPairing(
                         hostCopy, controllerCopy, BluetoothPairingFallbackName(),
                         createdWindowsBond, 10000);
@@ -906,17 +1079,27 @@ namespace BetterJoyForCemu {
                     // means Windows accepted the live device's HID-service setup request. The
                     // manager's existing sustained IMU dwell remains the real success criterion.
                     form.AppendTextBox(completed
-                        ? "DualSense Bluetooth HID setup requested; confirming sustained input.\r\n"
-                        : "DualSense Bluetooth bond was saved, but its live incoming connection " +
-                            "did not reach Windows HID setup. Press PS once and try again.\r\n");
+                        ? (bluetoothHandoff
+                            ? "DualSense Bluetooth HID setup requested; confirming sustained input.\r\n"
+                            : "DualSense Bluetooth HID setup requested; keeping USB active.\r\n")
+                        : (bluetoothHandoff
+                            ? "DualSense Bluetooth bond was saved, but its live incoming connection " +
+                                "did not reach Windows HID setup. Press PS once and try again.\r\n"
+                            : "DualSense Bluetooth bond was saved, but its USB-preferred " +
+                                "maintenance connection did not reach Windows HID setup.\r\n"));
                     DebugLog.Write("DualSense automatic Bluetooth registration: pad=" + PadId +
                         " attempt=" + attemptNumber +
                         " createdWindowsBond=" + createdWindowsBond +
                         " connectRequested=" + connectRequested +
+                        " sleepOnConnectAfterBluetooth=" +
+                        sleepOnConnectAfterBluetoothEstablished +
                         " liveHidSetupRequested=" + completed);
                     BluetoothRadio.MarkClassicPairingRegistryTrace(controllerCopy,
                         completed ? "windows-hid-setup-requested" :
                             "windows-hid-setup-not-reached");
+                    if (completed && !bluetoothHandoff &&
+                            sleepOnConnectAfterBluetoothEstablished)
+                        QueueUSBSleepOnConnect("usb-preferred-bluetooth-established");
                 } finally {
                     automaticBluetoothPairingInProgress = false;
                     Array.Clear(hostCopy, 0, hostCopy.Length);
@@ -1063,9 +1246,15 @@ namespace BetterJoyForCemu {
         // Match that behavior so one transient USB control transfer cannot lose the wake request
         // before the controller's Bluetooth radio begins reconnecting."
         private static bool SendUsbBluetoothWakeControl(IntPtr wakeHandle) {
+            return SendUsbBluetoothControlFeatureReport(wakeHandle,
+                DualSenseUsbBluetoothWakeControl);
+        }
+
+        private static bool SendUsbBluetoothControlFeatureReport(
+                IntPtr wakeHandle, byte command) {
             byte[] report = new byte[DualSenseUsbBluetoothWakeReportLen];
             report[0] = DualSenseBluetoothControlFeatureReportId;
-            report[1] = DualSenseUsbBluetoothWakeControl;
+            report[1] = command;
 
             bool sent = false;
             for (int attempt = 0; attempt < 3; attempt++) {
@@ -1276,7 +1465,11 @@ namespace BetterJoyForCemu {
             // its native orange charging state. Let that transition finish first; only then own
             // the input endpoint while waiting for the PS wake edge.
             Thread.Sleep(FirmwarePowerOffWakeSettleMs);
-            DebugLog.Write("ChargeOnlyWake: monitor started, path=" + devicePath);
+            bool fakeUsbChargeGlow =
+                ControllerMappings.PreferredTransport(profileId) !=
+                ControllerMappings.PreferredTransportBluetooth;
+            DebugLog.Write("ChargeOnlyWake: monitor started, path=" + devicePath +
+                " fakeUsbChargeGlow=" + fakeUsbChargeGlow);
             while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(devicePath, profileId)) {
                 IntPtr wakeHandle = HIDapi.hid_open_path(devicePath);
                 if (wakeHandle == IntPtr.Zero) {
@@ -1288,11 +1481,23 @@ namespace BetterJoyForCemu {
                     bool sawPsReleased = false;
                     bool everQuiet = false;
                     long quietSince = Stopwatch.GetTimestamp();
+                    long nextGlowAt = 0;
+                    Stopwatch glowClock = fakeUsbChargeGlow ? Stopwatch.StartNew() : null;
                     byte[] report = new byte[64];
                     while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(
                             devicePath, profileId)) {
+                        if (fakeUsbChargeGlow) {
+                            long nowTicks = Stopwatch.GetTimestamp();
+                            if (nowTicks >= nextGlowAt) {
+                                WriteUsbChargeGlowFrame(wakeHandle,
+                                    glowClock.Elapsed.TotalMilliseconds);
+                                nextGlowAt = nowTicks +
+                                    Stopwatch.Frequency * UsbChargeGlowFrameMs / 1000;
+                            }
+                        }
                         int received = HIDapi.hid_read_timeout(wakeHandle, report,
-                            new UIntPtr((uint)report.Length), 100);
+                            new UIntPtr((uint)report.Length),
+                            fakeUsbChargeGlow ? 40 : 100);
                         if (received < 0) {
                             DebugLog.Write("ChargeOnlyWake: read failed (handle invalid), reopening.");
                             break;
@@ -1326,13 +1531,28 @@ namespace BetterJoyForCemu {
                         }
                         quietSince = now;
                         if (wakeRequested) {
+                            bool preferBluetooth =
+                                ControllerMappings.PreferredTransport(profileId) ==
+                                ControllerMappings.PreferredTransportBluetooth;
+                            if (!preferBluetooth) {
+                                if (fakeUsbChargeGlow)
+                                    WriteUsbChargeGlowOff(wakeHandle);
+                                DebugLog.Write("ChargeOnlyWake: wake detected, releasing USB " +
+                                    "pseudo-sleep park (everQuiet=" + everQuiet +
+                                    ", reportId=0x" + report[0].ToString("X2") + ")");
+                                Program.mgr.ReleaseChargeOnlyUsbPark(devicePath);
+                                return;
+                            }
+
                             bool sent = SendBluetoothControlFeatureReport(
                                 wakeHandle, false, DualSenseBluetoothControlOn);
                             DebugLog.Write("ChargeOnlyWake: wake detected (everQuiet=" +
                                 everQuiet + ", reportId=0x" + report[0].ToString("X2") +
                                 "), connect trigger sent=" + sent);
-                            if (sent)
+                            if (sent) {
+                                Program.mgr.ReleaseChargeOnlyUsbPark(devicePath);
                                 return;
+                            }
                         }
                     }
                 } finally {
@@ -1340,6 +1560,34 @@ namespace BetterJoyForCemu {
                 }
             }
             DebugLog.Write("ChargeOnlyWake: monitor ended (ShouldMonitor went false).");
+        }
+
+        private static void WriteUsbChargeGlowFrame(IntPtr wakeHandle, double elapsedMs) {
+            if (wakeHandle == IntPtr.Zero)
+                return;
+
+            double phase = (elapsedMs % UsbChargeGlowPeriodMs) / UsbChargeGlowPeriodMs;
+            double wave = 0.5 - 0.5 * Math.Cos(phase * Math.PI * 2.0);
+            byte red = (byte)Math.Round(wave * 160.0);
+            byte green = (byte)Math.Round(wave * 48.0);
+            WriteUsbChargeGlowColor(wakeHandle, red, green, 0);
+        }
+
+        private static void WriteUsbChargeGlowOff(IntPtr wakeHandle) {
+            WriteUsbChargeGlowColor(wakeHandle, 0, 0, 0);
+        }
+
+        private static void WriteUsbChargeGlowColor(IntPtr wakeHandle,
+                byte red, byte green, byte blue) {
+            byte[] buf = new byte[64];
+            buf[0] = 0x02;
+            // USB-only charge glow is deliberately outside normal profile lighting. Claim only
+            // lightbar RGB validity: no player LEDs, no profile color, no OpenRGB/default mode.
+            buf[2] = DualSenseValidLightbarControl;
+            buf[45] = red;
+            buf[46] = green;
+            buf[47] = blue;
+            HIDapi.hid_write(wakeHandle, buf, new UIntPtr((uint)buf.Length));
         }
 
         public override void SetLightColor(byte red, byte green, byte blue) {

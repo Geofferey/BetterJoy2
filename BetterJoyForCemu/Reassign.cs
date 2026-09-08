@@ -76,7 +76,7 @@ namespace BetterJoyForCemu {
         private ProfileChoiceSelector preferredTransportSelector;
         private Label automaticBluetoothPairingLabel;
         private ProfileChoiceSelector automaticBluetoothPairingSelector;
-        private ProfileChoiceSelector usbSleepSelector;
+        private ProfileChoiceSelector usbSleepOnConnectSelector;
         private ProfileChoiceSelector rumbleModeSelector;
         private Label rumbleModeLabel;
         private CheckBox dragToggleCheckBox;
@@ -1223,16 +1223,16 @@ namespace BetterJoyForCemu {
             inactivitySelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(inactivitySelector);
             page.Controls.Add(CreateLabel("USB sleep", 24, sectionTop + 117, ProfileText, false));
-            usbSleepSelector = CreateProfileChoiceSelector(145, sectionTop + 111, 180);
-            foreach (var mode in ControllerMappings.UsbSleepModes)
-                usbSleepSelector.Items.Add(mode.Label);
-            usbSleepSelector.SelectedIndexChanged += ProfileOptionControlChanged;
-            page.Controls.Add(usbSleepSelector);
-            tip_reassign.SetToolTip(usbSleepSelector,
-                "DualSense only. Bluetooth: only sleep to charging / wait-for-PS once a Bluetooth " +
-                "connection is established while wired (default, today's behavior). Enabled: always " +
-                "sleep to wait-for-PS on USB, whatever the preferred transport. Disabled: never " +
-                "sleep - just connect via the preferred transport (falling back to USB) and stay on.");
+            usbSleepOnConnectSelector = CreateProfileChoiceSelector(145, sectionTop + 111, 180);
+            foreach (var mode in ControllerMappings.USBSleepOnConnectModes)
+                usbSleepOnConnectSelector.Items.Add(mode.Label);
+            usbSleepOnConnectSelector.SelectedIndexChanged += ProfileOptionControlChanged;
+            page.Controls.Add(usbSleepOnConnectSelector);
+            tip_reassign.SetToolTip(usbSleepOnConnectSelector,
+                "DualSense only. Controls initial USB connect sleep only. Bluetooth: sleep after " +
+                "an automatic Bluetooth connection establishes, if Bluetooth was not already live " +
+                "when USB was plugged in. Enabled: same, plus sleep immediately on USB connect. " +
+                "Disabled: never sleep on initial USB connect.");
             layout.Advance(163);
 
             layout.Divider();
@@ -1999,12 +1999,12 @@ namespace BetterJoyForCemu {
                     "AutomaticBluetoothPairing",
                     index >= 0 && index < modes.Length
                         ? modes[index].Value : ControllerMappings.ModeDisable);
-            } else if (sender == usbSleepSelector) {
-                var modes = ControllerMappings.UsbSleepModes;
-                int index = usbSleepSelector.SelectedIndex;
-                ControllerMappings.SetOptionValue(SelectedProfileId, "UsbSleep",
+            } else if (sender == usbSleepOnConnectSelector) {
+                var modes = ControllerMappings.USBSleepOnConnectModes;
+                int index = usbSleepOnConnectSelector.SelectedIndex;
+                ControllerMappings.SetOptionValue(SelectedProfileId, "USBSleepOnConnect",
                     index >= 0 && index < modes.Length
-                        ? modes[index].Value : ControllerMappings.UsbSleepBluetooth);
+                        ? modes[index].Value : ControllerMappings.USBSleepOnConnectBluetooth);
             }
         }
 
@@ -2318,7 +2318,7 @@ namespace BetterJoyForCemu {
                 this.ActiveControl = null;
 
             Control[] controls = {
-                useAsSelector, inactivitySelector, usbSleepSelector, gyroActivationModeSelector,
+                useAsSelector, inactivitySelector, usbSleepOnConnectSelector, gyroActivationModeSelector,
                 btn_gyro_analog_sliders, btn_gyro_mouse_inhibit, btn_default_orientation,
                 btn_touchpad_inhibit, btn_touchpad_sensitivity,
                 btn_touchpad_stick_sensitivity, btn_touchpad_tap_hold,
@@ -2399,11 +2399,14 @@ namespace BetterJoyForCemu {
                         StringComparison.OrdinalIgnoreCase));
                 automaticBluetoothPairingSelector.SelectedIndex =
                     Math.Max(0, automaticBluetoothPairingIndex);
-                string usbSleepMode = ControllerMappings.UsbSleepMode(SelectedProfileId);
-                int usbSleepIndex = Array.FindIndex(ControllerMappings.UsbSleepModes,
-                    mode => String.Equals(mode.Value, usbSleepMode,
+                string usbSleepOnConnectMode =
+                    ControllerMappings.USBSleepOnConnectMode(SelectedProfileId);
+                int usbSleepOnConnectIndex = Array.FindIndex(
+                    ControllerMappings.USBSleepOnConnectModes,
+                    mode => String.Equals(mode.Value, usbSleepOnConnectMode,
                         StringComparison.OrdinalIgnoreCase));
-                usbSleepSelector.SelectedIndex = Math.Max(0, usbSleepIndex);
+                usbSleepOnConnectSelector.SelectedIndex =
+                    Math.Max(0, usbSleepOnConnectIndex);
                 dragToggleCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");

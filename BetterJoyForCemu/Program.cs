@@ -84,6 +84,11 @@ namespace BetterJoyForCemu {
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, long> suppressedUsbPowerOffGraceUntil =
             new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        // Wired HID paths that BetterJoy deliberately parked in charge-only / wait-for-press
+        // state. This is separate from PreferredTransport=Bluetooth suppression: USB-only
+        // pseudo-sleep must keep the same path unadopted while the wake monitor waits for PS/Home.
+        readonly HashSet<string> chargeOnlyParkedUsbPaths =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // An Enabled automatic-BT pairing attempt is confirmed by the LIVE signal - the controller's
         // Bluetooth pad actually coming up (IMU_DATA_OK on the 00001124 interface) - not by "a key
@@ -98,6 +103,7 @@ namespace BetterJoyForCemu {
             public long deadlineTimestamp;
             public int attemptCount;
             public bool awaitingReattempt;
+            public bool sleepOnConnectAfterConfirmation;
         }
         readonly Dictionary<string, BluetoothPairingAttempt> pendingBluetoothPairingConfirmations =
             new Dictionary<string, BluetoothPairingAttempt>(StringComparer.OrdinalIgnoreCase);
@@ -136,6 +142,24 @@ namespace BetterJoyForCemu {
 
             lock (suppressedUsbControllerLock)
                 suppressedUsbControllerProfiles[devicePath] = profileId;
+        }
+
+        public void MarkChargeOnlyUsbParked(string devicePath, string profileId) {
+            if (String.IsNullOrEmpty(devicePath) || String.IsNullOrEmpty(profileId))
+                return;
+
+            lock (suppressedUsbControllerLock) {
+                suppressedUsbControllerProfiles[devicePath] = profileId;
+                chargeOnlyParkedUsbPaths.Add(devicePath);
+            }
+        }
+
+        public void ReleaseChargeOnlyUsbPark(string devicePath) {
+            if (String.IsNullOrEmpty(devicePath))
+                return;
+
+            lock (suppressedUsbControllerLock)
+                chargeOnlyParkedUsbPaths.Remove(devicePath);
         }
 
         // Controllers BetterJoy deliberately powered off (roaming sleep, long-press, inactivity,
@@ -183,6 +207,25 @@ namespace BetterJoyForCemu {
                     BitConverter.ToString(controllerMac).Replace("-", ""));
         }
 
+        public bool HasLiveBluetoothDualSense(byte[] controllerMac) {
+            if (controllerMac == null || controllerMac.Length != 6)
+                return false;
+            lock (scanLock) {
+                foreach (Controller controller in j) {
+                    if (!(controller is DualSenseController) || controller.isUSB ||
+                            controller.state != Controller.state_.IMU_DATA_OK ||
+                            controller.path == null ||
+                            controller.path.IndexOf("00001124",
+                                StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+                    byte[] otherMac = controller.PadMacAddress?.GetAddressBytes();
+                    if (otherMac != null && otherMac.SequenceEqual(controllerMac))
+                        return true;
+                }
+            }
+            return false;
+        }
+
         public bool ShouldMonitorChargeOnlyUsbWake(string devicePath, string profileId) {
             if (scanningStopped || String.IsNullOrEmpty(devicePath) ||
                     String.IsNullOrEmpty(profileId))
@@ -193,8 +236,9 @@ namespace BetterJoyForCemu {
                         out string suppressedProfileId) &&
                     String.Equals(suppressedProfileId, profileId,
                         StringComparison.Ordinal) &&
-                    ControllerMappings.PreferredTransport(profileId) ==
-                        ControllerMappings.PreferredTransportBluetooth;
+                    (chargeOnlyParkedUsbPaths.Contains(devicePath) ||
+                        ControllerMappings.PreferredTransport(profileId) ==
+                            ControllerMappings.PreferredTransportBluetooth);
             }
         }
 
@@ -248,12 +292,16 @@ namespace BetterJoyForCemu {
                         out string profileId))
                     return false;
 
+                if (chargeOnlyParkedUsbPaths.Contains(devicePath))
+                    return true;
+
                 if (ControllerMappings.PreferredTransport(profileId) ==
                         ControllerMappings.PreferredTransportBluetooth)
                     return true;
 
                 suppressedUsbControllerProfiles.Remove(devicePath);
                 suppressedUsbPowerOffGraceUntil.Remove(devicePath);
+                chargeOnlyParkedUsbPaths.Remove(devicePath);
                 return false;
             }
         }
@@ -271,6 +319,7 @@ namespace BetterJoyForCemu {
 
                     suppressedUsbControllerProfiles.Remove(path);
                     suppressedUsbPowerOffGraceUntil.Remove(path);
+                    chargeOnlyParkedUsbPaths.Remove(path);
                 }
 
                 foreach (string path in suppressedUsbPowerOffGraceUntil.Keys
@@ -294,7 +343,7 @@ namespace BetterJoyForCemu {
         // Called by the USB-side ceremony after it fires the connect trigger and suppresses the
         // wired path. Upserts the attempt and (re)starts the confirmation window.
         public int RecordBluetoothPairingAttempt(byte[] controllerMac, string profileId,
-                string wiredPath) {
+                string wiredPath, bool sleepOnConnectAfterConfirmation) {
             if (controllerMac == null || controllerMac.Length != 6)
                 return 0;
             string mac = BitConverter.ToString(controllerMac).Replace("-", "");
@@ -311,6 +360,7 @@ namespace BetterJoyForCemu {
                 attempt.attemptCount++;
                 attempt.deadlineTimestamp = deadline;
                 attempt.awaitingReattempt = false;
+                attempt.sleepOnConnectAfterConfirmation = sleepOnConnectAfterConfirmation;
                 return attempt.attemptCount;
             }
         }
@@ -319,8 +369,9 @@ namespace BetterJoyForCemu {
         // Consumes the record (returns true) so the caller can sleep that pad. Suppression is left
         // in place - the wake monitor the sleep arms needs it.
         public bool TryConfirmBluetoothPairing(byte[] controllerMac,
-                out int attemptNumber) {
+                out int attemptNumber, out bool sleepOnConnectAfterConfirmation) {
             attemptNumber = 0;
+            sleepOnConnectAfterConfirmation = false;
             if (controllerMac == null || controllerMac.Length != 6)
                 return false;
             string mac = BitConverter.ToString(controllerMac).Replace("-", "");
@@ -329,6 +380,8 @@ namespace BetterJoyForCemu {
                         out BluetoothPairingAttempt attempt))
                     return false;
                 attemptNumber = attempt.attemptCount;
+                sleepOnConnectAfterConfirmation =
+                    attempt.sleepOnConnectAfterConfirmation;
                 pendingBluetoothPairingConfirmations.Remove(mac);
                 return true;
             }
@@ -447,12 +500,15 @@ namespace BetterJoyForCemu {
                                      Stopwatch.Frequency * BluetoothPairingStableDwellSeconds &&
                                  TryConfirmBluetoothPairing(
                                      confirmPad.PadMacAddress.GetAddressBytes(),
-                                     out int confirmedAttempt)) {
-                            confirmPad.RequestRoamingSleepAfterBluetoothConfirmation();
+                                     out int confirmedAttempt,
+                                     out bool sleepOnConnectAfterConfirmation)) {
+                            if (sleepOnConnectAfterConfirmation)
+                                confirmPad.RequestRoamingSleepAfterBluetoothConfirmation();
                             DebugLog.Write("DualSense BT pairing confirmed (held): pad=" +
                                 confirmPad.PadId + " mac=" + BitConverter.ToString(
                                     confirmPad.PadMacAddress.GetAddressBytes()).Replace("-", "") +
                                 " attempt=" + confirmedAttempt +
+                                " sleepOnConnect=" + sleepOnConnectAfterConfirmation +
                                 " heldMs=" + ((nowTs - confirmPad.bluetoothImuStableSince) *
                                     1000 / Stopwatch.Frequency));
                             BluetoothRadio.MarkClassicPairingRegistryTrace(
@@ -1501,12 +1557,17 @@ namespace BetterJoyForCemu {
 
                     CreateOutputControllers(jc);
                     string profileId = ControllerMappings.ProfileIdFor(jc);
-                    ApplyControllerProfileLighting(jc, profileId);
+                    bool usbSleepOnConnectQueued =
+                        jc is DualSenseController dualSense &&
+                        dualSense.ApplyUSBSleepOnConnectAfterAttach();
+                    if (!usbSleepOnConnectQueued)
+                        ApplyControllerProfileLighting(jc, profileId);
                     ControllerMappings.EnsureProfileSaved(profileId);
                     // Fresh connection: OpenRGB's own device list won't have this controller yet
                     // unless it happens to already be running a scan - nudge it once it's had a
                     // moment to see the HID device (OpenRgbRescan's own settle delay).
-                    if (ControllerMappings.LightingMode(profileId) ==
+                    if (!usbSleepOnConnectQueued &&
+                            ControllerMappings.LightingMode(profileId) ==
                             ControllerMappings.LightingModeOpenRgb) {
                         DebugLog.Write("OpenRgbRescan: triggered from Attach, profileId=" + profileId);
                         OpenRgbRescan.RequestRescan();
