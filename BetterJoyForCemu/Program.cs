@@ -822,9 +822,11 @@ namespace BetterJoyForCemu {
                     CheckForNewControllers();
                 }
 
-                // One batched apply for everything the pass marked: prune dead-device entries, write
-                // the whole list straight to the registry, poke HidHide once. No per-entry IOCTLs.
-                FlushHidHideBlocklist();
+                // Blocks themselves are applied through the API the instant a node is seen (see
+                // BlockInstance), so nothing is batched here any more. This is only the tidy-up:
+                // drop entries whose device is gone, so the churned-away Bluetooth child ids don't
+                // accumulate in HidHide's list.
+                PruneAbsentDeviceEntries();
             }
         }
 
@@ -860,20 +862,19 @@ namespace BetterJoyForCemu {
             if (!Program.useHidHide)
                 return true;
 
-            // A DualSense over Bluetooth is hidden by its MAC-stable BTHENUM bond
-            // (HideBluetoothBondByMac), which - confirmed on hardware in c8afd2e - cloaks the whole
-            // child subtree. The child HID instance id (b&<bus>&<N>&0000) renumbers on every
-            // reconnect, so blocking it too only churns the blocklist. Skip it and let the bond
-            // cover it; the bond is added from the resolved MAC in the same scan pass. Non-Sony
-            // Bluetooth (no manufacturable bond) and every wired node still fall through and block
-            // their own instance id below.
-            bool isBluetoothInterface = enumerate.path != null &&
-                enumerate.path.IndexOf("00001124", StringComparison.OrdinalIgnoreCase) >= 0;
-            bool bondCoveredType = enumerate.vendor_id == vendor_sony &&
-                (enumerate.product_id == product_dualsense ||
-                 enumerate.product_id == product_dualsense_edge);
-            if (isBluetoothInterface && bondCoveredType)
-                return true;
+            // Every node is blocked by its own full instance id. A DualSense needs all three, and
+            // each earns its place - none of them stands in for another:
+            //   BTHENUM\...\A&<radio>&0&<MAC>_C00000000  - the MAC-stable bond. Manufactured from
+            //       the MAC (HideBluetoothBondByMac), so it is added preemptively, survives the
+            //       child renumbering below, and exists before the BT node ever does.
+            //   HID\VID_054C&PID_0CE6&MI_03\a&<id>&0&0000 - the wired interface.
+            //   HID\{00001124-...}\b&<bus>&<N>&0000       - the live BT child HID node.
+            // 03b828b skipped the child here, on the premise that the bond covered the subtree
+            // beneath it. It does not, and this is the worst place to leave a gap: this runs BEFORE
+            // hid_open_path, so the pad got enumerated, opened and attached with its child node
+            // still visible, covered only later if CreateOutputControllers reached
+            // ReconcileHidHideForController. The child id renumbers on every reconnect - that churn
+            // is what PruneAbsentDeviceEntries exists to clean up, not a reason to skip the block.
 
             bool hidden = false;
             for (int hideAttempt = 0; hideAttempt < 5 && !hidden; hideAttempt++) {
@@ -899,8 +900,10 @@ namespace BetterJoyForCemu {
         // Reads HidHide's persisted blocklist (registry MULTI_SZ ...\HidHide\Parameters\
         // BlacklistedDeviceInstancePaths) INTO the in-memory set at the start of each scan pass, so an
         // external edit (a device manually unhidden in the GUI, another app's entry) is reconciled:
-        // managed controllers get re-added during the pass and the end-of-pass flush writes the merged
-        // set back. Leaves the set unchanged on a read failure rather than dropping every entry.
+        // the cache stops claiming an id is blocked when it no longer is, so BlockInstance calls the
+        // driver again for it on this pass rather than skipping it as already-done. Read-only - the
+        // driver's list is now changed only through the API. Leaves the set unchanged on a read
+        // failure rather than dropping every entry.
         public static void SyncHiddenInstanceCacheFromRegistry() {
             if (!Program.useHidHide)
                 return;
@@ -921,37 +924,65 @@ namespace BetterJoyForCemu {
                 foreach (string id in blocked)
                     if (!String.IsNullOrEmpty(id) && !Program.hiddenInstanceIds.Contains(id))
                         Program.hiddenInstanceIds.Add(id);
-                Program.hidHideBlocklistDirty = false;
             }
         }
 
-        // Marks an instance blocked IN MEMORY only - no per-entry driver IOCTL. FlushHidHideBlocklist
-        // at the end of the scan pass writes the whole set straight to the registry once and pokes
-        // HidHide, which is cheaper and can't wedge the list (#83/#215) the way repeated
-        // AddBlockedInstanceId calls could. Returns true if it is now in the set.
+        // Blocks an instance through HidHide's own API, IMMEDIATELY - not marked for a later batch.
+        // The driver applies cloaking as a device arrives, from its own live list, and does not
+        // revisit an entry that named a device which did not exist yet. So the block has to land
+        // while the node is appearing: a blocklist entry written after the fact (or written straight
+        // to the registry behind the driver's back) leaves the device visible for the window that
+        // actually matters, which is how another process gets to grab it first.
+        //
+        // Idempotent against the in-memory cache, so a steady-state scan pass issues no IOCTL at all;
+        // the driver lock serializes the read-modify-write of the driver's list, which is what keeps
+        // repeated calls from wedging it (nefarius/HidHide#83, #215).
         private static bool BlockInstance(string instanceId) {
-            if (!Program.useHidHide || String.IsNullOrEmpty(instanceId))
+            if (!Program.useHidHide || Program.hidHide == null || String.IsNullOrEmpty(instanceId))
                 return false;
-            lock (Program.hiddenInstanceIdsLock) {
-                if (!Program.hiddenInstanceIds.Contains(instanceId)) {
-                    Program.hiddenInstanceIds.Add(instanceId);
-                    Program.hidHideBlocklistDirty = true;
+            lock (Program.hidHideDriverLock) {
+                lock (Program.hiddenInstanceIdsLock) {
+                    if (Program.hiddenInstanceIds.Contains(instanceId))
+                        return true;
                 }
+                try {
+                    Program.hidHide.AddBlockedInstanceId(instanceId);
+                } catch (Exception e) {
+                    DebugLog.Write("HidHide block failed: " + instanceId +
+                        " (" + e.GetType().Name + ": " + e.Message + ")");
+                    return false;
+                }
+                lock (Program.hiddenInstanceIdsLock) {
+                    if (!Program.hiddenInstanceIds.Contains(instanceId))
+                        Program.hiddenInstanceIds.Add(instanceId);
+                }
+                DebugLog.Write("HidHide blocked: " + instanceId);
+                return true;
             }
-            return true;
         }
 
-        // In-memory counterpart of BlockInstance - marks an instance UNblocked; the flush writes it.
-        // Returns true if it was in the set and got removed.
+        // API counterpart of BlockInstance - REMOVE, also immediate. Idempotent the same way: no
+        // driver call when the id isn't known-blocked. Returns true if it was blocked and now isn't.
         private static bool UnblockInstance(string instanceId) {
-            if (!Program.useHidHide || String.IsNullOrEmpty(instanceId))
+            if (!Program.useHidHide || Program.hidHide == null || String.IsNullOrEmpty(instanceId))
                 return false;
-            lock (Program.hiddenInstanceIdsLock) {
-                if (!Program.hiddenInstanceIds.Remove(instanceId))
+            lock (Program.hidHideDriverLock) {
+                lock (Program.hiddenInstanceIdsLock) {
+                    if (!Program.hiddenInstanceIds.Contains(instanceId))
+                        return false;
+                }
+                try {
+                    Program.hidHide.RemoveBlockedInstanceId(instanceId);
+                } catch (Exception e) {
+                    DebugLog.Write("HidHide unblock failed: " + instanceId +
+                        " (" + e.GetType().Name + ": " + e.Message + ")");
                     return false;
-                Program.hidHideBlocklistDirty = true;
+                }
+                lock (Program.hiddenInstanceIdsLock)
+                    Program.hiddenInstanceIds.Remove(instanceId);
+                DebugLog.Write("HidHide unblocked: " + instanceId);
+                return true;
             }
-            return true;
         }
 
         // Drops blocklist entries whose device instance no longer exists under Enum - a churned-away
@@ -987,56 +1018,11 @@ namespace BetterJoyForCemu {
             }
             if (gone == null)
                 return;
-            lock (Program.hiddenInstanceIdsLock) {
-                foreach (string id in gone)
-                    if (Program.hiddenInstanceIds.Remove(id))
-                        Program.hidHideBlocklistDirty = true;
-            }
-        }
-
-        // End-of-scan batch apply. Prune dead-device entries, then - if the set changed - write the
-        // WHOLE list straight to the registry in one shot (we run as LocalSystem, so the HidHide
-        // Parameters key is writable) and poke HidHide once by reading its blocklist: the same GET the
-        // config GUI does on open, which makes the driver process the write. Cloaking applies as
-        // devices connect. One write + one poke per pass, no per-entry IOCTLs.
-        public static void FlushHidHideBlocklist() {
-            if (!Program.useHidHide)
-                return;
-            PruneAbsentDeviceEntries();
-            string[] snapshot;
-            lock (Program.hiddenInstanceIdsLock) {
-                if (!Program.hidHideBlocklistDirty)
-                    return;
-                snapshot = Program.hiddenInstanceIds.ToArray();
-                Program.hidHideBlocklistDirty = false;
-            }
-            try {
-                using (RegistryKey p = RegistryKey
-                        .OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
-                        .OpenSubKey(@"SYSTEM\CurrentControlSet\Services\HidHide\Parameters", true)) {
-                    if (p == null) {
-                        DebugLog.Write("HidHide flush: Parameters key not writable (not elevated?)");
-                        return;
-                    }
-                    p.SetValue("BlacklistedDeviceInstancePaths", snapshot,
-                        RegistryValueKind.MultiString);
-                }
-            } catch (Exception e) {
-                DebugLog.Write("HidHide flush: registry write failed (" +
-                    e.GetType().Name + ": " + e.Message + ")");
-                return;
-            }
-            // Poke: reading the blocklist is the GET the config GUI does on open - it makes HidHide
-            // process the registry write we just made.
-            try {
-                int driverCount = Program.hidHide != null
-                    ? Program.hidHide.BlockedInstanceIds.Count() : -1;
-                DebugLog.Write("HidHide flush: wrote " + snapshot.Length +
-                    " entries then poked (driver lists " + driverCount + ")");
-            } catch (Exception e) {
-                DebugLog.Write("HidHide flush: poke read failed (" +
-                    e.GetType().Name + ": " + e.Message + ")");
-            }
+            // Removals go through the driver too, not just the cache - otherwise the churned-away
+            // child ids stay in HidHide's own list forever and it grows without bound, which is the
+            // problem the old child-sibling de-dupe existed to solve.
+            foreach (string id in gone)
+                UnblockInstance(id);
         }
 
         // The "A&<radio>&0&" middle of a BTHENUM instance id is the local Bluetooth radio - identical
@@ -1807,10 +1793,12 @@ namespace BetterJoyForCemu {
         // in flight to finish - this lock is what actually guarantees no concurrent mutation.
         public static readonly object hiddenInstanceIdsLock = new object();
 
-        // Set whenever BlockInstance/UnblockInstance/PruneAbsentDeviceEntries changes the in-memory
-        // set; FlushHidHideBlocklist writes the whole list straight to the registry and pokes HidHide
-        // only when this is set, so an unchanged pass does no registry write at all.
-        public static volatile bool hidHideBlocklistDirty;
+        // Serializes the driver-side blocklist calls. AddBlockedInstanceId/RemoveBlockedInstanceId are
+        // each a read-modify-write of HidHide's own list, so two of them racing (scan thread vs the
+        // profile-reconciliation path) can wedge it - see nefarius/HidHide#83, #215, and the real
+        // incident where every client failed with ERROR_INVALID_PARAMETER until the list was cleared.
+        // Held across the cache check and the call so the idempotency check can't go stale mid-flight.
+        public static readonly object hidHideDriverLock = new object();
 
         // The "A&<radio>&0&" segment shared by every Enum\BTHENUM instance on this PC - the local
         // Bluetooth radio, resolved once and reused to manufacture controller bond ids from a MAC.
