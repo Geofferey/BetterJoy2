@@ -147,6 +147,12 @@ namespace BetterJoyForCemu {
         private static extern uint BluetoothGetRadioInfo(IntPtr hRadio,
             ref BLUETOOTH_RADIO_INFO radioInfo);
 
+        // Whether the local radio will accept an incoming connection. A soft-toggled-off adapter
+        // still enumerates (BluetoothFindFirstRadio finds it) but is NOT connectable - and a
+        // controller reaching the PC is an incoming connection - so this distinguishes on from off.
+        [DllImport("bthprops.cpl")]
+        private static extern bool BluetoothIsConnectable(IntPtr hRadio);
+
         [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
         private static extern IntPtr BluetoothFindFirstDevice(
             ref BLUETOOTH_DEVICE_SEARCH_PARAMS searchParams,
@@ -796,6 +802,58 @@ namespace BetterJoyForCemu {
             } catch (System.IO.IOException) {
                 return false;
             }
+        }
+
+        // A usable local Bluetooth host radio is present AND connectable. False when the adapter is
+        // absent or powered off (incl. the Windows soft toggle) - the case where a controller can
+        // never reach a host and BetterJoy must behave as if automatic BT were disabled. Cached for
+        // one second and logs the on<->off transition so the debug log proves what it read.
+        private static readonly object radioAvailableLock = new object();
+        private static long radioAvailableCheckedAt;
+        private static bool radioAvailableCached;
+        private static bool radioAvailableEverChecked;
+        internal static bool IsLocalRadioAvailable() {
+            lock (radioAvailableLock) {
+                long now = Stopwatch.GetTimestamp();
+                if (radioAvailableEverChecked &&
+                        now - radioAvailableCheckedAt < Stopwatch.Frequency)
+                    return radioAvailableCached;
+                bool available = ComputeLocalRadioConnectable();
+                if (!radioAvailableEverChecked || available != radioAvailableCached)
+                    DebugLog.Write("BluetoothRadio: host adapter " +
+                        (available ? "on/connectable" : "off/absent") +
+                        " (IsLocalRadioAvailable=" + available + ")");
+                radioAvailableCached = available;
+                radioAvailableCheckedAt = now;
+                radioAvailableEverChecked = true;
+                return available;
+            }
+        }
+
+        private static bool ComputeLocalRadioConnectable() {
+            var searchParams = new BLUETOOTH_FIND_RADIO_PARAMS {
+                dwSize = Marshal.SizeOf(typeof(BLUETOOTH_FIND_RADIO_PARAMS))
+            };
+            IntPtr radioHandle = IntPtr.Zero;
+            IntPtr searchHandle = BluetoothFindFirstRadio(ref searchParams, ref radioHandle);
+            if (searchHandle == IntPtr.Zero)
+                return false;
+            bool connectable = false;
+            try {
+                while (radioHandle != IntPtr.Zero) {
+                    if (BluetoothIsConnectable(radioHandle))
+                        connectable = true;
+                    CloseHandle(radioHandle);
+                    radioHandle = IntPtr.Zero;
+                    if (!connectable && !BluetoothFindNextRadio(searchHandle, ref radioHandle))
+                        radioHandle = IntPtr.Zero;
+                }
+            } finally {
+                if (radioHandle != IntPtr.Zero)
+                    CloseHandle(radioHandle);
+                BluetoothFindRadioClose(searchHandle);
+            }
+            return connectable;
         }
 
         private static List<byte[]> GetLocalRadioAddressesLittleEndian() {

@@ -84,6 +84,25 @@ namespace BetterJoyForCemu {
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, long> suppressedUsbPowerOffGraceUntil =
             new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+        // "USB sleep on connect" is an INITIAL-connection policy. The pad object that applied it is
+        // destroyed and rebuilt every time the controller is slept and woken, so a per-object "we
+        // did this" flag can never enforce "once" - the rebuilt pad re-applies it and puts the
+        // controller straight back to sleep on every wake. Tracked here instead, keyed by the wired
+        // path, and released only when that path actually leaves enumeration (a real unplug) - which
+        // is what makes the next plug-in genuinely "initial" again. Same reasoning as
+        // deliberatePowerOffMacs below.
+        readonly HashSet<string> usbSleepOnConnectAppliedPaths =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Returns true only the FIRST time this path is marked - the caller applies the policy only
+        // when it wins that race, so a wake (or any later re-attach) never re-applies it.
+        public bool TryMarkUsbSleepOnConnectApplied(string devicePath) {
+            if (String.IsNullOrEmpty(devicePath))
+                return true;
+            lock (suppressedUsbControllerLock)
+                return usbSleepOnConnectAppliedPaths.Add(devicePath);
+        }
         // Wired HID paths that BetterJoy deliberately parked in charge-only / wait-for-press
         // state. This is separate from PreferredTransport=Bluetooth suppression: USB-only
         // pseudo-sleep must keep the same path unadopted while the wake monitor waits for PS/Home.
@@ -326,6 +345,14 @@ namespace BetterJoyForCemu {
                         .Where(path => !suppressedUsbControllerProfiles.ContainsKey(path) ||
                             now >= suppressedUsbPowerOffGraceUntil[path]).ToList())
                     suppressedUsbPowerOffGraceUntil.Remove(path);
+
+                // A path that is no longer enumerated has genuinely been unplugged, so the next time
+                // it appears is a real initial connection and the sleep-on-connect policy applies
+                // again. A wake never reaches here: the wired path stays enumerated throughout.
+                foreach (string path in usbSleepOnConnectAppliedPaths.ToList()) {
+                    if (!enumeratedPaths.Contains(path))
+                        usbSleepOnConnectAppliedPaths.Remove(path);
+                }
 
                 // Drop any pending pairing-confirmation whose wired interface is gone (unplugged),
                 // so a stale record can't linger and later block a fresh attempt.

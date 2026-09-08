@@ -686,6 +686,15 @@ namespace BetterJoyForCemu {
             if (ControllerMappings.USBSleepOnConnectMode(profileId) !=
                     ControllerMappings.USBSleepOnConnectEnabled)
                 return false;
+            // INITIAL connection only. This pad object is destroyed and rebuilt on every wake, so the
+            // per-object snapshot flag above resets and cannot enforce "once" - without this the
+            // controller gets put straight back to sleep the moment it is woken. The manager holds
+            // the mark against the wired path and releases it only on a real unplug.
+            if (!Program.mgr.TryMarkUsbSleepOnConnectApplied(path)) {
+                DebugLog.Write("DualSense USB sleep-on-connect skipped: pad=" + PadId +
+                    " already applied for this connection (not an initial connect)");
+                return false;
+            }
             QueueUSBSleepOnConnect("initial-usb-attach-enabled");
             return true;
         }
@@ -893,6 +902,28 @@ namespace BetterJoyForCemu {
                 ControllerMappings.PreferredTransportBluetooth;
             bool sleepOnConnectAfterBluetoothEstablished =
                 ShouldUSBSleepOnConnectAfterBluetoothEstablished();
+
+            // Only tell the controller to connect when Bluetooth can actually be used AND is wanted.
+            // All the bond work has already run by this point, so a USB-preferred controller keeps a
+            // valid bond for a later roam - it is simply never told to connect, which is what used to
+            // produce the blinking player LED on a plain USB plug-in. A first-time bond
+            // (createdWindowsBond) is exempt: that pairing ceremony needs the connect to complete, so
+            // a first-ever pair still works. With no usable host adapter nothing is ever sent - a
+            // soft-toggled-off radio still enumerates via BluetoothFindFirstRadio, which is exactly
+            // how the connect leaked through before. Returning here also registers no pairing
+            // attempt, so the retry/give-up cycle never starts and the pad falls straight through to
+            // the ordinary USB attach.
+            // Deliberately gated HERE and NOT inside SendBluetoothControlFeatureReport: that
+            // chokepoint is shared with the charge-only wake monitor's PS-press wake, which must keep
+            // working regardless of host adapter state.
+            bool radioAvailable = BluetoothRadio.IsLocalRadioAvailable();
+            if (!radioAvailable || (!preferBluetooth && !createdWindowsBond)) {
+                DebugLog.Write("DualSense pairing handoff: pad=" + PadId +
+                    " bond=" + bondState + " connect suppressed (preferBluetooth=" +
+                    preferBluetooth + " createdWindowsBond=" + createdWindowsBond +
+                    " radioAvailable=" + radioAvailable + ")");
+                return;
+            }
 
             bool connectRequested = SendBluetoothControlFeatureReport(
                 handle, false, DualSenseBluetoothControlOn);
@@ -1531,12 +1562,15 @@ namespace BetterJoyForCemu {
                         }
                         quietSince = now;
                         if (wakeRequested) {
+                            // Always clear the charge-light lane before handing the controller back
+                            // to the normal wake/connect path. Otherwise the last orange/red glow
+                            // frame can bleed into the next awake session before profile lighting
+                            // or firmware lighting takes ownership again.
+                            WriteUsbChargeGlowOff(wakeHandle);
                             bool preferBluetooth =
                                 ControllerMappings.PreferredTransport(profileId) ==
                                 ControllerMappings.PreferredTransportBluetooth;
                             if (!preferBluetooth) {
-                                if (fakeUsbChargeGlow)
-                                    WriteUsbChargeGlowOff(wakeHandle);
                                 DebugLog.Write("ChargeOnlyWake: wake detected, releasing USB " +
                                     "pseudo-sleep park (everQuiet=" + everQuiet +
                                     ", reportId=0x" + report[0].ToString("X2") + ")");
