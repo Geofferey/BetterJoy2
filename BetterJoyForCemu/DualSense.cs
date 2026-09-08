@@ -645,7 +645,7 @@ namespace BetterJoyForCemu {
             // writes. USB-preferred automatic pairing is only bond maintenance; after the feature
             // reports/connect trigger are sent, fall through to the ordinary USB attach path.
             automaticBluetoothPairingAttempted = true;
-            bool preferBluetooth = ControllerMappings.PreferredTransport(profileId) ==
+            bool preferBluetooth = ControllerMappings.UsablePreferredTransport(profileId) ==
                 ControllerMappings.PreferredTransportBluetooth;
             PerformAutomaticBluetoothPairing();
             if (!preferBluetooth)
@@ -898,7 +898,7 @@ namespace BetterJoyForCemu {
             string profileId = ControllerMappings.ProfileIdFor(this);
             string usbPath = path;
             bool preferBluetooth =
-                ControllerMappings.PreferredTransport(profileId) ==
+                ControllerMappings.UsablePreferredTransport(profileId) ==
                 ControllerMappings.PreferredTransportBluetooth;
             bool sleepOnConnectAfterBluetoothEstablished =
                 ShouldUSBSleepOnConnectAfterBluetoothEstablished();
@@ -1334,7 +1334,7 @@ namespace BetterJoyForCemu {
                 return;
             // The wake is a BLUETOOTH wake; it only makes sense for a Bluetooth-preferred profile.
             string profileId = ControllerMappings.ProfileIdFor(this);
-            if (ControllerMappings.PreferredTransport(profileId) !=
+            if (ControllerMappings.UsablePreferredTransport(profileId) !=
                     ControllerMappings.PreferredTransportBluetooth)
                 return;
             // A Bluetooth pad the SCAN created (rather than one our own power-off path built) has
@@ -1497,7 +1497,7 @@ namespace BetterJoyForCemu {
             // the input endpoint while waiting for the PS wake edge.
             Thread.Sleep(FirmwarePowerOffWakeSettleMs);
             bool fakeUsbChargeGlow =
-                ControllerMappings.PreferredTransport(profileId) !=
+                ControllerMappings.UsablePreferredTransport(profileId) !=
                 ControllerMappings.PreferredTransportBluetooth;
             DebugLog.Write("ChargeOnlyWake: monitor started, path=" + devicePath +
                 " fakeUsbChargeGlow=" + fakeUsbChargeGlow);
@@ -1568,7 +1568,7 @@ namespace BetterJoyForCemu {
                             // or firmware lighting takes ownership again.
                             WriteUsbChargeGlowOff(wakeHandle);
                             bool preferBluetooth =
-                                ControllerMappings.PreferredTransport(profileId) ==
+                                ControllerMappings.UsablePreferredTransport(profileId) ==
                                 ControllerMappings.PreferredTransportBluetooth;
                             if (!preferBluetooth) {
                                 DebugLog.Write("ChargeOnlyWake: wake detected, releasing USB " +
@@ -1717,7 +1717,8 @@ namespace BetterJoyForCemu {
         }
 
         private bool PrefersBluetoothTransport() {
-            return ControllerMappings.PreferredTransport(ControllerMappings.ProfileIdFor(this)) ==
+            return ControllerMappings.UsablePreferredTransport(
+                    ControllerMappings.ProfileIdFor(this)) ==
                 ControllerMappings.PreferredTransportBluetooth;
         }
 
@@ -1729,7 +1730,7 @@ namespace BetterJoyForCemu {
             if (!isUSB)
                 return false;
             string profileId = ControllerMappings.ProfileIdFor(this);
-            return ControllerMappings.PreferredTransport(profileId) ==
+            return ControllerMappings.UsablePreferredTransport(profileId) ==
                     ControllerMappings.PreferredTransportBluetooth &&
                 ControllerMappings.AutomaticBluetoothPairingEnabled(profileId);
         }

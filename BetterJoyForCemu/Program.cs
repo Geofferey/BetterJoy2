@@ -256,7 +256,7 @@ namespace BetterJoyForCemu {
                     String.Equals(suppressedProfileId, profileId,
                         StringComparison.Ordinal) &&
                     (chargeOnlyParkedUsbPaths.Contains(devicePath) ||
-                        ControllerMappings.PreferredTransport(profileId) ==
+                        ControllerMappings.UsablePreferredTransport(profileId) ==
                             ControllerMappings.PreferredTransportBluetooth);
             }
         }
@@ -314,7 +314,7 @@ namespace BetterJoyForCemu {
                 if (chargeOnlyParkedUsbPaths.Contains(devicePath))
                     return true;
 
-                if (ControllerMappings.PreferredTransport(profileId) ==
+                if (ControllerMappings.UsablePreferredTransport(profileId) ==
                         ControllerMappings.PreferredTransportBluetooth)
                     return true;
 
@@ -703,7 +703,7 @@ namespace BetterJoyForCemu {
             // through while it should stay dark until it's actually up on Bluetooth. Leave it dark;
             // once it's up over Bluetooth (isUSB == false) lighting applies normally.
             if (controller.isUSB &&
-                    ControllerMappings.PreferredTransport(profileId) ==
+                    ControllerMappings.UsablePreferredTransport(profileId) ==
                         ControllerMappings.PreferredTransportBluetooth &&
                     ControllerMappings.AutomaticBluetoothPairingEnabled(profileId))
                 return;

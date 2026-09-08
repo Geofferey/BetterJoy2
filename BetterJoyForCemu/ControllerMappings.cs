@@ -584,6 +584,24 @@ namespace BetterJoyForCemu {
                 : PreferredTransportUsb;
         }
 
+        // The transport actually usable RIGHT NOW. "Bluetooth" with no usable host radio (absent or
+        // toggled off) is Bluetooth in name only - the controller can never reach a host - so every
+        // decision must take exactly the same path as PreferredTransport = USB: attach over USB,
+        // apply normal lighting instead of holding the pad dark for a handoff that will never come,
+        // and wake over USB rather than firing a Bluetooth connect at a dead radio.
+        //
+        // Resolved centrally on purpose. This preference is branched on in a dozen places across
+        // DualSense.cs and Program.cs; deciding it per-site is how they drifted out of agreement in
+        // the first place. Callers that want the user's literal setting (the UI, persistence) must
+        // keep using PreferredTransport above.
+        public static string UsablePreferredTransport(string profileId) {
+            string preferred = PreferredTransport(profileId);
+            if (String.Equals(preferred, PreferredTransportBluetooth, StringComparison.Ordinal) &&
+                    !BluetoothRadio.IsLocalRadioAvailable())
+                return PreferredTransportUsb;
+            return preferred;
+        }
+
         // Raw mode: ModeEnable (full from-scratch pairing), ModeRepair (restore an existing PC
         // bond the controller lost), or ModeDisable. Anything unrecognized is treated as disabled.
         public static string AutomaticBluetoothPairingMode(string profileId) {
