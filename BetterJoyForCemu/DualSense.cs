@@ -634,6 +634,11 @@ namespace BetterJoyForCemu {
                 return;
 
             CaptureUSBSleepOnConnectInitialBluetoothState();
+            // Same guard as the before-attach path: never queue the ceremony for a controller that
+            // is already live over Bluetooth. This is the reconciliation entry point, so without it
+            // a cable plugged into a connected pad re-queues the connect routine on every scan.
+            if (Program.mgr.HasLiveBluetoothDualSense(PadMacAddress?.GetAddressBytes()))
+                return;
             automaticBluetoothPairingAttempted = true;
             Interlocked.Exchange(ref automaticBluetoothPairingPending, 1);
         }
@@ -645,6 +650,15 @@ namespace BetterJoyForCemu {
                 return false;
 
             CaptureUSBSleepOnConnectInitialBluetoothState();
+            // Plugging the cable into a controller that is ALREADY up and streaming over Bluetooth
+            // has nothing to pair and nothing to connect. Running the ceremony here fires a connect
+            // trigger at a live link and interrupts it. Fall through instead and let the ordinary
+            // duplicate resolution park this wired interface as charge-only, which is what happens
+            // for a cable plugged into an already-connected pad. Deliberately does NOT set
+            // automaticBluetoothPairingAttempted, so if Bluetooth later drops the ceremony can
+            // still run for this pad.
+            if (Program.mgr.HasLiveBluetoothDualSense(PadMacAddress?.GetAddressBytes()))
+                return false;
             // Bluetooth-preferred automatic pairing owns the controller before the normal pad
             // lifecycle does: no Attach(), no virtual output, no lighting/audio/adaptive-trigger
             // writes. USB-preferred automatic pairing is only bond maintenance; after the feature
@@ -833,26 +847,21 @@ namespace BetterJoyForCemu {
                 BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
                     "windows-link-key-committed");
 
-                // Fresh controller-side bonds behave best when the controller sees one low-power
-                // edge after the 0x0A host/key write is verified, but this is NOT the charge-only
-                // wake-monitor path: no settle wait, no parked USB monitor. Immediately follow
-                // with Bluetooth ON so Windows can create/complete the live bond and HID nodes.
-                bool freshBondLowPowerSent = SendBluetoothControlFeatureReport(
-                    handle, false, DualSenseBluetoothControlOff);
+                // Reached ONLY when created == true - no Windows bond existed, so this controller
+                // genuinely needs to PAIR. Never send the 0x08/0x02 low-power/assert edge here:
+                // parking a controller that is still establishing its bond works against the very
+                // pairing it is in the middle of. It was also treated as fatal, so a rejected edge
+                // aborted the whole fresh pair before the connect trigger was ever issued.
+                // The bond has been written, verified and committed to Windows above - go straight
+                // to the connect. Sleeping belongs only to a controller whose bond ALREADY exists
+                // (PerformRepairModePairing, or the roaming sleep after a confirmed Bluetooth link).
                 BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
-                    freshBondLowPowerSent ? "fresh-bond-low-power-sent" :
-                        "fresh-bond-low-power-rejected");
-                if (!freshBondLowPowerSent) {
-                    form.AppendTextBox("DualSense accepted its Bluetooth bond, but its " +
-                        "fresh-bond low-power edge was rejected.\r\n");
-                    return;
-                }
-
+                    "fresh-bond-low-power-skipped-needs-pairing");
                 DebugLog.Write("DualSense automatic Bluetooth pairing: pad=" + PadId +
                     " createdWindowsBond=" + created +
                     " previousPairingCleared=" + previousPairingCleared +
                     " pairingStateReasserted=" + pairingStateReasserted +
-                    " freshBondLowPowerSent=" + freshBondLowPowerSent);
+                    " freshBondLowPowerSkipped=True (needs actual pairing)");
                 BeginEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian,
                     created, "fresh bond");
             } finally {
@@ -1042,10 +1051,20 @@ namespace BetterJoyForCemu {
                 return;
             }
 
-            if (!PrefersBluetoothTransport()) {
+            // The Bluetooth-preferred path below is a genuine sleep-on-connect: it sends 0x08/0x02
+            // over USB before the controller has connected to the host at all, parks the wired
+            // interface and hands off to the PS-press wake monitor. That must obey the profile's
+            // USB Sleep setting - with USB Sleep = Disabled it was still parking the controller on
+            // every connect, directly violating the setting. Take the ordinary connect-and-confirm
+            // path instead, exactly as a USB-preferred profile does, so the controller still comes
+            // up over Bluetooth; it simply is not slept on the way.
+            bool usbSleepDisabled = ControllerMappings.USBSleepOnConnectMode(profileId) ==
+                ControllerMappings.USBSleepOnConnectDisabled;
+            if (!PrefersBluetoothTransport() || usbSleepDisabled) {
                 DebugLog.Write("DualSense repair: pad=" + PadId +
                     " hostMatchedPc=" + matchesPc +
-                    " pairingStateReasserted=True preferredTransport=USB");
+                    " pairingStateReasserted=True connectWithoutSleep=True" +
+                    " usbSleepDisabled=" + usbSleepDisabled);
                 BeginEnabledConnectAndConfirm(controllerMac, hostMacLittleEndian,
                     false, matchesPc ? "existing bond" : "repaired bond");
                 return;
