@@ -633,6 +633,11 @@ namespace BetterJoyForCemu {
             if (!isUSB || state <= state_.DROPPED || automaticBluetoothPairingAttempted)
                 return;
 
+            // Same firmware-flash hold-off as the before-attach path. Returns without setting
+            // automaticBluetoothPairingAttempted so the next reconciliation pass retries once the
+            // controller's own plug-in flash has completed.
+            if (!Program.mgr.IsDualSenseFirmwareConnectSettled(path))
+                return;
             CaptureUSBSleepOnConnectInitialBluetoothState();
             // Same guard as the before-attach path: never queue the ceremony for a controller that
             // is already live over Bluetooth. This is the reconciliation entry point, so without it
@@ -649,6 +654,15 @@ namespace BetterJoyForCemu {
                     !ControllerMappings.AutomaticBluetoothPairingEnabled(profileId))
                 return false;
 
+            // The firmware runs its own ~2.5s orange flash on plug-in; writing to the controller
+            // during it bleeds red into that flash. The pad is still opened and polled immediately
+            // (passive reads, which is what keeps it from dropping into its indefinite charge-only
+            // pulse) - only the ceremony's feature-report WRITES wait. Returning false falls through
+            // to the ordinary USB attach and deliberately leaves automaticBluetoothPairingAttempted
+            // unset, so the reconciliation entry point runs the ceremony on a later pass once the
+            // flash has finished.
+            if (!Program.mgr.IsDualSenseFirmwareConnectSettled(path))
+                return false;
             CaptureUSBSleepOnConnectInitialBluetoothState();
             // Plugging the cable into a controller that is ALREADY up and streaming over Bluetooth
             // has nothing to pair and nothing to connect. Running the ceremony here fires a connect
@@ -1551,6 +1565,13 @@ namespace BetterJoyForCemu {
                 }
 
                 try {
+                    // Entering the wake monitor means the controller is parked, so it must stop
+                    // showing the profile colour. It does not truly power off here (the 0x08/0x02
+                    // is not always accepted), so the firmware never clears the lightbar itself -
+                    // without this the user's colour stayed lit for the whole park. Blank it once
+                    // as this monitor takes ownership of the handle; when the fake charge glow is
+                    // enabled its frames immediately take over from this.
+                    WriteUsbChargeGlowOff(wakeHandle);
                     bool sawPsReleased = false;
                     bool everQuiet = false;
                     long quietSince = Stopwatch.GetTimestamp();
@@ -1638,11 +1659,10 @@ namespace BetterJoyForCemu {
                     // park was released elsewhere, or a read failure forcing a reopen) otherwise
                     // leave the last red/amber frame lit, and the reconnecting pad cannot repaint
                     // it until IMU_DATA_OK plus the 4.5s connect settle - seen as a red/pink flash
-                    // during the connection sequence. Guarded on fakeUsbChargeGlow because when the
-                    // glow was never enabled this monitor owns no lighting, and an unsolicited
-                    // "off" frame would clobber whatever firmware or profile lighting does own it.
-                    if (fakeUsbChargeGlow)
-                        WriteUsbChargeGlowOff(wakeHandle);
+                    // during the connection sequence. Unconditional because this monitor now blanks
+                    // the lightbar as it takes the handle, so it owns that lane for the whole park
+                    // whether or not the glow is running - and must leave it dark on the way out.
+                    WriteUsbChargeGlowOff(wakeHandle);
                     HIDapi.hid_close(wakeHandle);
                 }
             }
@@ -1762,7 +1782,14 @@ namespace BetterJoyForCemu {
                 // Reuses the exact same "not yet known, retry once ReceiveRaw confirms transport"
                 // path SetLightColor already relies on - SendDualSenseLightbar publishes both the
                 // lightbar color and currentPlayerLeds together in one report either way.
-                if (lightbarTransportKnown && !LightingSuppressedForUsbHandoff())
+                // LightbarConnectReady is required here for the same reason SetTrackedLightColor
+                // requires it: this publishes a full lightbar report, so without it a queued
+                // player-LED update wrote to the controller as soon as state hit IMU_DATA_OK -
+                // during the connect sequence, before the settle window had elapsed. That was the
+                // one lighting path still leaking output into power-on. Defer instead; the pending
+                // flag is flushed by ReceiveRaw once the pad is genuinely settled.
+                if (lightbarTransportKnown && !LightingSuppressedForUsbHandoff() &&
+                        LightbarConnectReady())
                     SendDualSenseLightbar(lightbarRed, lightbarGreen, lightbarBlue);
                 else
                     lightbarUpdatePending = true;
@@ -3563,13 +3590,6 @@ namespace BetterJoyForCemu {
         // struct, cross-checked against this same function's own already-working RGB offsets.
         private void SendDualSenseLightbar(byte red, byte green, byte blue,
                                            bool fromOpenRgbServer = false) {
-            // Never write LED colour while this controller is being powered off. The park sequence
-            // (0x08/0x02, then the charge-only wake monitor) must be the last thing the controller
-            // is told; a lightbar report racing it from the Poll thread or a profile reconciliation
-            // both fights the power-off and leaves a stale colour frame instead of the firmware's
-            // own charging indication. Single chokepoint - every lighting path lands here.
-            if (appInitiatedPowerOff)
-                return;
             lock (outputReportLock) {
                 bool bt = !isUSB;
                 // Hard gate: never write lighting to the hardware until the pad is fully connected

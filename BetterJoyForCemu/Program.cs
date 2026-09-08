@@ -95,6 +95,32 @@ namespace BetterJoyForCemu {
         readonly HashSet<string> usbSleepOnConnectAppliedPaths =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // The DualSense firmware ALWAYS runs its own orange flash for about 2-2.5 seconds the moment
+        // the controller is plugged in, whatever transport is then used. Engaging the controller
+        // before that flash finishes - opening its interface, running the pairing ceremony,
+        // attaching it - bleeds red into it, which is the red/pink leak seen on connect. So hold off
+        // entirely until the flash has had time to complete: the scan simply skips the device and a
+        // later pass (the timer runs every 2s) picks it up once settled. Measured from when the path
+        // is FIRST enumerated, which is the real plug-in moment - unlike LightbarConnectSettleSeconds,
+        // which starts at IMU_DATA_OK and so only ever begins after we have already engaged.
+        const long DualSenseFirmwareConnectFlashSettleMs = 2500;
+        readonly Dictionary<string, long> deviceFirstSeenAt =
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+        public bool IsDualSenseFirmwareConnectSettled(string devicePath) {
+            if (String.IsNullOrEmpty(devicePath))
+                return true;
+            long now = Stopwatch.GetTimestamp();
+            lock (suppressedUsbControllerLock) {
+                if (!deviceFirstSeenAt.TryGetValue(devicePath, out long firstSeen)) {
+                    deviceFirstSeenAt[devicePath] = now;
+                    return false;
+                }
+                return (now - firstSeen) >= Stopwatch.Frequency *
+                    DualSenseFirmwareConnectFlashSettleMs / 1000L;
+            }
+        }
+
         // Returns true only the FIRST time this path is marked - the caller applies the policy only
         // when it wins that race, so a wake (or any later re-attach) never re-applies it.
         public bool TryMarkUsbSleepOnConnectApplied(string devicePath) {
@@ -352,6 +378,13 @@ namespace BetterJoyForCemu {
                 foreach (string path in usbSleepOnConnectAppliedPaths.ToList()) {
                     if (!enumeratedPaths.Contains(path))
                         usbSleepOnConnectAppliedPaths.Remove(path);
+                }
+
+                // Unplugged: the next appearance is a genuine plug-in, so the firmware runs its
+                // orange flash again and the hold-off must start over from that moment.
+                foreach (string path in deviceFirstSeenAt.Keys.ToList()) {
+                    if (!enumeratedPaths.Contains(path))
+                        deviceFirstSeenAt.Remove(path);
                 }
 
                 // Drop any pending pairing-confirmation whose wired interface is gone (unplugged),
