@@ -1632,6 +1632,17 @@ namespace BetterJoyForCemu {
                         }
                     }
                 } finally {
+                    // The glow is written straight to the lightbar on THIS handle, outside every
+                    // normal lighting gate, so it has to be cleared on EVERY exit - not just the
+                    // wake branch above. The other ways out (ShouldMonitor going false because the
+                    // park was released elsewhere, or a read failure forcing a reopen) otherwise
+                    // leave the last red/amber frame lit, and the reconnecting pad cannot repaint
+                    // it until IMU_DATA_OK plus the 4.5s connect settle - seen as a red/pink flash
+                    // during the connection sequence. Guarded on fakeUsbChargeGlow because when the
+                    // glow was never enabled this monitor owns no lighting, and an unsolicited
+                    // "off" frame would clobber whatever firmware or profile lighting does own it.
+                    if (fakeUsbChargeGlow)
+                        WriteUsbChargeGlowOff(wakeHandle);
                     HIDapi.hid_close(wakeHandle);
                 }
             }
