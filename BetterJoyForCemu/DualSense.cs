@@ -520,17 +520,22 @@ namespace BetterJoyForCemu {
                 // destroyed and rebuilt by the scan, and the flag above dies with it.
                 Program.mgr.MarkDeliberatePowerOff(PadMacAddress.GetAddressBytes());
                 PrepareChargeOnlyUsbWake();
+                // Bond hardening runs BEFORE the audio lanes are torn down, deliberately not
+                // between them and the power-off below. Rewriting the 0x0A pairing report is the
+                // last thing that should ever touch the controller as it is being parked: doing it
+                // immediately before the 0x08/0x02 is confirmed on real hardware to knock the pad
+                // back into pairing/low-power broadcast mode, after which it refuses the power-off
+                // (featureReportSent=False in every real log) and we silently fell back to the
+                // host-side radio disconnect - which only drops the link and leaves the controller
+                // AWAKE, so the charge-only wake monitor immediately re-woke it. That is the
+                // sleep-then-wake-back-up loop.
+                bool pairingStateReasserted = ReassertBluetoothPairingStateOverUsb();
                 StopBluetoothMicrophone();
                 StopBluetoothAudioStream();
-                bool pairingStateReasserted = ReassertBluetoothPairingStateOverUsb();
-                // Native Bluetooth power-off (df0514e), restored. The CRC-less variant that had
-                // replaced it never actually landed - featureReportSent=False on every power-off in
-                // real logs - so this silently fell back to the host-side Windows disconnect every
-                // time, which is precisely what df0514e was written to stop doing: that disconnect
-                // only drops the link and leaves the controller awake, so the charge-only wake
-                // monitor could immediately re-wake it (the sleep/wake loop).
-                bool sentFeatureReport = pairingStateReasserted &&
-                    SendBluetoothPowerOffFeatureReport();
+                // Native Bluetooth power-off, exactly as originally implemented in df0514e: send
+                // 0x08/0x02 unconditionally, then arm the wake monitor. It is NOT gated on the bond
+                // reassert - a failed reassert must never mean the controller is left awake.
+                bool sentFeatureReport = SendBluetoothPowerOffFeatureReport();
                 if (!sentFeatureReport)
                     BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
                 DebugLog.Write("DualSense.PowerOff: pad=" + PadId +
@@ -711,7 +716,15 @@ namespace BetterJoyForCemu {
         }
 
         private bool ShouldUSBSleepOnConnectAfterBluetoothEstablished() {
-            if (!isUSB || state <= state_.DROPPED)
+            // Reject only a pad that is actually gone. NOT_ATTACHED is 0 and DROPPED is 1, so the
+            // obvious "state <= DROPPED" also rejects NOT_ATTACHED - which is precisely the state
+            // this runs in: the automatic-pairing ceremony owns the controller BEFORE the normal
+            // pad lifecycle (TryRunAutomaticBluetoothPairingBeforeAttach requires
+            // state == NOT_ATTACHED). That made this return false on every single connect, before
+            // the USB-sleep mode was even read, so "USB Sleep = Bluetooth" never armed the sleep
+            // that follows a confirmed Bluetooth connection. Manual power-off was unaffected
+            // because that pad is IMU_DATA_OK.
+            if (!isUSB || state == state_.DROPPED)
                 return false;
             CaptureUSBSleepOnConnectInitialBluetoothState();
             if (usbSleepOnConnectBluetoothWasLive)
@@ -1128,9 +1141,19 @@ namespace BetterJoyForCemu {
                     BluetoothRadio.MarkClassicPairingRegistryTrace(controllerCopy,
                         completed ? "windows-hid-setup-requested" :
                             "windows-hid-setup-not-reached");
-                    if (completed && !bluetoothHandoff &&
-                            sleepOnConnectAfterBluetoothEstablished)
-                        QueueUSBSleepOnConnect("usb-preferred-bluetooth-established");
+                    // Deliberately NO sleep here. This is the maintenance path - bluetoothHandoff is
+                    // false, meaning attemptNumber was 0 and no Bluetooth pad was ever confirmed - so
+                    // sleeping from here parked the controller BEFORE any Bluetooth connection
+                    // existed, and did it on the USB pad (pseudo-sleep) instead of as a roaming sleep
+                    // on the Bluetooth pad. "USB Sleep = Bluetooth" means park only AFTER Bluetooth
+                    // is actually established; that ordering matters because this mode's wake monitor
+                    // depends on the controller having made a brief Bluetooth connection first.
+                    // Each mode has exactly one trigger, as it did before this branch existed:
+                    // Bluetooth sleeps from the confirmed-BT path (RecordBluetoothPairingAttempt ->
+                    // TryConfirmBluetoothPairing -> RequestRoamingSleepAfterBluetoothConfirmation),
+                    // and Enabled sleeps on the initial attach via
+                    // ApplyUSBSleepOnConnectAfterAttach. If Bluetooth is never established, Bluetooth
+                    // mode simply performs no sleep on connect - that is the USB path.
                 } finally {
                     automaticBluetoothPairingInProgress = false;
                     Array.Clear(hostCopy, 0, hostCopy.Length);
@@ -3510,6 +3533,13 @@ namespace BetterJoyForCemu {
         // struct, cross-checked against this same function's own already-working RGB offsets.
         private void SendDualSenseLightbar(byte red, byte green, byte blue,
                                            bool fromOpenRgbServer = false) {
+            // Never write LED colour while this controller is being powered off. The park sequence
+            // (0x08/0x02, then the charge-only wake monitor) must be the last thing the controller
+            // is told; a lightbar report racing it from the Poll thread or a profile reconciliation
+            // both fights the power-off and leaves a stale colour frame instead of the firmware's
+            // own charging indication. Single chokepoint - every lighting path lands here.
+            if (appInitiatedPowerOff)
+                return;
             lock (outputReportLock) {
                 bool bt = !isUSB;
                 // Hard gate: never write lighting to the hardware until the pad is fully connected
