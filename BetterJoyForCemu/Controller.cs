@@ -82,8 +82,15 @@ namespace BetterJoyForCemu {
             // space instead of consuming it inside DualSense.cs so it can participate in every
             // normal binding/chord (including future audio toggle and volume actions).
             MIC_MUTE = 25,
+            // The two function buttons below the sticks on a DualSense Edge. Same reasoning as
+            // MIC_MUTE above: kept in the canonical input space so they bind and chord like any
+            // other physical control rather than being consumed inside DualSense.cs. Appended at
+            // the end deliberately - existing binds are stored as "joy_<enum value>", so inserting
+            // anywhere earlier would silently repoint every saved mapping.
+            FN1 = 26,
+            FN2 = 27,
         };
-        protected const int ButtonCount = (int)Button.MIC_MUTE + 1;
+        protected const int ButtonCount = (int)Button.FN2 + 1;
 
         // For UdpServer
         public int PadId = 0;

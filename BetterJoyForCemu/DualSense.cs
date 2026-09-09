@@ -2201,7 +2201,28 @@ namespace BetterJoyForCemu {
                 // same button), dispatched from DoDeviceSpecificButtonActions once buttons is
                 // committed below and combo-matching against it is valid. Still populating the
                 // raw state here regardless, since IsComboHeld needs it live either way.
-                // Edge paddles remain unmapped; SL/SR have no DualSense equivalent.
+
+                // DualSense Edge function buttons, from a direct Bluetooth capture on real
+                // hardware (dualsense_raw_debug.log, 2026-09-09) rather than any secondhand
+                // reference - same reason the offsets above were captured instead of looked up.
+                // Protocol: six alternating presses FN1/FN2/FN1/FN2/FN1/FN2 produced exactly
+                // 0x10/0x20/0x10/0x20/0x10 in this byte (the sixth fell between samples - the raw
+                // dump is throttled to 4/sec, the controller reports every press). Both bits also
+                // appeared together as 0x30, so they are independent momentary buttons, not a
+                // shared encoding. L2/R3/L3 were untouched for the whole capture (button byte 2
+                // stayed 0x00 across all 72 samples), which rules out a stick-click artifact.
+                // A plain DualSense never sets either bit, so this costs it nothing.
+                //
+                // Bluetooth only so far - this is absolute index 11 with o=2. The USB 0x01 report
+                // puts the same field at absolute index 10 (o=1) and has NOT been captured; the
+                // bit meanings are assumed to carry over but are unverified there, exactly the
+                // assumption that broke the DualSense Bluetooth audio work. Capture USB before
+                // trusting FN over the cable.
+                b[(int)Button.FN1] = (btn3 & 0x10) != 0;
+                b[(int)Button.FN2] = (btn3 & 0x20) != 0;
+                // Edge paddles remain unmapped - btn3 bits 0x08/0x40/0x80 stayed clear throughout
+                // the capture, but the paddles were never pressed, so that is untested rather
+                // than evidence they go unreported. SL/SR have no DualSense equivalent.
 
                 buttons = b;
                 CommitButtonState();
