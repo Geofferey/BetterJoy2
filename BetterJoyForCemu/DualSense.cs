@@ -119,6 +119,10 @@ namespace BetterJoyForCemu {
         private bool adaptiveTriggerStateKnown;
         private bool adaptiveTriggerUpdatePending = true;
         private bool bluetoothOutputStateDirty = true;
+        // Guards SilenceControllerAudio so the zeroed-volume report is written on the actual
+        // transition into audio-off and not once per profile-reconciliation pass. Guarded by
+        // outputReportLock like the rest of the outgoing report state.
+        private bool audioLevelsSilenced;
         private bool lightbarControlReleased;
         private enum LightbarConnectState {
             WaitingForInput,
@@ -3579,6 +3583,13 @@ namespace BetterJoyForCemu {
         // report sends the right audio channel to the built-in mono speaker and sets its volume -
         // or, when the aux jack is occupied, both channels to the headphones instead.
         public override void PrepareUsbAudio(int volumePercent) {
+            // Re-arm SilenceControllerAudio's latch whenever audio comes back, before the USB
+            // check below - on Bluetooth this method sends nothing (the 0x36 media carrier owns
+            // the volume bytes and restores them itself), but the latch still has to clear so a
+            // later transition back to audio-off writes its report again.
+            lock (outputReportLock)
+                audioLevelsSilenced = false;
+
             if (!isUSB || state <= state_.DROPPED)
                 return;
 
@@ -3597,6 +3608,74 @@ namespace BetterJoyForCemu {
                 // headphones over USB never routed audio to them.
                 buf[8] = HeadphonesConnected ? (byte)0x00 : (byte)0x30;
                 HIDapi.hid_write(handle, buf, new UIntPtr((uint)buf.Length));
+            }
+        }
+
+        // Zeroes the controller's own output levels when the profile turns controller audio off.
+        // Previously that state was simply never written: PrepareUsbAudio has one call site,
+        // gated on audio being enabled, with no else branch - so disabling audio only stopped
+        // sending audio data and left headphone/speaker volume at whatever the controller last
+        // had, from an earlier session or a PS5. Ordinary rumble/lightbar reports don't correct
+        // that either: they set valid_flag0 to DualSenseValidRumbleAndTriggers, which omits the
+        // audio-volume validity bits, so their zeroed volume bytes are ignored by the controller.
+        //
+        // There is no DAC or amp power bit to use instead. power_save_control's only defined bit
+        // is MIC_MUTE (BIT 4) - confirmed against both the upstream Linux hid-playstation defines
+        // and DS4Windows's own DualSense implementation - so zeroed volume is as close to "output
+        // off" as this protocol goes.
+        //
+        // Deliberately transition-only. Profile reconciliation calls this every scan pass, and
+        // re-sending an identical report would cost battery for nothing: output reports on this
+        // controller are otherwise event-driven (see SendDualSenseRumble's at-rest early return).
+        // Restoring is left to the paths that already own volume - PrepareUsbAudio over USB, the
+        // 0x36 media carrier over Bluetooth - which is why only the two volume bytes are touched
+        // here. valid_flag1 stays 0 so this cannot disturb mic mute or the mute LED.
+        public override void SilenceControllerAudio() {
+            if (state <= state_.DROPPED)
+                return;
+
+            lock (outputReportLock) {
+                if (audioLevelsSilenced)
+                    return;
+                // While the Bluetooth media carrier is running it owns these bytes on every 0x36
+                // frame; an ordinary 0x31 here would fight it. Return without latching so this
+                // still applies once the stream has actually stopped.
+                if (!isUSB && (bluetoothAudioStreaming || bluetoothMicrophoneStreaming))
+                    return;
+
+                bool bt = !isUSB;
+                int len = bt ? DualSenseMaxReportLen : 64;
+                byte[] buf = new byte[len];
+                int commonOffset;
+                if (bt) {
+                    buf[0] = 0x31;
+                    buf[1] = (byte)(bluetoothOutputSequence << 4);
+                    bluetoothOutputSequence = (byte)((bluetoothOutputSequence + 1) & 0x0F);
+                    buf[2] = 0x10;
+                    commonOffset = 3;
+                } else {
+                    buf[0] = 0x02;
+                    commonOffset = 1;
+                }
+
+                // Same validity byte PrepareUsbAudio uses (headphone volume + speaker volume +
+                // audio routing), so this claims nothing new. Both volume bytes zeroed; routing
+                // still follows the jack so re-enabling lands on the right path.
+                buf[commonOffset] = 0xB0;
+                buf[commonOffset + 4] = 0; // headphone_volume
+                buf[commonOffset + 5] = 0; // speaker_volume
+                buf[commonOffset + 7] = HeadphonesConnected ? (byte)0x00 : (byte)0x30;
+
+                if (bt) {
+                    uint crc = Crc32(0xA2, buf, len - 4);
+                    buf[len - 4] = (byte)crc;
+                    buf[len - 3] = (byte)(crc >> 8);
+                    buf[len - 2] = (byte)(crc >> 16);
+                    buf[len - 1] = (byte)(crc >> 24);
+                }
+
+                HIDapi.hid_write(handle, buf, new UIntPtr((uint)len));
+                audioLevelsSilenced = true;
             }
         }
 

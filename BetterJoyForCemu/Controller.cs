@@ -348,6 +348,12 @@ namespace BetterJoyForCemu {
         public virtual string UsbAudioEndpointNameHint => null;
         public virtual void PrepareUsbAudio(int volumePercent) { }
 
+        // Counterpart to PrepareUsbAudio, for the transition into "no controller audio" -
+        // either Controller audio: Disabled, or Require headphones with an empty jack.
+        // Controllers that can zero their own output levels override this; the default is a
+        // no-op so a type without that control simply keeps today's behavior.
+        public virtual void SilenceControllerAudio() { }
+
         // Bluetooth exposes no audio-class endpoint at all, so there is nothing for Windows/WASAPI
         // to open - DualShock4Controller instead streams an SBC-encoded live capture directly
         // inside HID output reports (see its StartBluetoothAudioStream/StopBluetoothAudioStream

@@ -609,6 +609,14 @@ namespace BetterJoyForCemu {
                         (jc is DualSenseController dualSenseHeadphones && dualSenseHeadphones.HeadphonesConnected);
                     if (audioEnabled && usbHeadphonesSatisfied)
                         jc.PrepareUsbAudio(audioVolume);
+                    else
+                        // The missing half of the above: without this, turning controller audio
+                        // off (or unplugging with Require headphones) only stopped sending audio
+                        // and left the controller's own volume wherever it was. Latched inside
+                        // the controller so it writes once per transition, not once per pass -
+                        // the jack hotplug path above already re-runs this whole reconciliation
+                        // on insert and removal, which is what gives Require headphones both edges.
+                        jc.SilenceControllerAudio();
                     // Opt-in alternative to the "set the controller as your Windows default
                     // playback device" flow above - off by default (see ControllerMappings'
                     // "false" default for this key). Target is the controller's own selected
