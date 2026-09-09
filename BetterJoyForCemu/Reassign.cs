@@ -21,6 +21,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_gyro_mouse_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_sensitivity = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_stick_reduction = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_axis_scale = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_click_lockout = new ContextMenuStrip();
@@ -242,6 +243,13 @@ namespace BetterJoyForCemu {
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
             menu_touchpad_sensitivity.ItemClicked += TouchpadSensitivityMenu_ItemClicked;
 
+            // How much of the physical stick is removed while gyro-stick is active: 0% leaves it
+            // alone, 100% inhibits it entirely.
+            foreach (int percent in new[] { 0, 25, 50, 75, 100 })
+                menu_gyro_stick_reduction.Items.Add(
+                    new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
+            menu_gyro_stick_reduction.ItemClicked += GyroStickReductionMenu_ItemClicked;
+
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
                 menu_touchpad_axis_scale.Items.Add(
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
@@ -343,6 +351,10 @@ namespace BetterJoyForCemu {
         private SplitButton btn_touchpad_inhibit;
         private SplitButton btn_touchpad_sensitivity;
         private SplitButton btn_touchpad_stick_sensitivity;
+        private SplitButton btn_gyro_stick_reduction_x_left;
+        private SplitButton btn_gyro_stick_reduction_y_left;
+        private SplitButton btn_gyro_stick_reduction_x_right;
+        private SplitButton btn_gyro_stick_reduction_y_right;
         private SplitButton btn_touchpad_horizontal_scale;
         private SplitButton btn_touchpad_vertical_scale;
         private SplitButton btn_touchpad_tap_hold;
@@ -499,6 +511,20 @@ namespace BetterJoyForCemu {
                 PromptTouchpadSensitivity(btn_touchpad_stick_sensitivity,
                     "TouchpadStickSensitivity", "Stick sensitivity", "stick sensitivity");
 
+            // One selector per stick per axis, all sharing the preset menu - the click handler
+            // resolves which key to write from menu.Tag, exactly like the two touchpad
+            // sensitivity buttons already share menu_touchpad_sensitivity. Same
+            // right-click-for-an-arbitrary-value affordance; the full 0-100 is meaningful here,
+            // 0 being no reduction and 100 total inhibition.
+            btn_gyro_stick_reduction_x_left = CreateGyroStickReductionButton(
+                "btn_gyro_stick_reduction_x_left", "GyroStickReductionXLeft", "Left stick X");
+            btn_gyro_stick_reduction_y_left = CreateGyroStickReductionButton(
+                "btn_gyro_stick_reduction_y_left", "GyroStickReductionYLeft", "Left stick Y");
+            btn_gyro_stick_reduction_x_right = CreateGyroStickReductionButton(
+                "btn_gyro_stick_reduction_x_right", "GyroStickReductionXRight", "Right stick X");
+            btn_gyro_stick_reduction_y_right = CreateGyroStickReductionButton(
+                "btn_gyro_stick_reduction_y_right", "GyroStickReductionYRight", "Right stick Y");
+
             btn_touchpad_horizontal_scale = CreateChoiceSplitButton(
                 "btn_touchpad_horizontal_scale", menu_touchpad_axis_scale);
             btn_touchpad_horizontal_scale.RightClickHandler = (sender, e) =>
@@ -534,6 +560,26 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(gameControllersButton,
                 "Open the selected profile's virtual controller properties when connected.\r\n" +
                 "Disconnected profiles open the standard Game Controllers list.");
+        }
+
+        // The four Gyro > Stick reduction selectors differ only by which profile key they own,
+        // so build them from one place rather than repeating the wiring four times. Keeping the
+        // key on the button itself is what lets the shared menu handler and the shared loader
+        // below stay generic instead of carrying a four-way branch each.
+        private SplitButton CreateGyroStickReductionButton(string name, string key,
+                                                           string label) {
+            SplitButton button = CreateChoiceSplitButton(name, menu_gyro_stick_reduction);
+            button.Tag = key;
+            button.RightClickHandler = (sender, e) =>
+                PromptProfilePercentage(button, key, label + " reduction",
+                    label.ToLowerInvariant() + " reduction", 0, 100);
+            tip_reassign.SetToolTip(button,
+                "How much of the physical " + label.ToLowerInvariant() + " axis is removed " +
+                "while a gyro-stick output is active. 0% leaves it alone; 100% inhibits it " +
+                "entirely. Gyro is added on top and the total is clamped, so raising this " +
+                "trades thumb range for gyro headroom at full deflection. Choose a preset or " +
+                "right-click for 0% to 100%.");
+            return button;
         }
 
         private SplitButton CreateChoiceSplitButton(string name, ContextMenuStrip menu) {
@@ -957,6 +1003,19 @@ namespace BetterJoyForCemu {
             minDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[2], layout.Y, "GyroStickMinDeflectionXRight");
             minDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[3], layout.Y, "GyroStickMinDeflectionYRight");
             layout.Advance(43);
+
+            // Sub-block of the same section rather than one of its own: the columns above cap
+            // what gyro may contribute, these scale what the thumb contributes to the same sum,
+            // so both are split per stick and per axis for the same reason. Tooltips are set on
+            // each button in CreateGyroStickReductionButton.
+            layout.Heading("Stick reduction",
+                "Reduces physical stick output while gyro is driving it");
+            layout.RowPair(
+                null, btn_gyro_stick_reduction_x_left, "Left X", 24, 114, 181,
+                null, btn_gyro_stick_reduction_y_left, "Left Y", 323, 423, 171);
+            layout.RowPair(
+                null, btn_gyro_stick_reduction_x_right, "Right X", 24, 114, 181,
+                null, btn_gyro_stick_reduction_y_right, "Right Y", 323, 423, 171);
 
             layout.Divider();
             layout.Heading("Orientation",
@@ -2321,6 +2380,8 @@ namespace BetterJoyForCemu {
                 useAsSelector, inactivitySelector, usbSleepOnConnectSelector, gyroActivationModeSelector,
                 btn_gyro_analog_sliders, btn_gyro_mouse_inhibit, btn_default_orientation,
                 btn_touchpad_inhibit, btn_touchpad_sensitivity,
+                btn_gyro_stick_reduction_x_left, btn_gyro_stick_reduction_y_left,
+                btn_gyro_stick_reduction_x_right, btn_gyro_stick_reduction_y_right,
                 btn_touchpad_stick_sensitivity, btn_touchpad_tap_hold,
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
@@ -2505,6 +2566,10 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "GyroStickMinDeflectionXRight", 0).ToString();
                 minDeflectionYRightInput.Text = ControllerMappings.IntOption(
                     SelectedProfileId, "GyroStickMinDeflectionYRight", 0).ToString();
+                LoadGyroStickReductionButton(btn_gyro_stick_reduction_x_left);
+                LoadGyroStickReductionButton(btn_gyro_stick_reduction_y_left);
+                LoadGyroStickReductionButton(btn_gyro_stick_reduction_x_right);
+                LoadGyroStickReductionButton(btn_gyro_stick_reduction_y_right);
 
                 LoadAdaptiveTriggerMode(adaptiveTriggerModeLeftSelector,
                     ControllerMappings.OptionValue(SelectedProfileId,
@@ -2581,7 +2646,7 @@ namespace BetterJoyForCemu {
                      menu_touchpad_axis_scale,
                      menu_touchpad_tap_hold, menu_touchpad_click_lockout,
                      menu_touchpad_two_finger_scroll,
-                     menu_gyro_stick_mode, menu_gyro_stick_axis,
+                     menu_gyro_stick_mode, menu_gyro_stick_axis, menu_gyro_stick_reduction,
                      menu_default_orientation }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
@@ -2997,6 +3062,24 @@ namespace BetterJoyForCemu {
             btn_touchpad_inhibit.Text = value == "true" ? "Enabled" : "Disabled";
         }
 
+        // All four reduction selectors share one preset menu, so the clicked button (parked on
+        // menu.Tag by CreateChoiceSplitButton) is what says which profile key to write - the
+        // same arrangement the two touchpad sensitivity buttons already use.
+        private void GyroStickReductionMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            SplitButton button = menu_gyro_stick_reduction.Tag as SplitButton;
+            if (button == null || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(SelectedProfileId, (string)button.Tag, value);
+            button.Text = value + "%";
+        }
+
+        private void LoadGyroStickReductionButton(SplitButton button) {
+            button.Text = ControllerMappings.IntOption(
+                SelectedProfileId, (string)button.Tag, 0) + "%";
+        }
+
         private void TouchpadSensitivityMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
             SplitButton button = menu_touchpad_sensitivity.Tag as SplitButton;
             if (button == null || String.IsNullOrEmpty(SelectedProfileId))
@@ -3026,16 +3109,16 @@ namespace BetterJoyForCemu {
 
         private void PromptTouchpadSensitivity(SplitButton button, string key,
             string title, string description) {
-            PromptTouchpadPercentage(button, key, title, description, 10, 400);
+            PromptProfilePercentage(button, key, title, description, 10, 400);
         }
 
         private void PromptTouchpadAxisScale(
             SplitButton button, string key, string description) {
-            PromptTouchpadPercentage(button, key, description,
+            PromptProfilePercentage(button, key, description,
                 description.ToLowerInvariant(), 0, 100);
         }
 
-        private void PromptTouchpadPercentage(SplitButton button, string key,
+        private void PromptProfilePercentage(SplitButton button, string key,
             string title, string description, int minimum, int maximum) {
             if (String.IsNullOrEmpty(SelectedProfileId))
                 return;

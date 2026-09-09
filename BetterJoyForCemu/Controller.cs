@@ -3071,12 +3071,12 @@ namespace BetterJoyForCemu {
                 if (gyroLeftStickActiveThisReport) {
                     diagnosticDx = ApplyDeflectionLimits(dx, GyroStickMinDeflectionXLeft, GyroStickMaxDeflectionXLeft);
                     diagnosticDy = ApplyDeflectionLimits(dy, GyroStickMinDeflectionYLeft, GyroStickMaxDeflectionYLeft);
-                    ApplyGyroToStick(stick, diagnosticDx, diagnosticDy);
+                    ApplyGyroToStick(stick, true, diagnosticDx, diagnosticDy);
                 }
                 if (gyroRightStickActiveThisReport) {
                     diagnosticDx = ApplyDeflectionLimits(dx, GyroStickMinDeflectionXRight, GyroStickMaxDeflectionXRight);
                     diagnosticDy = ApplyDeflectionLimits(dy, GyroStickMinDeflectionYRight, GyroStickMaxDeflectionYRight);
-                    ApplyGyroToStick(stick2, diagnosticDx, diagnosticDy);
+                    ApplyGyroToStick(stick2, false, diagnosticDx, diagnosticDy);
                 }
 
                 CaptureGyroStickDiagnosticOutput(true, dt,

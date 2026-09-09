@@ -176,6 +176,8 @@ namespace BetterJoyForCemu {
             "GyroStickMaxDeflectionXRight", "GyroStickMaxDeflectionYRight",
             "GyroStickMinDeflectionXLeft", "GyroStickMinDeflectionYLeft",
             "GyroStickMinDeflectionXRight", "GyroStickMinDeflectionYRight",
+            "GyroStickReductionXLeft", "GyroStickReductionYLeft",
+            "GyroStickReductionXRight", "GyroStickReductionYRight",
             "AdaptiveTriggerModeLeft", "AdaptiveTriggerStartLeft",
             "AdaptiveTriggerSecondaryLeft", "AdaptiveTriggerStrengthLeft",
             "AdaptiveTriggerModeRight", "AdaptiveTriggerStartRight",

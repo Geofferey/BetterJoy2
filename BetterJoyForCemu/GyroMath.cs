@@ -52,7 +52,21 @@ namespace BetterJoyForCemu {
         protected float GyroMouseSmoothingThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingThreshold"]);
         protected float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
         protected float GyroStickSensitivityY = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityY"]);
-        protected float GyroStickReduction = float.Parse(ConfigurationManager.AppSettings["GyroStickReduction"]);
+        // Was a hidden global read once as a field initializer here, so it never re-read after
+        // attach and had no UI at all - a stale value silently shrank the physical stick with
+        // nothing on screen to explain it. Now per-profile alongside the deflection limits and
+        // surfaced as Gyro > Stick reduction. The value is how much of the physical stick is
+        // REMOVED while a gyro-stick output is active: 0 leaves it untouched, 100 inhibits it
+        // completely. Deliberately a new key - the old GyroStickReduction was a raw divisor
+        // where 1 meant "no reduction", so reading a saved 1 as 1% (or a saved 3 as 3%) would
+        // silently mean the opposite of what it used to.
+        // Split per stick and per axis, matching the deflection limits directly above in the same
+        // UI section: those cap what gyro may contribute, these scale what the thumb contributes
+        // to the same sum, so both want the same granularity.
+        protected int GyroStickReductionXLeft => ProfileIntOption("GyroStickReductionXLeft", 0);
+        protected int GyroStickReductionYLeft => ProfileIntOption("GyroStickReductionYLeft", 0);
+        protected int GyroStickReductionXRight => ProfileIntOption("GyroStickReductionXRight", 0);
+        protected int GyroStickReductionYRight => ProfileIntOption("GyroStickReductionYRight", 0);
         protected float GyroStickTiltRangeX = float.Parse(ConfigurationManager.AppSettings["GyroStickTiltRangeX"]);
         protected float GyroStickTiltRangeY = float.Parse(ConfigurationManager.AppSettings["GyroStickTiltRangeY"]);
         protected float GyroStickHybridRateWeight = float.Parse(ConfigurationManager.AppSettings["GyroStickHybridRateWeight"]);
@@ -470,7 +484,8 @@ namespace BetterJoyForCemu {
             string logPath = Path.Combine(AppPaths.DataDir, "gyro_stick_debug.csv");
             const string header =
                 "utc,report,source,serial,pad_id,virtual_sequence,submit,target,active,filtered,beta," +
-                "timer,timer_delta,arrival_ms,legacy_dt_ms,sensitivity_x,sensitivity_y,reduction," +
+                "timer,timer_delta,arrival_ms,legacy_dt_ms,sensitivity_x,sensitivity_y," +
+                "retention_x_left,retention_y_left,retention_x_right,retention_y_right," +
                 "physical_x,physical_y,applied_dx,applied_dy,output_x,output_y," +
                 "euler_pitch_deg,euler_yaw_deg,euler_roll_deg,euler_dp_deg,euler_dy_deg,euler_dr_deg," +
                 "sample0_gx_dps,sample0_gy_dps,sample0_gz_dps," +
@@ -584,7 +599,10 @@ namespace BetterJoyForCemu {
                 GyroStickCsv(gyroStickDiagDt * 1000.0f),
                 GyroStickCsv(GyroStickSensitivityX),
                 GyroStickCsv(GyroStickSensitivityY),
-                GyroStickCsv(GyroStickReduction),
+                GyroStickCsv(EffectiveGyroStickRetention(true, true)),
+                GyroStickCsv(EffectiveGyroStickRetention(true, false)),
+                GyroStickCsv(EffectiveGyroStickRetention(false, true)),
+                GyroStickCsv(EffectiveGyroStickRetention(false, false)),
                 GyroStickCsv(gyroStickDiagPhysicalX),
                 GyroStickCsv(gyroStickDiagPhysicalY),
                 GyroStickCsv(gyroStickDiagAppliedDx),
@@ -1578,15 +1596,20 @@ namespace BetterJoyForCemu {
                 gyroStickPlayerSpace.Reset();
         }
 
-        protected float EffectiveGyroStickReduction() {
-            // Reduction is a divisor. Treat zero/invalid values as the neutral 1x setting rather
-            // than allowing centered 0/0 -> NaN and tiny physical-stick noise / 0 -> +/-Infinity,
-            // which later clamps into apparently direction-sensitive full deflection.
-            return GyroStickReduction > 0.0f &&
-                   !float.IsNaN(GyroStickReduction) &&
-                   !float.IsInfinity(GyroStickReduction)
-                ? GyroStickReduction
-                : 1.0f;
+        // Fraction of the physical stick that survives while a gyro-stick output is active - the
+        // complement of this stick/axis's reduction percentage. A multiplier rather than the divisor this used
+        // to be: total inhibition is then an ordinary 0.0 instead of a division by zero, which is
+        // exactly what forced the old NaN/Infinity guarding here (a zero divisor turned a centered
+        // 0/0 into NaN and tiny resting-stick noise into +/-Infinity, clamping into apparently
+        // direction-sensitive full deflection). Out-of-range values saturate rather than being
+        // treated as neutral, so a bad config can no longer mean the opposite of what it says.
+        protected float EffectiveGyroStickRetention(bool isLeftStick, bool horizontal) {
+            int percent = isLeftStick
+                ? (horizontal ? GyroStickReductionXLeft : GyroStickReductionYLeft)
+                : (horizontal ? GyroStickReductionXRight : GyroStickReductionYRight);
+            if (percent <= 0)
+                return 1.0f;
+            return percent >= 100 ? 0.0f : (100 - percent) / 100.0f;
         }
 
         protected const float DegreesToRadiansGyroStick = 0.0174532925f;
@@ -1610,12 +1633,12 @@ namespace BetterJoyForCemu {
                 : 35.0f * DegreesToRadiansGyroStick;
         }
 
-        protected void ApplyGyroToStick(float[] controlStick, float dx, float dy) {
-            float stickReduction = EffectiveGyroStickReduction();
+        protected void ApplyGyroToStick(float[] controlStick, bool isLeftStick,
+                                        float dx, float dy) {
             controlStick[0] = Math.Max(-1.0f, Math.Min(1.0f,
-                controlStick[0] / stickReduction + dx));
+                controlStick[0] * EffectiveGyroStickRetention(isLeftStick, true) + dx));
             controlStick[1] = Math.Max(-1.0f, Math.Min(1.0f,
-                controlStick[1] / stickReduction + dy));
+                controlStick[1] * EffectiveGyroStickRetention(isLeftStick, false) + dy));
         }
 
         // Combines this stick's own pending rate accumulation with cur_rotation (absolute
@@ -1736,9 +1759,9 @@ namespace BetterJoyForCemu {
                     ? heldGyroStickDyLeft : heldGyroStickDyRight;
 
                 if (gyroLeftStickActiveThisReport)
-                    ApplyGyroToStick(stick, heldGyroStickDxLeft, heldGyroStickDyLeft);
+                    ApplyGyroToStick(stick, true, heldGyroStickDxLeft, heldGyroStickDyLeft);
                 if (gyroRightStickActiveThisReport)
-                    ApplyGyroToStick(stick2, heldGyroStickDxRight, heldGyroStickDyRight);
+                    ApplyGyroToStick(stick2, false, heldGyroStickDxRight, heldGyroStickDyRight);
 
                 CaptureGyroStickDiagnosticOutput(true, gyroStickReportDt,
                     heldPhysicalX, heldPhysicalY, heldDiagnosticDx, heldDiagnosticDy,
@@ -1788,9 +1811,9 @@ namespace BetterJoyForCemu {
                 ? rightDy : 0.0f;
 
             if (gyroLeftStickActiveThisReport)
-                ApplyGyroToStick(stick, leftDx, leftDy);
+                ApplyGyroToStick(stick, true, leftDx, leftDy);
             if (gyroRightStickActiveThisReport)
-                ApplyGyroToStick(stick2, rightDx, rightDy);
+                ApplyGyroToStick(stick2, false, rightDx, rightDy);
 
             float diagnosticDx = gyroLeftStickActiveThisReport ? leftDx : rightDx;
             float diagnosticDy = gyroLeftStickActiveThisReport ? leftDy : rightDy;
