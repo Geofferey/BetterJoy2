@@ -14,7 +14,14 @@ namespace BetterJoyForCemu {
     // newest physical member's creation order and lets the dialog select the most recently
     // connected logical controller without relying on PadId (which is only a transient slot).
     public sealed class ControllerProfileInfo {
+        // The concrete stored row this entry edits - still orientation-specific for a Joy-Con
+        // (solo-left:/vertical-left:), because that is what every read and write in the profile
+        // system is keyed by. GroupId below is what the list shows and selects on.
         public string ProfileId { get; set; }
+        // Identity of the physical device, which for a Joy-Con folds its two orientation rows
+        // into one entry (see ControllerMappings.ProfileGroupId). Equal to ProfileId for every
+        // other kind, including a joined pair.
+        public string GroupId { get; set; }
         public string DisplayName { get; set; }
         public long ConnectionSequence { get; set; }
         public bool IsConnected { get; set; }
@@ -1008,8 +1015,11 @@ namespace BetterJoyForCemu {
             if (controller is JoyconController pairJoycon && pairJoycon.other != null && pairJoycon.other != pairJoycon) {
                 JoyconController left = pairJoycon.isLeft ? pairJoycon : pairJoycon.other;
                 JoyconController right = pairJoycon.isLeft ? pairJoycon.other : pairJoycon;
+                string pairId = ProfileIdFor(controller);
                 return new ControllerProfileInfo {
-                    ProfileId = ProfileIdFor(controller),
+                    ProfileId = pairId,
+                    // A joined pair is one logical controller already, so its group is itself.
+                    GroupId = pairId,
                     DisplayName = "Joy-Con Pair (L " + DeviceSuffix(left) + " / R " + DeviceSuffix(right) + ")",
                     ConnectionSequence = Math.Max(left.virtualControllerSequence, right.virtualControllerSequence),
                     IsConnected = true,
@@ -1029,17 +1039,22 @@ namespace BetterJoyForCemu {
                     // narrowing), which is always a JoyconController - the is-check is defensive,
                     // not load-bearing, same reasoning as ProfileIdFor above.
                     JoyconController soloJoycon = controller as JoyconController;
-                    if (soloJoycon != null && soloJoycon.other == soloJoycon)
-                        type = soloJoycon.isLeft ? "Left Joy-Con (vertical)" : "Right Joy-Con (vertical)";
-                    else if (soloJoycon != null)
-                        type = soloJoycon.isLeft ? "Left Joy-Con (solo)" : "Right Joy-Con (solo)";
+                    // Deliberately no "(solo)"/"(vertical)" suffix any more: both orientations are
+                    // one entry now, and the name would change under the user as they flip the
+                    // grip while the same entry stays selected.
+                    if (soloJoycon != null)
+                        type = soloJoycon.isLeft ? "Left Joy-Con" : "Right Joy-Con";
                     else
                         type = "Controller";
                     break;
             }
 
+            string profileId = ProfileIdFor(controller);
             return new ControllerProfileInfo {
-                ProfileId = ProfileIdFor(controller),
+                // Still the live orientation's row - a connected Joy-Con edits whichever
+                // orientation it is physically in, which is what "follow the controller" means.
+                ProfileId = profileId,
+                GroupId = ProfileGroupId(profileId),
                 DisplayName = type + " (" + DeviceSuffix(controller) + ")",
                 ConnectionSequence = controller.virtualControllerSequence,
                 IsConnected = true,
@@ -1063,7 +1078,7 @@ namespace BetterJoyForCemu {
 
                 ControllerProfileInfo info = ProfileFor(controller);
                 if (info != null)
-                    result[info.ProfileId] = info;
+                    result[info.GroupId ?? info.ProfileId] = info;
             }
 
             return result.Values.OrderByDescending(p => p.ConnectionSequence).ToList();
@@ -1085,13 +1100,21 @@ namespace BetterJoyForCemu {
             // is missing from the list until the UI is restarted.
             var knownIds = new HashSet<string>(snapshot.Keys, StringComparer.Ordinal);
             knownIds.UnionWith(ProfileIdsOnDisk());
+            // Keyed by group, not by stored id: a Joy-Con's two orientation rows are one physical
+            // device and must be one entry. ResolveOrientationProfileId picks which of the two
+            // rows this entry edits while the controller is disconnected - the orientation it
+            // will come back in. A connected controller overrides that below with its live one.
             foreach (string profileId in knownIds) {
-                merged[profileId] = new ControllerProfileInfo {
-                    ProfileId = profileId,
-                    DisplayName = DisconnectedDisplayName(profileId),
+                string groupId = ProfileGroupId(profileId);
+                if (merged.ContainsKey(groupId))
+                    continue;
+                merged[groupId] = new ControllerProfileInfo {
+                    ProfileId = ResolveOrientationProfileId(groupId),
+                    GroupId = groupId,
+                    DisplayName = DisconnectedDisplayName(groupId),
                     ConnectionSequence = -1,
                     IsConnected = false,
-                    Kind = KindFromProfileId(profileId),
+                    Kind = KindFromProfileId(groupId),
                 };
             }
 
@@ -1099,7 +1122,9 @@ namespace BetterJoyForCemu {
                 foreach (ControllerProfileInfo connected in connectedProfiles) {
                     if (connected != null && !String.IsNullOrEmpty(connected.ProfileId)) {
                         connected.IsConnected = true;
-                        merged[connected.ProfileId] = connected;
+                        if (String.IsNullOrEmpty(connected.GroupId))
+                            connected.GroupId = ProfileGroupId(connected.ProfileId);
+                        merged[connected.GroupId] = connected;
                     }
                 }
             }
@@ -1341,6 +1366,14 @@ namespace BetterJoyForCemu {
                 case "vertical-right":
                     name = "Right Joy-Con (vertical) (" + IdentitySuffix(identity) + ")";
                     break;
+                // Grouped identities (see ProfileGroupId) - one entry covering both orientations,
+                // so the name deliberately carries no orientation suffix.
+                case "joycon-left":
+                    name = "Left Joy-Con (" + IdentitySuffix(identity) + ")";
+                    break;
+                case "joycon-right":
+                    name = "Right Joy-Con (" + IdentitySuffix(identity) + ")";
+                    break;
                 default:
                     name = "Controller profile (" + IdentitySuffix(identity) + ")";
                     break;
@@ -1385,6 +1418,92 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // A Joy-Con's orientation is baked into its profile ID (ProfileIdFor), so one physical
+        // unit owns two stored rows and the profile list showed both - a connected pair produced
+        // five entries (solo L/R, vertical L/R, pair). These fold the two rows onto one identity
+        // for display and selection ONLY. Nothing persists a joycon-* ID and nothing reads
+        // settings through one: the concrete solo-*/vertical-* row stays the storage key, so
+        // per-orientation settings keep working exactly as before.
+        private const string JoyconGroupLeftPrefix = "joycon-left:";
+        private const string JoyconGroupRightPrefix = "joycon-right:";
+
+        public static string ProfileGroupId(string profileId) {
+            if (String.IsNullOrEmpty(profileId))
+                return profileId;
+            if (profileId.StartsWith("solo-left:", StringComparison.Ordinal))
+                return JoyconGroupLeftPrefix + profileId.Substring("solo-left:".Length);
+            if (profileId.StartsWith("vertical-left:", StringComparison.Ordinal))
+                return JoyconGroupLeftPrefix + profileId.Substring("vertical-left:".Length);
+            if (profileId.StartsWith("solo-right:", StringComparison.Ordinal))
+                return JoyconGroupRightPrefix + profileId.Substring("solo-right:".Length);
+            if (profileId.StartsWith("vertical-right:", StringComparison.Ordinal))
+                return JoyconGroupRightPrefix + profileId.Substring("vertical-right:".Length);
+            // Every other kind, joined pairs included, is already one entry per device.
+            return profileId;
+        }
+
+        // The stored rows a grouped identity covers, most-preferred first. Only one may actually
+        // exist: EnsureProfileSaved creates the row for whichever orientation was seen on
+        // connect, so a Joy-Con that has only ever been used sideways has no vertical row.
+        private static string[] ProfileIdsInGroup(string groupId) {
+            if (String.IsNullOrEmpty(groupId))
+                return new string[0];
+            if (groupId.StartsWith(JoyconGroupLeftPrefix, StringComparison.Ordinal)) {
+                string identity = groupId.Substring(JoyconGroupLeftPrefix.Length);
+                return new[] { "solo-left:" + identity, "vertical-left:" + identity };
+            }
+            if (groupId.StartsWith(JoyconGroupRightPrefix, StringComparison.Ordinal)) {
+                string identity = groupId.Substring(JoyconGroupRightPrefix.Length);
+                return new[] { "solo-right:" + identity, "vertical-right:" + identity };
+            }
+            return new[] { groupId };
+        }
+
+        // Which stored row a grouped entry should edit when its controller is NOT connected, so
+        // there is no live orientation to follow: the one it will adopt next time it connects.
+        // Falls back to horizontal, then to whichever row actually exists.
+        public static string ResolveOrientationProfileId(string groupId) {
+            string[] candidates = ProfileIdsInGroup(groupId);
+            if (candidates.Length < 2)
+                return groupId;
+
+            EnsureLoaded();
+            Dictionary<string, Dictionary<string, string>> snapshot = profiles;
+            string horizontal = candidates[0];
+            string vertical = candidates[1];
+
+            foreach (string candidate in candidates) {
+                Dictionary<string, string> profile;
+                string orientation;
+                if (snapshot.TryGetValue(candidate, out profile) &&
+                        profile.TryGetValue("DefaultOrientation", out orientation) &&
+                        !String.IsNullOrEmpty(orientation)) {
+                    return orientation == OrientationVertical ? vertical : horizontal;
+                }
+            }
+
+            if (snapshot.ContainsKey(horizontal))
+                return horizontal;
+            if (snapshot.ContainsKey(vertical))
+                return vertical;
+            return horizontal;
+        }
+
+        // DefaultOrientation decides whether a lone Joy-Con self-pairs into vertical on connect,
+        // but it lived inside one orientation's row - so it had to be set identically in both to
+        // take effect, since the row consulted depends on the orientation you are already in.
+        // Write it to every row in the group instead. Creating the sibling row is deliberate: it
+        // is all-defaults, exactly what EnsureProfileSaved would have written anyway.
+        public static void SetGroupedOptionValue(string profileId, string key, string value) {
+            if (key != "DefaultOrientation") {
+                SetOptionValue(profileId, key, value);
+                return;
+            }
+
+            foreach (string sibling in ProfileIdsInGroup(ProfileGroupId(profileId)))
+                SetOptionValue(sibling, key, value);
+        }
+
         private static ControllerKind? KindFromProfileId(string profileId) {
             if (String.IsNullOrEmpty(profileId))
                 return null;
@@ -1398,11 +1517,14 @@ namespace BetterJoyForCemu {
                 return ControllerKind.Snes;
             if (profileId.StartsWith("n64:", StringComparison.Ordinal))
                 return ControllerKind.N64;
+            // Grouped ids reach here too, since the list is keyed by ProfileGroupId now.
             if (profileId.StartsWith("solo-left:", StringComparison.Ordinal) ||
-                profileId.StartsWith("vertical-left:", StringComparison.Ordinal))
+                profileId.StartsWith("vertical-left:", StringComparison.Ordinal) ||
+                profileId.StartsWith(JoyconGroupLeftPrefix, StringComparison.Ordinal))
                 return ControllerKind.Left;
             if (profileId.StartsWith("solo-right:", StringComparison.Ordinal) ||
-                profileId.StartsWith("vertical-right:", StringComparison.Ordinal))
+                profileId.StartsWith("vertical-right:", StringComparison.Ordinal) ||
+                profileId.StartsWith(JoyconGroupRightPrefix, StringComparison.Ordinal))
                 return ControllerKind.Right;
             return null;
         }

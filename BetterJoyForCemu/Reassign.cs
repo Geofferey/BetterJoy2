@@ -2740,21 +2740,28 @@ namespace BetterJoyForCemu {
             List<ControllerProfileInfo> choices =
                 ControllerMappings.IncludeDisconnectedProfiles(connectedChoices);
 
-            string selectedId = SelectedProfileId;
+            // Selection tracks the GROUP, not the stored row. A Joy-Con's row id changes the
+            // moment it flips orientation (solo-left: <-> vertical-left:), so keying selection on
+            // ProfileId would drop the user's selection every time they flipped the grip - the
+            // group id is stable across that, which is the whole point of grouping.
+            string selectedId = SelectedProfile?.GroupId;
             long newest = choices.Count == 0 ? -1 : choices.Max(p => p.ConnectionSequence);
             string targetId = selectedId;
 
             if (initialControllerSelection) {
-                targetId = choices.Any(p => p.ProfileId == preferredProfileId)
-                    ? preferredProfileId
-                    : choices.FirstOrDefault()?.ProfileId;
+                // preferredProfileId arrives as a stored row id (it comes from a controller), so
+                // group it before matching.
+                string preferredGroupId = ControllerMappings.ProfileGroupId(preferredProfileId);
+                targetId = choices.Any(p => p.GroupId == preferredGroupId)
+                    ? preferredGroupId
+                    : choices.FirstOrDefault()?.GroupId;
             } else if (newest > newestControllerSequence) {
                 // A genuinely new connection arrived while the dialog was open. Match the same
                 // default as opening the dialog: the most recently connected logical controller.
-                targetId = choices.FirstOrDefault()?.ProfileId;
-            } else if (!choices.Any(p => p.ProfileId == selectedId)) {
+                targetId = choices.FirstOrDefault()?.GroupId;
+            } else if (!choices.Any(p => p.GroupId == selectedId)) {
                 // Join/split changes the logical profile ID without creating a new Joycon.
-                targetId = choices.FirstOrDefault()?.ProfileId;
+                targetId = choices.FirstOrDefault()?.GroupId;
             }
 
             bool changed = controllerSelector.Items.Count != choices.Count;
@@ -2780,8 +2787,8 @@ namespace BetterJoyForCemu {
             }
 
             ControllerProfileInfo target = controllerSelector.Items.Cast<ControllerProfileInfo>()
-                .FirstOrDefault(p => p.ProfileId == targetId);
-            bool selectionChanged = selectedId != target?.ProfileId;
+                .FirstOrDefault(p => p.GroupId == targetId);
+            bool selectionChanged = selectedId != target?.GroupId;
             controllerSelector.SelectedItem = target;
             if (target == null)
                 controllerSelector.SelectedIndex = -1;
@@ -3311,7 +3318,12 @@ namespace BetterJoyForCemu {
                 return;
 
             string value = (string)e.ClickedItem.Tag;
-            ControllerMappings.SetOptionValue(SelectedProfileId, "DefaultOrientation", value);
+            // Grouped write: this one option decides which orientation a lone Joy-Con adopts on
+            // connect, so it has to hold in both orientation rows. Setting it only on the row
+            // being edited meant it silently did nothing once the controller came back in the
+            // other orientation, and you had to set it twice.
+            ControllerMappings.SetGroupedOptionValue(
+                SelectedProfileId, "DefaultOrientation", value);
             btn_default_orientation.Text = value == ControllerMappings.OrientationVertical
                 ? "Vertical" : "Horizontal";
         }
