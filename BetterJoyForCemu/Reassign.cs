@@ -21,7 +21,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_gyro_mouse_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_sensitivity = new ContextMenuStrip();
-        ContextMenuStrip menu_gyro_stick_reduction = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_stick_percent = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_axis_scale = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_click_lockout = new ContextMenuStrip();
@@ -107,14 +107,14 @@ namespace BetterJoyForCemu {
         private CheckBox invertStickYCheckBox;
         private CheckBox invertStickXRightCheckBox;
         private CheckBox invertStickYRightCheckBox;
-        private TextBox maxDeflectionXLeftInput;
-        private TextBox maxDeflectionYLeftInput;
-        private TextBox maxDeflectionXRightInput;
-        private TextBox maxDeflectionYRightInput;
-        private TextBox minDeflectionXLeftInput;
-        private TextBox minDeflectionYLeftInput;
-        private TextBox minDeflectionXRightInput;
-        private TextBox minDeflectionYRightInput;
+        private SplitButton maxDeflectionXLeftInput;
+        private SplitButton maxDeflectionYLeftInput;
+        private SplitButton maxDeflectionXRightInput;
+        private SplitButton maxDeflectionYRightInput;
+        private SplitButton minDeflectionXLeftInput;
+        private SplitButton minDeflectionYLeftInput;
+        private SplitButton minDeflectionXRightInput;
+        private SplitButton minDeflectionYRightInput;
         private bool updatingProfileOptions;
         private bool updatingGlobalOptions;
         private readonly Dictionary<string, CheckBox> globalOptionCheckBoxes =
@@ -243,12 +243,12 @@ namespace BetterJoyForCemu {
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
             menu_touchpad_sensitivity.ItemClicked += TouchpadSensitivityMenu_ItemClicked;
 
-            // How much of the physical stick is removed while gyro-stick is active: 0% leaves it
-            // alone, 100% inhibits it entirely.
+            // Shared by every gyro-stick percentage selector - the deflection limits and the
+            // stick reduction alike - since all of them are a plain 0-100.
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
-                menu_gyro_stick_reduction.Items.Add(
+                menu_gyro_stick_percent.Items.Add(
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
-            menu_gyro_stick_reduction.ItemClicked += GyroStickReductionMenu_ItemClicked;
+            menu_gyro_stick_percent.ItemClicked += GyroStickPercentMenu_ItemClicked;
 
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
                 menu_touchpad_axis_scale.Items.Add(
@@ -511,19 +511,63 @@ namespace BetterJoyForCemu {
                 PromptTouchpadSensitivity(btn_touchpad_stick_sensitivity,
                     "TouchpadStickSensitivity", "Stick sensitivity", "stick sensitivity");
 
-            // One selector per stick per axis, all sharing the preset menu - the click handler
-            // resolves which key to write from menu.Tag, exactly like the two touchpad
-            // sensitivity buttons already share menu_touchpad_sensitivity. Same
-            // right-click-for-an-arbitrary-value affordance; the full 0-100 is meaningful here,
-            // 0 being no reduction and 100 total inhibition.
-            btn_gyro_stick_reduction_x_left = CreateGyroStickReductionButton(
-                "btn_gyro_stick_reduction_x_left", "GyroStickReductionXLeft", "Left stick X");
-            btn_gyro_stick_reduction_y_left = CreateGyroStickReductionButton(
-                "btn_gyro_stick_reduction_y_left", "GyroStickReductionYLeft", "Left stick Y");
-            btn_gyro_stick_reduction_x_right = CreateGyroStickReductionButton(
-                "btn_gyro_stick_reduction_x_right", "GyroStickReductionXRight", "Right stick X");
-            btn_gyro_stick_reduction_y_right = CreateGyroStickReductionButton(
-                "btn_gyro_stick_reduction_y_right", "GyroStickReductionYRight", "Right stick Y");
+            // Every gyro-stick percentage on this page is one selector per stick per axis, all
+            // sharing one preset menu - the click handler resolves which key to write from
+            // menu.Tag, exactly like the two touchpad sensitivity buttons already share
+            // menu_touchpad_sensitivity. Same right-click-for-an-arbitrary-value affordance, and
+            // the full 0-100 is meaningful for all of them.
+            string reductionTip =
+                "How much of the physical stick is removed while a gyro-stick output is " +
+                "active. 0% leaves it alone; 100% inhibits it entirely. Gyro is added on top " +
+                "and the total is clamped, so raising this trades thumb range for gyro headroom " +
+                "at full deflection. Choose a preset or right-click for 0% to 100%.";
+            string maxDeflectionTip =
+                "The furthest gyro alone may push this axis, as a percentage of full " +
+                "deflection. The physical stick can still reach full deflection on top of a " +
+                "capped gyro contribution. Choose a preset or right-click for 0% to 100%.";
+            string minDeflectionTip =
+                "The instant real gyro rotation is detected - not sensor noise at rest - this " +
+                "axis jumps to at least this percentage of full deflection instead of ramping " +
+                "up from near zero, which keeps small nudges from falling below a game's own " +
+                "stick deadzone. Choose a preset or right-click for 0% to 100%.";
+
+            maxDeflectionXLeftInput = CreateGyroStickPercentButton(
+                "maxDeflectionXLeftInput", "GyroStickMaxDeflectionXLeft",
+                "Left stick max X", maxDeflectionTip);
+            maxDeflectionYLeftInput = CreateGyroStickPercentButton(
+                "maxDeflectionYLeftInput", "GyroStickMaxDeflectionYLeft",
+                "Left stick max Y", maxDeflectionTip);
+            maxDeflectionXRightInput = CreateGyroStickPercentButton(
+                "maxDeflectionXRightInput", "GyroStickMaxDeflectionXRight",
+                "Right stick max X", maxDeflectionTip);
+            maxDeflectionYRightInput = CreateGyroStickPercentButton(
+                "maxDeflectionYRightInput", "GyroStickMaxDeflectionYRight",
+                "Right stick max Y", maxDeflectionTip);
+            minDeflectionXLeftInput = CreateGyroStickPercentButton(
+                "minDeflectionXLeftInput", "GyroStickMinDeflectionXLeft",
+                "Left stick min X", minDeflectionTip);
+            minDeflectionYLeftInput = CreateGyroStickPercentButton(
+                "minDeflectionYLeftInput", "GyroStickMinDeflectionYLeft",
+                "Left stick min Y", minDeflectionTip);
+            minDeflectionXRightInput = CreateGyroStickPercentButton(
+                "minDeflectionXRightInput", "GyroStickMinDeflectionXRight",
+                "Right stick min X", minDeflectionTip);
+            minDeflectionYRightInput = CreateGyroStickPercentButton(
+                "minDeflectionYRightInput", "GyroStickMinDeflectionYRight",
+                "Right stick min Y", minDeflectionTip);
+
+            btn_gyro_stick_reduction_x_left = CreateGyroStickPercentButton(
+                "btn_gyro_stick_reduction_x_left", "GyroStickReductionXLeft",
+                "Left stick X reduction", reductionTip);
+            btn_gyro_stick_reduction_y_left = CreateGyroStickPercentButton(
+                "btn_gyro_stick_reduction_y_left", "GyroStickReductionYLeft",
+                "Left stick Y reduction", reductionTip);
+            btn_gyro_stick_reduction_x_right = CreateGyroStickPercentButton(
+                "btn_gyro_stick_reduction_x_right", "GyroStickReductionXRight",
+                "Right stick X reduction", reductionTip);
+            btn_gyro_stick_reduction_y_right = CreateGyroStickPercentButton(
+                "btn_gyro_stick_reduction_y_right", "GyroStickReductionYRight",
+                "Right stick Y reduction", reductionTip);
 
             btn_touchpad_horizontal_scale = CreateChoiceSplitButton(
                 "btn_touchpad_horizontal_scale", menu_touchpad_axis_scale);
@@ -562,23 +606,18 @@ namespace BetterJoyForCemu {
                 "Disconnected profiles open the standard Game Controllers list.");
         }
 
-        // The four Gyro > Stick reduction selectors differ only by which profile key they own,
-        // so build them from one place rather than repeating the wiring four times. Keeping the
-        // key on the button itself is what lets the shared menu handler and the shared loader
-        // below stay generic instead of carrying a four-way branch each.
-        private SplitButton CreateGyroStickReductionButton(string name, string key,
-                                                           string label) {
-            SplitButton button = CreateChoiceSplitButton(name, menu_gyro_stick_reduction);
+        // The twelve gyro-stick percentage selectors (eight deflection limits, four stick
+        // reduction) differ only by which profile key they own and what they say, so build them
+        // from one place rather than repeating the wiring twelve times. Keeping the key on the
+        // button itself is what lets the shared menu handler and the shared loader below stay
+        // generic instead of each carrying a twelve-way branch.
+        private SplitButton CreateGyroStickPercentButton(string name, string key,
+                                                          string title, string tooltip) {
+            SplitButton button = CreateChoiceSplitButton(name, menu_gyro_stick_percent);
             button.Tag = key;
             button.RightClickHandler = (sender, e) =>
-                PromptProfilePercentage(button, key, label + " reduction",
-                    label.ToLowerInvariant() + " reduction", 0, 100);
-            tip_reassign.SetToolTip(button,
-                "How much of the physical " + label.ToLowerInvariant() + " axis is removed " +
-                "while a gyro-stick output is active. 0% leaves it alone; 100% inhibits it " +
-                "entirely. Gyro is added on top and the total is clamped, so raising this " +
-                "trades thumb range for gyro headroom at full deflection. Choose a preset or " +
-                "right-click for 0% to 100%.");
+                PromptProfilePercentage(button, key, title, title.ToLowerInvariant(), 0, 100);
+            tip_reassign.SetToolTip(button, tooltip);
             return button;
         }
 
@@ -983,26 +1022,24 @@ namespace BetterJoyForCemu {
             layout.Heading("Deflection limits",
                 "How far gyro alone may push each stick, and the minimum once it starts moving.");
 
-            int[] deflectionColumnX = { 140, 240, 340, 440 };
-            string[] deflectionColumnLabels = { "Max X", "Max Y", "Min X", "Min Y" };
-            for (int column = 0; column < deflectionColumnX.Length; column++)
-                page.Controls.Add(CreateLabel(deflectionColumnLabels[column], deflectionColumnX[column],
-                    layout.Y, ProfileMuted, false, 8.25F));
-            layout.Advance(21);
-
-            page.Controls.Add(CreateLabel("Left stick", 24, layout.Y + 6, ProfileText, false));
-            maxDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[0], layout.Y, "GyroStickMaxDeflectionXLeft");
-            maxDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[1], layout.Y, "GyroStickMaxDeflectionYLeft");
-            minDeflectionXLeftInput = CreateProfilePercentInput(page, deflectionColumnX[2], layout.Y, "GyroStickMinDeflectionXLeft");
-            minDeflectionYLeftInput = CreateProfilePercentInput(page, deflectionColumnX[3], layout.Y, "GyroStickMinDeflectionYLeft");
-            layout.Advance(34);
-
-            page.Controls.Add(CreateLabel("Right stick", 24, layout.Y + 6, ProfileText, false));
-            maxDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[0], layout.Y, "GyroStickMaxDeflectionXRight");
-            maxDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[1], layout.Y, "GyroStickMaxDeflectionYRight");
-            minDeflectionXRightInput = CreateProfilePercentInput(page, deflectionColumnX[2], layout.Y, "GyroStickMinDeflectionXRight");
-            minDeflectionYRightInput = CreateProfilePercentInput(page, deflectionColumnX[3], layout.Y, "GyroStickMinDeflectionYRight");
-            layout.Advance(43);
+            // Two per row rather than the previous four-across grid of narrow text boxes: a
+            // dropdown needs room for its value and its split arrow, and four of those across
+            // this page would be cramped enough to clip. The page scrolls (CreateProfilePage sets
+            // AutoScroll, and AutoScrollMinSize is driven by layout.Y below), so the extra height
+            // costs nothing. Labels carry stick and axis directly instead of relying on column
+            // headers lining up with controls that are now much wider.
+            layout.RowPair(
+                null, maxDeflectionXLeftInput, "Left max X", 24, 114, 181,
+                null, maxDeflectionYLeftInput, "Left max Y", 323, 423, 171);
+            layout.RowPair(
+                null, minDeflectionXLeftInput, "Left min X", 24, 114, 181,
+                null, minDeflectionYLeftInput, "Left min Y", 323, 423, 171);
+            layout.RowPair(
+                null, maxDeflectionXRightInput, "Right max X", 24, 114, 181,
+                null, maxDeflectionYRightInput, "Right max Y", 323, 423, 171);
+            layout.RowPair(
+                null, minDeflectionXRightInput, "Right min X", 24, 114, 181,
+                null, minDeflectionYRightInput, "Right min Y", 323, 423, 171);
 
             // Sub-block of the same section rather than one of its own: the columns above cap
             // what gyro may contribute, these scale what the thumb contributes to the same sum,
@@ -2004,10 +2041,9 @@ namespace BetterJoyForCemu {
 
         private bool IsDeferredCommitProfileInput(Control control) {
             return control != null && (
-                control == maxDeflectionXLeftInput || control == maxDeflectionYLeftInput ||
-                control == maxDeflectionXRightInput || control == maxDeflectionYRightInput ||
-                control == minDeflectionXLeftInput || control == minDeflectionYLeftInput ||
-                control == minDeflectionXRightInput || control == minDeflectionYRightInput ||
+                // The eight gyro deflection limits used to be here too. They are dropdown
+                // selectors now, which commit on click rather than on focus loss, so they have
+                // no deferred edit to flush.
                 control == adaptiveTriggerStartLeftInput ||
                 control == adaptiveTriggerSecondaryLeftInput ||
                 control == adaptiveTriggerStrengthLeftInput ||
@@ -2550,26 +2586,18 @@ namespace BetterJoyForCemu {
                 invertStickYRightCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroStickInvertYRight");
 
-                maxDeflectionXLeftInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMaxDeflectionXLeft", 100).ToString();
-                maxDeflectionYLeftInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMaxDeflectionYLeft", 100).ToString();
-                maxDeflectionXRightInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMaxDeflectionXRight", 100).ToString();
-                maxDeflectionYRightInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMaxDeflectionYRight", 100).ToString();
-                minDeflectionXLeftInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMinDeflectionXLeft", 0).ToString();
-                minDeflectionYLeftInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMinDeflectionYLeft", 0).ToString();
-                minDeflectionXRightInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMinDeflectionXRight", 0).ToString();
-                minDeflectionYRightInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "GyroStickMinDeflectionYRight", 0).ToString();
-                LoadGyroStickReductionButton(btn_gyro_stick_reduction_x_left);
-                LoadGyroStickReductionButton(btn_gyro_stick_reduction_y_left);
-                LoadGyroStickReductionButton(btn_gyro_stick_reduction_x_right);
-                LoadGyroStickReductionButton(btn_gyro_stick_reduction_y_right);
+                LoadGyroStickPercentButton(maxDeflectionXLeftInput, 100);
+                LoadGyroStickPercentButton(maxDeflectionYLeftInput, 100);
+                LoadGyroStickPercentButton(maxDeflectionXRightInput, 100);
+                LoadGyroStickPercentButton(maxDeflectionYRightInput, 100);
+                LoadGyroStickPercentButton(minDeflectionXLeftInput, 0);
+                LoadGyroStickPercentButton(minDeflectionYLeftInput, 0);
+                LoadGyroStickPercentButton(minDeflectionXRightInput, 0);
+                LoadGyroStickPercentButton(minDeflectionYRightInput, 0);
+                LoadGyroStickPercentButton(btn_gyro_stick_reduction_x_left, 0);
+                LoadGyroStickPercentButton(btn_gyro_stick_reduction_y_left, 0);
+                LoadGyroStickPercentButton(btn_gyro_stick_reduction_x_right, 0);
+                LoadGyroStickPercentButton(btn_gyro_stick_reduction_y_right, 0);
 
                 LoadAdaptiveTriggerMode(adaptiveTriggerModeLeftSelector,
                     ControllerMappings.OptionValue(SelectedProfileId,
@@ -2646,7 +2674,7 @@ namespace BetterJoyForCemu {
                      menu_touchpad_axis_scale,
                      menu_touchpad_tap_hold, menu_touchpad_click_lockout,
                      menu_touchpad_two_finger_scroll,
-                     menu_gyro_stick_mode, menu_gyro_stick_axis, menu_gyro_stick_reduction,
+                     menu_gyro_stick_mode, menu_gyro_stick_axis, menu_gyro_stick_percent,
                      menu_default_orientation }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
@@ -3065,8 +3093,8 @@ namespace BetterJoyForCemu {
         // All four reduction selectors share one preset menu, so the clicked button (parked on
         // menu.Tag by CreateChoiceSplitButton) is what says which profile key to write - the
         // same arrangement the two touchpad sensitivity buttons already use.
-        private void GyroStickReductionMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
-            SplitButton button = menu_gyro_stick_reduction.Tag as SplitButton;
+        private void GyroStickPercentMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            SplitButton button = menu_gyro_stick_percent.Tag as SplitButton;
             if (button == null || String.IsNullOrEmpty(SelectedProfileId))
                 return;
 
@@ -3075,9 +3103,12 @@ namespace BetterJoyForCemu {
             button.Text = value + "%";
         }
 
-        private void LoadGyroStickReductionButton(SplitButton button) {
+        // Fallback differs by which percentage this is - max deflection defaults to 100 (uncapped),
+        // min deflection and reduction to 0 (no floor, no reduction) - so it is passed in rather
+        // than assumed, matching each key's own App.config default.
+        private void LoadGyroStickPercentButton(SplitButton button, int fallback) {
             button.Text = ControllerMappings.IntOption(
-                SelectedProfileId, (string)button.Tag, 0) + "%";
+                SelectedProfileId, (string)button.Tag, fallback) + "%";
         }
 
         private void TouchpadSensitivityMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
