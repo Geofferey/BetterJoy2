@@ -1556,9 +1556,7 @@ namespace BetterJoyForCemu {
             // its native orange charging state. Let that transition finish first; only then own
             // the input endpoint while waiting for the PS wake edge.
             Thread.Sleep(FirmwarePowerOffWakeSettleMs);
-            bool fakeUsbChargeGlow =
-                ControllerMappings.UsablePreferredTransport(profileId) !=
-                ControllerMappings.PreferredTransportBluetooth;
+            bool fakeUsbChargeGlow = true;
             DebugLog.Write("ChargeOnlyWake: monitor started, path=" + devicePath +
                 " fakeUsbChargeGlow=" + fakeUsbChargeGlow);
             while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(devicePath, profileId)) {
