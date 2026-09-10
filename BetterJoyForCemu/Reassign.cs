@@ -195,6 +195,12 @@ namespace BetterJoyForCemu {
                         string preferredProfileId) {
             this.serviceClient = serviceClient;
             this.preferredProfileId = preferredProfileId;
+            // Pick up anything the service wrote since this process started - it auto-creates a
+            // profile for every controller as it connects (ControllerMappings.EnsureProfileSaved),
+            // in its own process, and only the service watches the file for changes. Safe to do a
+            // full reload here specifically because the dialog is opening: there are no unsaved
+            // edits to discard yet, which is why this isn't done on every list refresh instead.
+            ControllerMappings.Reload();
             InitializeComponent();
             CreateDynamicProfileControls();
             BuildProfileInterface();

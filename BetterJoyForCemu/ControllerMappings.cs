@@ -312,8 +312,10 @@ namespace BetterJoyForCemu {
         // profile already exists, so this is safe to call on every connect/reconcile pass, not
         // just a genuine first-ever connection.
         public static void EnsureProfileSaved(string profileId) {
-            if (String.IsNullOrEmpty(profileId))
+            if (String.IsNullOrEmpty(profileId)) {
+                DebugLog.Write("EnsureProfileSaved: skipped, empty profileId");
                 return;
+            }
 
             EnsureLoaded();
             bool created;
@@ -327,8 +329,23 @@ namespace BetterJoyForCemu {
                     profiles = next;
                 }
             }
-            if (created)
+            if (!created) {
+                DebugLog.Write("EnsureProfileSaved: already present, no write: id=" + profileId);
+                return;
+            }
+
+            // Save() has no caller-side guard here and this runs from the connect loop, outside
+            // the try/catch that wraps Attach - an exception would take the whole scan pass down
+            // with it and look like "profiles just don't save". Log the outcome either way so a
+            // silent failure is visible instead of inferred.
+            try {
                 Save();
+                DebugLog.Write("EnsureProfileSaved: created and saved: id=" + profileId);
+            } catch (Exception ex) {
+                DebugLog.Write("EnsureProfileSaved: SAVE FAILED: id=" + profileId +
+                    " exception=" + ex.GetType().Name + " message=\"" + ex.Message + "\"");
+                throw;
+            }
         }
 
         // Populates CalibrationState.cs's own CaliData/StickCaliData/Stick2CaliData lists -
@@ -768,6 +785,26 @@ namespace BetterJoyForCemu {
         public static void Save() {
             EnsureLoaded();
             lock (writeLock) {
+                // This writes the whole in-memory set, so anything on disk that this process
+                // never loaded would be erased by it. The service adds profiles behind our back
+                // (EnsureProfileSaved on connect), so carry those ids through rather than
+                // dropping them. All-defaults is the right content: that is exactly what the
+                // service creates, and any value it wrote would have come from this file anyway.
+                var missing = ProfileIdsOnDisk();
+                missing.ExceptWith(profiles.Keys);
+                if (missing.Count > 0) {
+                    var next = CloneProfiles(profiles);
+                    foreach (string profileId in missing) {
+                        var profile = new Dictionary<string, string>(StringComparer.Ordinal);
+                        SnapshotMissingProfileValues(profile);
+                        next[profileId] = profile;
+                    }
+                    profiles = next;
+                    DebugLog.Write("Save: preserved " + missing.Count +
+                        " profile(s) created by another process: " +
+                        String.Join(", ", missing.OrderBy(id => id, StringComparer.Ordinal)));
+                }
+
                 var root = new XElement("controllerMappings", new XAttribute("version", "3"));
                 foreach (KeyValuePair<string, Dictionary<string, string>> profile in profiles.OrderBy(p => p.Key, StringComparer.Ordinal)) {
                     var profileElement = new XElement("profile", new XAttribute("id", profile.Key));
@@ -1043,7 +1080,12 @@ namespace BetterJoyForCemu {
 
             var merged = new Dictionary<string, ControllerProfileInfo>(StringComparer.Ordinal);
             Dictionary<string, Dictionary<string, string>> snapshot = profiles;
-            foreach (string profileId in snapshot.Keys) {
+            // Union with what is actually on disk, not just what this process loaded at startup -
+            // otherwise a profile the service auto-created for a controller connected since then
+            // is missing from the list until the UI is restarted.
+            var knownIds = new HashSet<string>(snapshot.Keys, StringComparer.Ordinal);
+            knownIds.UnionWith(ProfileIdsOnDisk());
+            foreach (string profileId in knownIds) {
                 merged[profileId] = new ControllerProfileInfo {
                     ProfileId = profileId,
                     DisplayName = DisconnectedDisplayName(profileId),
@@ -1067,6 +1109,37 @@ namespace BetterJoyForCemu {
                 .ThenByDescending(p => p.ConnectionSequence)
                 .ThenBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+        }
+
+        // The service creates profiles in its own process (EnsureProfileSaved, on connect) and
+        // writes them straight to disk. This process only ever loads the file once, so anything
+        // created after it started is invisible to it - and, worse, Save() writes the whole
+        // in-memory set, so applying settings from a stale UI would delete those rows.
+        //
+        // Deliberately ids only, parsed from the file directly rather than going through
+        // Reload(): reloading here would replace `profiles` and discard whatever the user is
+        // part-way through editing. Ids are enough - both callers only need to know a profile
+        // exists, and an auto-created one is all-defaults anyway.
+        private static HashSet<string> ProfileIdsOnDisk() {
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            try {
+                string path = PathOnDisk;
+                if (!File.Exists(path))
+                    return ids;
+                XElement root = XDocument.Load(path).Root;
+                if (root == null)
+                    return ids;
+                foreach (XElement profile in root.Elements("profile")) {
+                    string id = (string)profile.Attribute("id");
+                    if (!String.IsNullOrEmpty(id))
+                        ids.Add(id);
+                }
+            } catch (Exception ex) {
+                // Never let a malformed or momentarily-locked file break listing or saving.
+                DebugLog.Write("ProfileIdsOnDisk failed: " + ex.GetType().Name +
+                    " message=\"" + ex.Message + "\"");
+            }
+            return ids;
         }
 
         private static void EnsureLoaded() {
@@ -1242,6 +1315,13 @@ namespace BetterJoyForCemu {
                     break;
                 case "dualsense":
                     name = "DualSense Controller (" + IdentitySuffix(identity) + ")";
+                    break;
+                // Was missing, so a dualshock4: profile fell through to the generic default and
+                // showed as "Controller profile (XXXXXX)" once disconnected, even though it named
+                // itself correctly while connected. Every other kind ProfileIdFor can emit has a
+                // case here; this one was simply never added when the kind was introduced.
+                case "dualshock4":
+                    name = "DualShock 4 (" + IdentitySuffix(identity) + ")";
                     break;
                 case "snes":
                     name = "SNES Controller (" + IdentitySuffix(identity) + ")";
