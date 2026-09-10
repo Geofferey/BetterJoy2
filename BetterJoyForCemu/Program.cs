@@ -138,10 +138,9 @@ namespace BetterJoyForCemu {
         // An Enabled automatic-BT pairing attempt is confirmed by the LIVE signal - the controller's
         // Bluetooth pad actually coming up (IMU_DATA_OK on the 00001124 interface) - not by "a key
         // exists". The USB-side ceremony records the attempt here (keyed by MAC); the reconciliation
-        // confirms it against a live BT pad and sleeps that pad, or - if the pad never comes up
-        // within the window - releases the USB suppression so the wired pad is re-adopted and the
-        // attempt retried (escalated to the full ceremony), capped by attemptCount. Shares
-        // suppressedUsbControllerLock. Keyed by BitConverter.ToString(mac).
+        // confirms it against a live BT pad and sleeps that pad, or lets the attempt timeout according
+        // to the caller's retry policy. Shares suppressedUsbControllerLock. Keyed by
+        // BitConverter.ToString(mac).
         sealed class BluetoothPairingAttempt {
             public string profileId;
             public string wiredPath;
@@ -181,12 +180,19 @@ namespace BetterJoyForCemu {
         }
 
         public void SuppressUsbControllerForBluetoothPreference(
-                string devicePath, string profileId) {
+                string devicePath, string profileId, long removalGraceSeconds = 0L) {
             if (String.IsNullOrEmpty(devicePath) || String.IsNullOrEmpty(profileId))
                 return;
 
-            lock (suppressedUsbControllerLock)
+            lock (suppressedUsbControllerLock) {
                 suppressedUsbControllerProfiles[devicePath] = profileId;
+                if (removalGraceSeconds > 0)
+                    suppressedUsbPowerOffGraceUntil[devicePath] =
+                        Stopwatch.GetTimestamp() +
+                        Stopwatch.Frequency * removalGraceSeconds;
+                else
+                    suppressedUsbPowerOffGraceUntil.Remove(devicePath);
+            }
         }
 
         public void MarkChargeOnlyUsbParked(string devicePath, string profileId) {
@@ -391,6 +397,11 @@ namespace BetterJoyForCemu {
                 // so a stale record can't linger and later block a fresh attempt.
                 foreach (KeyValuePair<string, BluetoothPairingAttempt> entry in
                         pendingBluetoothPairingConfirmations.ToList()) {
+                    if (enumeratedPaths.Contains(entry.Value.wiredPath))
+                        continue;
+                    if (suppressedUsbPowerOffGraceUntil.TryGetValue(entry.Value.wiredPath,
+                            out long graceUntil) && now < graceUntil)
+                        continue;
                     if (!enumeratedPaths.Contains(entry.Value.wiredPath))
                         pendingBluetoothPairingConfirmations.Remove(entry.Key);
                 }
@@ -403,12 +414,16 @@ namespace BetterJoyForCemu {
         // Called by the USB-side ceremony after it fires the connect trigger and suppresses the
         // wired path. Upserts the attempt and (re)starts the confirmation window.
         public int RecordBluetoothPairingAttempt(byte[] controllerMac, string profileId,
-                string wiredPath, bool sleepOnConnectAfterConfirmation) {
+                string wiredPath, bool sleepOnConnectAfterConfirmation,
+                long confirmWindowSeconds = BluetoothPairingConfirmWindowSeconds) {
             if (controllerMac == null || controllerMac.Length != 6)
                 return 0;
             string mac = BitConverter.ToString(controllerMac).Replace("-", "");
+            long windowSeconds = confirmWindowSeconds > 0
+                ? confirmWindowSeconds
+                : BluetoothPairingConfirmWindowSeconds;
             long deadline = Stopwatch.GetTimestamp() +
-                Stopwatch.Frequency * BluetoothPairingConfirmWindowSeconds;
+                Stopwatch.Frequency * windowSeconds;
             lock (suppressedUsbControllerLock) {
                 if (!pendingBluetoothPairingConfirmations.TryGetValue(mac,
                         out BluetoothPairingAttempt attempt)) {
@@ -463,7 +478,7 @@ namespace BetterJoyForCemu {
                         pendingBluetoothPairingConfirmations.Remove(entry.Key);
                         suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
                         suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
-                        DebugLog.Write("DualSense BT pairing giving up after " +
+                        DebugLog.Write("BT pairing giving up after " +
                             attempt.attemptCount + " attempts: mac=" + entry.Key);
                         BluetoothRadio.MarkClassicPairingRegistryTrace(entry.Key,
                             "pairing-gave-up");
@@ -473,7 +488,7 @@ namespace BetterJoyForCemu {
                     attempt.awaitingReattempt = true;
                     suppressedUsbControllerProfiles.Remove(attempt.wiredPath);
                     suppressedUsbPowerOffGraceUntil.Remove(attempt.wiredPath);
-                    DebugLog.Write("DualSense BT pairing timed out: mac=" + entry.Key +
+                    DebugLog.Write("BT pairing timed out: mac=" + entry.Key +
                         " attempt=" + attempt.attemptCount +
                         ", releasing USB suppression to retry");
                     BluetoothRadio.MarkClassicPairingRegistryTrace(entry.Key,
@@ -896,11 +911,14 @@ namespace BetterJoyForCemu {
                 } catch {
                     continue;
                 }
-                // Mark the current interface blocked in the set; the end-of-pass flush writes it. The
-                // MAC-stable BTHENUM bond that hides the whole BT subtree is blocked separately off the
-                // resolved MAC. Stale churned-away children are cleaned up by PruneAbsentDeviceEntries
-                // (their Enum instance is gone), so no prefix de-dupe is needed here.
                 hidden = BlockInstance(instanceId);
+                if (enumerate.vendor_id == vendor_id &&
+                        enumerate.path.IndexOf("{00001124-", StringComparison.OrdinalIgnoreCase) >= 0) {
+                    // Manual pairing has no USB preparation step. Block the actual HID service
+                    // parent as well as its child before opening the controller.
+                    hidden = TryGetBluetoothHidParentInstanceId(enumerate.path, out string bondId) &&
+                        BlockInstance(bondId) && hidden;
+                }
             }
 
             return hidden;
@@ -936,12 +954,8 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Blocks an instance through HidHide's own API, IMMEDIATELY - not marked for a later batch.
-        // The driver applies cloaking as a device arrives, from its own live list, and does not
-        // revisit an entry that named a device which did not exist yet. So the block has to land
-        // while the node is appearing: a blocklist entry written after the fact (or written straight
-        // to the registry behind the driver's back) leaves the device visible for the window that
-        // actually matters, which is how another process gets to grab it first.
+        // HidHide checks its live blocklist on file opens. Apply through the driver immediately;
+        // updating the list cannot revoke a handle another process already opened.
         //
         // Idempotent against the in-memory cache, so a steady-state scan pass issues no IOCTL at all;
         // the driver lock serializes the read-modify-write of the driver's list, which is what keeps
@@ -1087,16 +1101,54 @@ namespace BetterJoyForCemu {
             return true;
         }
 
-        // Preemptively mark a controller's BTHENUM bond blocked the moment we know its MAC -
-        // manufactured, so it works even before the BT node exists (born hidden on the first BT
-        // connect) and covers every future re-pair (the bond is MAC-stable). Just an in-memory add
-        // (the radio segment is cached after the first read), so it runs inline and lands in this
-        // pass's flush; idempotent, so it never duplicates the entry.
+        // Register the MAC-stable HID service parent before the Bluetooth connection starts.
+        // The live child is also blocked during discovery.
         private void HideBluetoothBondByMac(ushort vid, ushort pid, byte[] mac) {
             if (!Program.useHidHide || mac == null || mac.Length != 6)
                 return;
             if (TryManufactureBluetoothBondInstanceId(vid, pid, mac, out string bondId))
                 BlockInstance(bondId);
+        }
+
+        private static bool TryGetBluetoothHidParentInstanceId(string hidPath, out string bondId) {
+            bondId = null;
+            try {
+                IPnPDevice device = PnPDevice.GetDeviceByInterfaceId(hidPath, DeviceLocationFlags.Normal);
+                for (int depth = 0; device != null && depth < 8; depth++, device = device.Parent) {
+                    string instanceId = device.InstanceId;
+                    if (instanceId != null && instanceId.StartsWith(
+                            @"BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}",
+                            StringComparison.OrdinalIgnoreCase)) {
+                        bondId = instanceId;
+                        return true;
+                    }
+                }
+            } catch (Exception ex) {
+                DebugLog.Write("Bluetooth HID parent lookup failed: path=" + hidPath +
+                    " message=\"" + ex.Message + "\"");
+            }
+            return false;
+        }
+
+        private static bool TryGetNintendoBluetoothBondInstanceId(NintendoController controller,
+                out string bondId) {
+            bondId = null;
+            if (!controller.isUSB)
+                return TryGetBluetoothHidParentInstanceId(controller.path, out bondId);
+            if (controller.thirdParty)
+                return false;
+
+            ushort pid;
+            switch (controller.Kind) {
+                case ControllerKind.Left: pid = product_l; break;
+                case ControllerKind.Right: pid = product_r; break;
+                case ControllerKind.Pro: pid = product_pro; break;
+                case ControllerKind.Snes: pid = product_snes; break;
+                case ControllerKind.N64: pid = product_n64; break;
+                default: return false;
+            }
+            return TryManufactureBluetoothBondInstanceId(vendor_id, pid,
+                controller.PadMacAddress?.GetAddressBytes(), out bondId);
         }
 
         // Adds or removes jc's own HidHide block after the fact - the one case that needs this is
@@ -1131,6 +1183,14 @@ namespace BetterJoyForCemu {
                     DebugLog.Write("OpenRgbRescan: triggered from HidHide hidden->visible, instanceId=" + instanceId);
                     OpenRgbRescan.RequestRescan();
                 }
+            }
+
+            if (jc is NintendoController nintendo &&
+                    TryGetNintendoBluetoothBondInstanceId(nintendo, out string bondId)) {
+                if (wantHidden)
+                    BlockInstance(bondId);
+                else
+                    UnblockInstance(bondId);
             }
         }
 
@@ -1189,6 +1249,37 @@ namespace BetterJoyForCemu {
                 }
                 device = device.Parent;
             }
+        }
+
+        private static bool TryGetNintendoBluetoothMac(string hidPath, byte[] mac) {
+            if (mac == null || mac.Length != 6)
+                return false;
+
+            IPnPDevice device = PnPDevice.GetDeviceByInterfaceId(hidPath, DeviceLocationFlags.Normal);
+            for (int depth = 0; device != null && depth < 8; depth++) {
+                string instanceId = device.InstanceId;
+                if (!String.IsNullOrEmpty(instanceId) &&
+                        instanceId.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase)) {
+                    int marker = instanceId.LastIndexOf("&0&",
+                        StringComparison.OrdinalIgnoreCase);
+                    if (marker >= 0) {
+                        int start = marker + 3;
+                        int end = instanceId.IndexOf("_C", start,
+                            StringComparison.OrdinalIgnoreCase);
+                        if (end < 0)
+                            end = Math.Min(start + 12, instanceId.Length);
+                        string candidate = instanceId.Substring(start, end - start);
+                        if (candidate.Length == 12 && candidate.All(Uri.IsHexDigit)) {
+                            for (int i = 0; i < 6; i++)
+                                mac[i] = byte.Parse(candidate.Substring(i * 2, 2),
+                                    NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                            return true;
+                        }
+                    }
+                }
+                device = device.Parent;
+            }
+            return false;
         }
 
         // See this method's call site for why VID/PID alone can't identify VIIPER's own virtual
@@ -1531,12 +1622,25 @@ namespace BetterJoyForCemu {
                     byte[] mac = new byte[6];
                     bool macParsed = false;
                     string macSource = "serial";
-                    try {
-                        for (int n = 0; n < 6; n++)
-                            mac[n] = byte.Parse(enumerate.serial_number.Substring(n * 2, 2), System.Globalization.NumberStyles.HexNumber);
+                    bool isNintendoBluetooth =
+                        !isDualSense && !isDualShock4 && nintendoIsUsb == false;
+                    bool isNintendoUsbPlaceholderSerial =
+                        !isDualSense && !isDualShock4 && nintendoIsUsb == true &&
+                        String.Equals(enumerate.serial_number, "000000000001",
+                            StringComparison.Ordinal);
+                    if (isNintendoBluetooth && TryGetNintendoBluetoothMac(enumerate.path, mac)) {
                         macParsed = true;
-                    } catch (Exception) {
-                        // could not parse mac address
+                        macSource = "nintendo-bthenum";
+                    } else if (isNintendoUsbPlaceholderSerial) {
+                        macSource = "nintendo-usb-placeholder";
+                    } else {
+                        try {
+                            for (int n = 0; n < 6; n++)
+                                mac[n] = byte.Parse(enumerate.serial_number.Substring(n * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                            macParsed = true;
+                        } catch (Exception) {
+                            // could not parse mac address
+                        }
                     }
                     if (!macParsed) {
                         // A device whose serial_number doesn't parse as a MAC (confirmed on real
@@ -1591,6 +1695,10 @@ namespace BetterJoyForCemu {
                             "DualSense MAC resolved: {0} (source={1}, serial=\"{2}\")",
                             BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     }
+                    if (isNintendoBluetooth)
+                        DebugLog.Write(String.Format(CultureInfo.InvariantCulture,
+                            "Nintendo Bluetooth MAC resolved: {0} (source={1}, serial=\"{2}\")",
+                            BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     newController.PadMacAddress = new PhysicalAddress(mac);
                     // As soon as we know a DualSense's real Bluetooth MAC (feature-report over USB, or
                     // serial over BT - never the path-hash fallback), preemptively block its MAC-stable
@@ -1601,6 +1709,27 @@ namespace BetterJoyForCemu {
                         HideBluetoothBondByMac(enumerate.vendor_id, enumerate.product_id, mac);
                     newController.InvalidateMappingProfileCache();
                     newController.form = form;
+
+                    if (newController is NintendoController nintendoUsb &&
+                            nintendoUsb.isUSB && !nintendoUsb.thirdParty) {
+                        try {
+                            nintendoUsb.PrepareUsbConnection();
+                        } catch (Exception ex) {
+                            DebugLog.Write("Nintendo USB preparation failed: path=" + enumerate.path +
+                                " message=\"" + ex.Message + "\"");
+                            newController.state = Controller.state_.DROPPED;
+                            newController.Detach(true);
+                            ptr = enumerate.next;
+                            continue;
+                        }
+                        // The controller's real MAC is known now rather than after Attach, which
+                        // is what HidHide reconciliation needs to block the MAC-stable BTHENUM
+                        // bond rather than the unstable HID path. Pre-register its HID service
+                        // parent while that identity is fresh.
+                        ReconcileHidHideForController(nintendoUsb,
+                            ControllerMappings.OptionValue(ControllerMappings.ProfileIdFor(nintendoUsb),
+                                "UseAs") != ControllerMappings.UseAsPassthrough);
+                    }
 
                     if (newDualSense != null &&
                             newDualSense.TryRunAutomaticBluetoothPairingBeforeAttach()) {
@@ -1648,10 +1777,8 @@ namespace BetterJoyForCemu {
                         continue;
                     }
 
-                    // USB enumeration exposes a shared placeholder serial; Attach resolves the
-                    // controller's real MAC. Give service-mode clients a fresh profile identity
-                    // before button polling begins, rather than leaving the dropdown on the
-                    // temporary HID-path identity sent when the slot was first discovered.
+                    // Publish attachment state before polling begins. Official Nintendo USB
+                    // identity is already resolved before the initial slot is published.
                     form.RefreshControllerState();
 
                     CreateOutputControllers(jc);

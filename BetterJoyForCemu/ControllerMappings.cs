@@ -1353,7 +1353,8 @@ namespace BetterJoyForCemu {
         }
 
         private static bool IsUsableMac(string mac) {
-            return mac.Length == 12 && mac != "000000000000" && mac != "010203040506" &&
+            return mac.Length == 12 && mac != "000000000000" &&
+                mac != "000000000001" && mac != "010203040506" &&
                 mac.All(Uri.IsHexDigit);
         }
 

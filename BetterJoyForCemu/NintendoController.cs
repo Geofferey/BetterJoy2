@@ -199,13 +199,13 @@ namespace BetterJoyForCemu {
         }
 
 
-        // See Controller.Attach's abstract declaration. DualSense's own Attach() (a much simpler
-        // early-return, no SPI/subcommand protocol at all) lives on DualSenseController now - see
-        // DualSense.cs.
-        public override int Attach() {
-            state = state_.ATTACHED;
+        private bool usbConnectionInitialized;
 
-            // Make sure command is received
+        // Resolve the physical identity before discovery publishes a profile or virtual device.
+        internal void PrepareUsbConnection() {
+            if (!isUSB || usbConnectionInitialized)
+                return;
+
             HIDapi.hid_set_nonblocking(handle, 0);
 
             byte[] a = { 0x0 };
@@ -244,13 +244,56 @@ namespace BetterJoyForCemu {
                 // start streaming after it without a matching 0x81/0x04 reply.
                 UsbCommand(0x04, a, "no-timeout", 100, false);
 
-                UsbCommand(0x01, a, "status", 100, false);
-                if (a[3] == 0x3) {
-                    PadMacAddress = new PhysicalAddress(new byte[] { a[9], a[8], a[7], a[6], a[5], a[4] });
-                    mappingProfileId = null;
+                bool statusMatched = UsbCommand(0x01, a, "status", 100, true, 10);
+                byte[] controllerMac = null;
+                string source = "usb-status";
+                bool identityResolved = statusMatched && TryParseIdentityReply(a, true, out controllerMac);
+                if (!identityResolved && !thirdParty) {
+                    // Linux reads the MAC from device-info data[4..9], in display byte order.
+                    byte[] info = Subcommand(0x02, new byte[0], 0, false, 25);
+                    identityResolved = TryParseIdentityReply(info, false, out controllerMac);
+                    source = "device-info";
                 }
 
+                if (identityResolved) {
+                    PadMacAddress = new PhysicalAddress(controllerMac);
+                    InvalidateMappingProfileCache();
+                    DebugLog.Write("Nintendo USB MAC resolved: " + PadMacAddress +
+                        " (source=" + source + ") path=" + path);
+                } else if (!thirdParty) {
+                    throw new Exception("nintendo_usb_identity_unavailable");
+                }
             }
+            usbConnectionInitialized = true;
+        }
+
+        internal static bool TryParseIdentityReply(byte[] reply, bool usbStatus, out byte[] mac) {
+            mac = null;
+            if (reply == null)
+                return false;
+            if (usbStatus) {
+                if (reply.Length < 10 || reply[0] != 0x81 || reply[1] != 0x01 || reply[3] != 0x03)
+                    return false;
+            } else if (reply.Length < 25 || reply[0] != 0x21 ||
+                    (reply[13] & 0x80) == 0 || reply[14] != 0x02) {
+                return false;
+            }
+
+            byte[] address = new byte[6];
+            for (int i = 0; i < address.Length; i++)
+                address[i] = reply[usbStatus ? 9 - i : 19 + i];
+            string identity = BitConverter.ToString(address).Replace("-", "");
+            if (identity == "000000000000" || identity == "000000000001" ||
+                    identity == "010203040506" || identity == "FFFFFFFFFFFF")
+                return false;
+            mac = address;
+            return true;
+        }
+
+        public override int Attach() {
+            state = state_.ATTACHED;
+            HIDapi.hid_set_nonblocking(handle, 0);
+            PrepareUsbConnection();
             dump_calibration_data();
 
             // Bluetooth manual pairing
@@ -278,7 +321,7 @@ namespace BetterJoyForCemu {
         }
 
         private bool UsbCommand(byte command, byte[] response, string label, int timeoutMs,
-                bool requireAck = true) {
+                bool requireAck = true, int minimumResponseLength = 2) {
             byte[] request = { 0x80, command };
             int read = 0;
             int reads = 0;
@@ -312,7 +355,7 @@ namespace BetterJoyForCemu {
                         ack = response[1];
                     if (response.Length > 3)
                         state = response[3];
-                    if (report == 0x81 && ack == command) {
+                    if (read >= minimumResponseLength && report == 0x81 && ack == command) {
                         matched = true;
                         break;
                     }
@@ -370,7 +413,16 @@ namespace BetterJoyForCemu {
 
         private void SetHCIState(byte state) {
             byte[] a = { state };
-            Subcommand(0x06, a, 1);
+            byte[] reply = Subcommand(0x06, a, 1, false);
+            DebugLog.Write("Nintendo HCI state command: pad=" + PadId +
+                " requested=0x" + state.ToString("X2", CultureInfo.InvariantCulture) +
+                " report=0x" + ReportByte(reply, 0).ToString("X2", CultureInfo.InvariantCulture) +
+                " ack=0x" + ReportByte(reply, 13).ToString("X2", CultureInfo.InvariantCulture) +
+                " ackSc=0x" + ReportByte(reply, 14).ToString("X2", CultureInfo.InvariantCulture));
+        }
+
+        private static byte ReportByte(byte[] reply, int index) {
+            return reply != null && reply.Length > index ? reply[index] : (byte)0x00;
         }
 
         public override void PowerOff() {
@@ -886,7 +938,8 @@ namespace BetterJoyForCemu {
         }
 
 
-        private byte[] Subcommand(byte sc, byte[] buf, uint len, bool print = true) {
+        private byte[] Subcommand(byte sc, byte[] buf, uint len, bool print = true,
+                int minimumResponseLength = 15) {
             byte[] buf_ = new byte[report_len];
             byte[] response = new byte[report_len];
             Array.Copy(default_buf, 0, buf_, 2, 8);
@@ -921,7 +974,7 @@ namespace BetterJoyForCemu {
                                 "Response ID 0x" + string.Format("{0:X2}", response[0]) +
                                 ". Data: 0x{0:S}");
                         }
-                        if (response[0] == 0x21 && response.Length > 14 && response[14] == sc) {
+                        if (lastRead >= minimumResponseLength && response[0] == 0x21 && response[14] == sc) {
                             matched = true;
                             break;
                         }
