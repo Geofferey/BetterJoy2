@@ -2900,7 +2900,8 @@ namespace BetterJoyForCemu {
             gameControllersButton.Enabled = hasController;
             LoadProfileOptions(hasController);
             bool supportsAutomaticBluetoothPairing = selected != null &&
-                selected.Kind == ControllerKind.DualSense;
+                (selected.Kind == ControllerKind.DualSense ||
+                 selected.Kind == ControllerKind.DualShock4);
             if (automaticBluetoothPairingLabel != null)
                 automaticBluetoothPairingLabel.Enabled = supportsAutomaticBluetoothPairing;
             if (automaticBluetoothPairingSelector != null)

@@ -126,9 +126,26 @@ namespace BetterJoyForCemu {
         private const byte DualShock4PairingInfoFeatureReportId = 0x12;
         private const int DualShock4PairingInfoFeatureReportLen = 16;
         private const int DualShock4PairingDeviceAddressOffset = 1;
-        // Inferred from DualSense's report 0x09, NOT yet observed on hardware - see
-        // LogDualShock4PairingInfo for why that distinction matters.
+        // Confirmed on real hardware (see LogDualShock4PairingInfo): a wired DS4 paired to this PC
+        // returned a real host address here, at the same offset DualSense's report 0x09 uses.
         private const int DualShock4PairingHostAddressOffset = 10;
+
+        // Report 0x13 - set pairing. Field layout is identical to DualSense's 0x0A (host address
+        // at 1..6 little-endian, 16-byte link key at 7..22); only the length differs, because the
+        // DS4 report has no trailing CRC. From a public GIMX capture:
+        //   13 AC 9E 17 94 05 B0 | 56 E8 81 38 08 06 51 41 C0 7F 12 AA D9 66 3C CE
+        // The link key is write-only in both generations - nothing the controller exposes reads it
+        // back, so the key always comes from Windows' own bond store (or is generated there).
+        private const byte DualShock4SetPairingFeatureReportId = 0x13;
+        private const int DualShock4SetPairingFeatureReportLen = 23;
+        private const int DualShock4SetPairingHostAddressOffset = 1;
+        private const int DualShock4SetPairingLinkKeyOffset = 7;
+
+        private const int DualShock4PairingRecordCommitTimeoutMs = 2000;
+        private const int DualShock4BluetoothHidFinalizeTimeoutMs = 30000;
+
+        private bool automaticBluetoothPairingAttempted;
+        private int automaticBluetoothPairingPending;
 
         public override int Attach() {
             state = state_.ATTACHED;
@@ -173,6 +190,185 @@ namespace BetterJoyForCemu {
         // at this PC or has been taken by another host. Getting an offset wrong there fails
         // silently, which is exactly how the DualSense byte layout went wrong twice. So confirm it
         // from a controller that is actually paired to this PC before building on it.
+        // Reconciliation entry point. Only records a request - the ceremony itself issues feature
+        // reports on the HID handle and must run on this controller's own Poll thread, same rule
+        // the DualSense ceremony follows. One attempt per USB attachment, set here rather than
+        // after the Poll thread picks it up so a failed radio/registry operation cannot re-queue
+        // on every scan pass.
+        public void ApplyAutomaticBluetoothPairing() {
+            if (!ControllerMappings.AutomaticBluetoothPairingEnabled(
+                    ControllerMappings.ProfileIdFor(this))) {
+                automaticBluetoothPairingAttempted = false;
+                return;
+            }
+            if (!isUSB || state <= state_.DROPPED || automaticBluetoothPairingAttempted)
+                return;
+
+            automaticBluetoothPairingAttempted = true;
+            Interlocked.Exchange(ref automaticBluetoothPairingPending, 1);
+        }
+
+        protected override void ApplyQueuedAutomaticBluetoothPairingIfAny() {
+            if (Interlocked.Exchange(ref automaticBluetoothPairingPending, 0) != 0)
+                PerformAutomaticBluetoothPairing();
+        }
+
+        // Repair only, by design. The DualSense investigation established that a bond written by
+        // key injection never reaches Windows' "authenticated" state - remembered flips,
+        // authenticated never does, and only a live SSP handshake sets it. That is a property of
+        // the Windows stack rather than of any one controller, so first-ever pairing stays manual
+        // here too. What this does cover is the case that actually recurs: a controller whose
+        // onboard bond was taken by a PS4, restored to the bond this PC still owns.
+        //
+        // The DS4 has no equivalent of the DualSense's report 0x08, so there is no way to tell the
+        // controller to leave USB and come up on Bluetooth - confirmed three ways: the GIMX report
+        // tables, the Linux hid-playstation driver (which sends nothing of the sort), and this
+        // file's own note that DS4 power-off is a radio operation. The handoff is therefore driven
+        // from the Windows side instead, by asking it to page the controller.
+        private void PerformAutomaticBluetoothPairing() {
+            byte[] controllerMac = PadMacAddress?.GetAddressBytes();
+            if (controllerMac == null || controllerMac.Length != 6)
+                return;
+
+            BluetoothRadio.BeginClassicPairingRegistryTrace(controllerMac);
+            byte[] linkKey = null;
+            try {
+                if (!BluetoothRadio.TryGetOrCreateClassicPairing(controllerMac,
+                        out byte[] hostMacLittleEndian, out linkKey, out bool created)) {
+                    form.AppendTextBox("Automatic DualShock 4 Bluetooth pairing could not access " +
+                        "a local Bluetooth radio or its Windows bond store.\r\n");
+                    return;
+                }
+
+                // Read who the controller currently answers to. Only rewrite when it is pointed
+                // somewhere else - repointing a controller that already answers to this PC gains
+                // nothing and needlessly rewrites its onboard record.
+                byte[] currentHost = ReadControllerPairedHost();
+                bool alreadyPointedHere = currentHost != null &&
+                    ByteArraysEqual(currentHost, hostMacLittleEndian);
+
+                if (!alreadyPointedHere) {
+                    if (!SendDualShock4PairingFeatureReport(hostMacLittleEndian, linkKey) ||
+                            !WaitForPairingHost(hostMacLittleEndian,
+                                DualShock4PairingRecordCommitTimeoutMs)) {
+                        form.AppendTextBox("DualShock 4 rejected the Bluetooth bond; the Windows " +
+                            "bond was left unchanged.\r\n");
+                        DebugLog.Write("DualShock 4 pairing: pad=" + PadId +
+                            " bondWrite=failed created=" + created);
+                        return;
+                    }
+                    BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                        "controller-bond-written");
+                }
+
+                // Windows must hold the same key before it pages the controller: authentication
+                // starts the instant the link comes up, and the bond store is consulted then.
+                if (!BluetoothRadio.TryCommitClassicLinkKey(
+                        hostMacLittleEndian, controllerMac, linkKey)) {
+                    form.AppendTextBox("DualShock 4 accepted its Bluetooth bond, but BetterJoy " +
+                        "could not commit the matching key to Windows.\r\n");
+                    return;
+                }
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerMac,
+                    "windows-link-key-committed");
+
+                DebugLog.Write("DualShock 4 pairing: pad=" + PadId +
+                    " mac=" + BitConverter.ToString(controllerMac).Replace("-", "") +
+                    " createdWindowsBond=" + created +
+                    " alreadyPointedHere=" + alreadyPointedHere);
+
+                BeginWindowsInitiatedConnect(controllerMac, hostMacLittleEndian);
+            } finally {
+                if (linkKey != null)
+                    Array.Clear(linkKey, 0, linkKey.Length);
+            }
+        }
+
+        // The DS4 half of "tell Windows to connect". BluetoothSetServiceState (inside
+        // TryFinalizeClassicHidPairing) is what makes Windows page a remembered device and install
+        // its HID profile - the supported substitute for the controller-side connect trigger the
+        // DualSense has and this controller does not. Queued off the Poll thread because it blocks
+        // for up to the finalize timeout while Windows works.
+        private void BeginWindowsInitiatedConnect(byte[] controllerMac,
+                byte[] hostMacLittleEndian) {
+            if (!BluetoothRadio.IsLocalRadioAvailable()) {
+                DebugLog.Write("DualShock 4 pairing: pad=" + PadId +
+                    " connect suppressed (no usable local radio)");
+                return;
+            }
+
+            byte[] controllerCopy = (byte[])controllerMac.Clone();
+            byte[] hostCopy = (byte[])hostMacLittleEndian.Clone();
+            int padId = PadId;
+            ThreadPool.QueueUserWorkItem(_ => {
+                bool completed = BluetoothRadio.TryFinalizeClassicHidPairing(
+                    hostCopy, controllerCopy, "Wireless Controller", true,
+                    DualShock4BluetoothHidFinalizeTimeoutMs);
+                DebugLog.Write("DualShock 4 pairing handoff: pad=" + padId +
+                    " windowsHidSetup=" + completed);
+                BluetoothRadio.MarkClassicPairingRegistryTrace(controllerCopy,
+                    completed ? "windows-hid-setup-ok" : "windows-hid-setup-failed");
+            });
+        }
+
+        // Report 0x12's host field, same read the probe below dumps. Returns null when the report
+        // is short or unreadable rather than a zeroed address, so callers can tell "unknown" from
+        // "genuinely unpaired".
+        private byte[] ReadControllerPairedHost() {
+            byte[] info = new byte[DualShock4PairingInfoFeatureReportLen];
+            info[0] = DualShock4PairingInfoFeatureReportId;
+            int received = HIDapi.hid_get_feature_report(
+                handle, info, new UIntPtr((uint)info.Length));
+            if (received < DualShock4PairingHostAddressOffset + 6)
+                return null;
+
+            byte[] host = new byte[6];
+            Buffer.BlockCopy(info, DualShock4PairingHostAddressOffset, host, 0, 6);
+            return host;
+        }
+
+        private bool SendDualShock4PairingFeatureReport(byte[] hostMacLittleEndian,
+                byte[] linkKey) {
+            if (hostMacLittleEndian == null || hostMacLittleEndian.Length != 6 ||
+                    linkKey == null || linkKey.Length != 16)
+                return false;
+
+            byte[] report = new byte[DualShock4SetPairingFeatureReportLen];
+            report[0] = DualShock4SetPairingFeatureReportId;
+            Buffer.BlockCopy(hostMacLittleEndian, 0, report,
+                DualShock4SetPairingHostAddressOffset, 6);
+            Buffer.BlockCopy(linkKey, 0, report, DualShock4SetPairingLinkKeyOffset, 16);
+            try {
+                return HIDapi.hid_send_feature_report(
+                    handle, report, new UIntPtr((uint)report.Length)) >= 0;
+            } finally {
+                Array.Clear(report, 0, report.Length);
+            }
+        }
+
+        // Verify by reading the record back rather than sleeping a fixed interval - the same
+        // improvement the DualSense flow made over arbitrary delays.
+        private bool WaitForPairingHost(byte[] expectedHost, int timeoutMs) {
+            Stopwatch elapsed = Stopwatch.StartNew();
+            while (true) {
+                byte[] current = ReadControllerPairedHost();
+                if (current != null && ByteArraysEqual(current, expectedHost))
+                    return true;
+                if (elapsed.ElapsedMilliseconds >= timeoutMs)
+                    return false;
+                Thread.Sleep(50);
+            }
+        }
+
+        private static bool ByteArraysEqual(byte[] left, byte[] right) {
+            if (left == null || right == null || left.Length != right.Length)
+                return false;
+            int difference = 0;
+            for (int i = 0; i < left.Length; i++)
+                difference |= left[i] ^ right[i];
+            return difference == 0;
+        }
+
         private bool dualShock4PairingInfoLogged;
 
         private void LogDualShock4PairingInfo() {

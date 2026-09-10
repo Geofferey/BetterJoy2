@@ -610,6 +610,8 @@ namespace BetterJoyForCemu {
                             ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Right", "Secondary", rightMode, 70),
                             ControllerMappings.AdaptiveTriggerFieldValue(profileId, "Right", "Strength", rightMode, 50));
                     }
+                    if (jc is DualShock4Controller dualShock4Pairing)
+                        dualShock4Pairing.ApplyAutomaticBluetoothPairing();
                     string audioMode = ControllerMappings.ControllerAudioMode(profileId);
                     bool audioEnabled = audioMode != ControllerMappings.ModeDisable;
                     bool requireHeadphones =
