@@ -1228,6 +1228,33 @@ namespace BetterJoyForCemu {
             return true;
         }
 
+        // Same idea for the DualShock 4, which has the identical problem: over USB it reports no
+        // usable serial, so its identity fell through to the path hash and the same physical pad
+        // resolved to a DIFFERENT profile on USB than on Bluetooth. Report 0x12 exposes its real
+        // Bluetooth address over the cable.
+        //
+        // Report id and size match the Linux hid-playstation driver's
+        // DS4_FEATURE_REPORT_PAIRING_INFO / _SIZE (0x12, 16) and its own
+        // memcpy(mac_address, &buf[1], 6). Confirmed against real hardware here: a wired DS4
+        // returned 12 AF 5B 6C 95 30 84 ..., which reverses to 84:30:95:6C:5B:AF and matches that
+        // controller's own BTHENUM node (BTHENUM\DEV_8430956C5BAF, VID&0002054C_PID&09CC) exactly.
+        private const byte DualShock4PairingInfoReportId = 0x12;
+        private const int DualShock4PairingInfoReportSize = 16;
+
+        private static bool TryGetDualShock4Mac(IntPtr handle, byte[] mac) {
+            byte[] buf = new byte[DualShock4PairingInfoReportSize];
+            buf[0] = DualShock4PairingInfoReportId;
+            int ret = HIDapi.hid_get_feature_report(handle, buf, new UIntPtr((uint)buf.Length));
+            if (ret < 7)
+                return false;
+
+            // Stored little-endian, same as the DualSense's 0x09 - reverse so USB and Bluetooth
+            // resolve to one PadMacAddress and therefore one profile.
+            for (int i = 0; i < 6; i++)
+                mac[i] = buf[6 - i];
+            return true;
+        }
+
         // Walks up the PnP device tree from a HID interface to find the underlying bus (USB or
         // Bluetooth) it's actually connected through. GetInstanceIdFromInterfaceId only resolves
         // to the HID-level device node itself (always prefixed "HID\...", for either transport),
@@ -1662,6 +1689,9 @@ namespace BetterJoyForCemu {
                         if (isDualSense && TryGetDualSenseMac(handle, mac)) {
                             macParsed = true;
                             macSource = "dualsense-feature-report";
+                        } else if (isDualShock4 && TryGetDualShock4Mac(handle, mac)) {
+                            macParsed = true;
+                            macSource = "dualshock4-feature-report";
                         } else {
                             macSource = "path-hash";
                             // Fallback for anything else that reaches here (or if the feature
@@ -1698,6 +1728,10 @@ namespace BetterJoyForCemu {
                     if (isNintendoBluetooth)
                         DebugLog.Write(String.Format(CultureInfo.InvariantCulture,
                             "Nintendo Bluetooth MAC resolved: {0} (source={1}, serial=\"{2}\")",
+                            BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
+                    if (isDualShock4)
+                        DebugLog.Write(String.Format(CultureInfo.InvariantCulture,
+                            "DualShock 4 MAC resolved: {0} (source={1}, serial=\"{2}\")",
                             BitConverter.ToString(mac).Replace("-", ""), macSource, enumerate.serial_number));
                     newController.PadMacAddress = new PhysicalAddress(mac);
                     // As soon as we know a DualSense's real Bluetooth MAC (feature-report over USB, or

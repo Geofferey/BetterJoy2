@@ -121,6 +121,15 @@ namespace BetterJoyForCemu {
             connection = isUSB ? 0x01 : 0x02;
         }
 
+        // Confirmed against the Linux hid-playstation driver's DS4_FEATURE_REPORT_PAIRING_INFO /
+        // _SIZE and a public GIMX capture of the same report, which agree exactly.
+        private const byte DualShock4PairingInfoFeatureReportId = 0x12;
+        private const int DualShock4PairingInfoFeatureReportLen = 16;
+        private const int DualShock4PairingDeviceAddressOffset = 1;
+        // Inferred from DualSense's report 0x09, NOT yet observed on hardware - see
+        // LogDualShock4PairingInfo for why that distinction matters.
+        private const int DualShock4PairingHostAddressOffset = 10;
+
         public override int Attach() {
             state = state_.ATTACHED;
 
@@ -146,6 +155,76 @@ namespace BetterJoyForCemu {
 
             form.AppendTextBox("DualShock 4 attached.\r\n");
             return 0;
+        }
+
+        // Groundwork probe for DualShock 4 Bluetooth pairing. READ ONLY - 0x12 is a GET feature
+        // report and changes nothing on the controller.
+        //
+        // Two independent sources agree on the read side: the Linux hid-playstation driver
+        // (DS4_FEATURE_REPORT_PAIRING_INFO 0x12, DS4_FEATURE_REPORT_PAIRING_INFO_SIZE 16, with the
+        // controller's own MAC at buf[1]) and a public GIMX capture of the same report. Neither
+        // establishes where the paired HOST address sits: the kernel never reads it, and the GIMX
+        // dump was taken from an unpaired controller so those bytes were all zero. Offset 10 below
+        // is therefore inferred from the DualSense parallel (report 0x09, host at offset 10 - see
+        // DualSensePairingHostAddressOffset), and nothing has confirmed it against hardware.
+        //
+        // Everything that would later WRITE a bond (0x13) depends on reading the current host
+        // correctly - that is how the pairing flow decides whether a controller is already pointed
+        // at this PC or has been taken by another host. Getting an offset wrong there fails
+        // silently, which is exactly how the DualSense byte layout went wrong twice. So confirm it
+        // from a controller that is actually paired to this PC before building on it.
+        private bool dualShock4PairingInfoLogged;
+
+        private void LogDualShock4PairingInfo() {
+            // Called from ReceiveRaw right after the report ID resolves the transport, NOT from
+            // Attach: isUSB is false until the first packet arrives (see the constructor - it is
+            // re-derived per packet from the report ID), so an Attach-time call silently skipped
+            // the USB check below every single time. Once per attach is enough.
+            if (dualShock4PairingInfoLogged)
+                return;
+            dualShock4PairingInfoLogged = true;
+
+            // Bluetooth framing for feature reports differs from USB; confirm the wired layout
+            // first, which is also the only transport a pairing ceremony would run over.
+            if (!isUSB) {
+                LogDualShock4RawDump("DS4 pairing info 0x12: skipped, not USB");
+                return;
+            }
+
+            byte[] info = new byte[DualShock4PairingInfoFeatureReportLen];
+            info[0] = DualShock4PairingInfoFeatureReportId;
+            int received = HIDapi.hid_get_feature_report(
+                handle, info, new UIntPtr((uint)info.Length));
+            if (received < 0) {
+                LogDualShock4RawDump("DS4 pairing info 0x12: read failed ret=" + received);
+                return;
+            }
+
+            var hex = new StringBuilder();
+            for (int i = 0; i < Math.Min(received, info.Length); i++)
+                hex.Append(info[i].ToString("X2", CultureInfo.InvariantCulture)).Append(' ');
+
+            LogDualShock4RawDump("DS4 pairing info 0x12: ret=" + received +
+                " raw=" + hex.ToString().TrimEnd() +
+                " deviceMac=" + DescribeLittleEndianAddress(info, received,
+                    DualShock4PairingDeviceAddressOffset) +
+                " hostMacAt10=" + DescribeLittleEndianAddress(info, received,
+                    DualShock4PairingHostAddressOffset));
+        }
+
+        // The reports store addresses little-endian (GIMX's capture decodes
+        // "8B 09 07 6D 66 1C" as 1C:66:6D:07:09:8B), so reverse for display.
+        private static string DescribeLittleEndianAddress(byte[] buffer, int received, int offset) {
+            if (buffer == null || received < offset + 6)
+                return "(short read)";
+
+            var text = new StringBuilder();
+            for (int i = 5; i >= 0; i--) {
+                text.Append(buffer[offset + i].ToString("X2", CultureInfo.InvariantCulture));
+                if (i > 0)
+                    text.Append(':');
+            }
+            return text.ToString();
         }
 
         // The DS4 power-off operation is likewise a Bluetooth-radio operation, not a command its
@@ -354,6 +433,7 @@ namespace BetterJoyForCemu {
                 // dualshock4_raw_debug.log for what reportId actually arrives as over BT.
                 isUSB = reportId == 0x01;
                 connection = isUSB ? 0x01 : 0x02;
+                LogDualShock4PairingInfo();
                 int reportOffset = isUSB ? 1 : 3;
                 if (!lightbarTransportKnown) {
                     lightbarTransportKnown = true;
