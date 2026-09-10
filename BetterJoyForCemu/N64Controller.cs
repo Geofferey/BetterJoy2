@@ -35,8 +35,12 @@ namespace BetterJoyForCemu {
         // isLeft is hardcoded true (not a caller parameter) - not semantic for an N64 controller,
         // only there so NintendoController's shared report-parsing code (which still branches on
         // isLeft for byte-offset selection) picks the correct half of the report layout.
-        public N64Controller(IntPtr handle_, bool imu, bool localize, float alpha, string path, string serialNum, int id = 0, bool thirdParty = false)
-            : base(handle_, imu, localize, alpha, true, path, serialNum, id, isPro: false, isSnes: false, is64: true, thirdParty: thirdParty) {
+        public N64Controller(IntPtr handle_, bool imu, bool localize, float alpha,
+                string path, string serialNum, int id = 0, bool thirdParty = false,
+                bool? isUsbOverride = null)
+            : base(handle_, imu, localize, alpha, true, path, serialNum, id,
+                  isPro: false, isSnes: false, is64: true, thirdParty: thirdParty,
+                  isUsbOverride: isUsbOverride) {
         }
 
         // Observed live stick range (min/max seen so far) that Getn64StickValues rescales against

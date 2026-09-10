@@ -769,7 +769,8 @@ namespace BetterJoyForCemu {
             if (controller is DualSenseController dualSensePlayerLed)
                 dualSensePlayerLed.RequestLEDUpdate(dualSensePlayerLed.PadId);
 
-            controller.SetHomeLight(ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
+            controller.RequestHomeLightUpdate(
+                ControllerMappings.BoolOption(profileId, "HomeLEDOn"));
 
             byte red, green, blue;
             // LightingOff (toggle_lighting binding) never touches the user's actual LightColor
@@ -1313,15 +1314,12 @@ namespace BetterJoyForCemu {
                     continue;
                 }
 
-                // Checked as a known, exactly-identified device ahead of the generic 3rd-party
+                // Checked as known, exactly-identified devices ahead of the generic 3rd-party
                 // allowlist/auto-add below, not folded into it - that path can only guess a
-                // Nintendo shape (SController.type: Pro/Left Joy-Con/Right Joy-Con), which a
-                // DualSense isn't. A DualSense connected before this VID/PID check existed may
-                // already have a stale guessed entry in Program.thirdPartyCons (type=1/"Pro") -
-                // the loop below must not be allowed to overwrite thirdParty with that guess for
-                // a device we now identify definitively, or prod_id resolves to product_pro
-                // instead of the real DualSense PID and every isDualSense branch silently never
-                // engages.
+                // Nintendo shape (SController.type: Pro/Left Joy-Con/Right Joy-Con). A known
+                // device connected before a VID/PID-specific path existed may already have a
+                // stale guessed entry in Program.thirdPartyCons; the loop below must not be
+                // allowed to overwrite thirdParty for a device we now identify definitively.
                 bool isDualSenseDevice = enumerate.vendor_id == vendor_sony &&
                     (enumerate.product_id == product_dualsense || enumerate.product_id == product_dualsense_edge);
                 bool isDualShock4Device = enumerate.vendor_id == vendor_sony &&
@@ -1334,8 +1332,13 @@ namespace BetterJoyForCemu {
                 bool validController = isDualSenseDevice || isDualShock4Device ||
                     ((enumerate.product_id == product_l || enumerate.product_id == product_r ||
                       enumerate.product_id == product_pro || enumerate.product_id == product_snes || enumerate.product_id == product_n64) && enumerate.vendor_id == vendor_id);
+                bool isKnownNintendoDevice = enumerate.vendor_id == vendor_id &&
+                    (enumerate.product_id == product_l || enumerate.product_id == product_r ||
+                     enumerate.product_id == product_pro || enumerate.product_id == product_snes ||
+                     enumerate.product_id == product_n64);
                 // check list of custom controllers specified
-                foreach (SController v in (isDualSenseDevice || isDualShock4Device) ? Enumerable.Empty<SController>() : Program.thirdPartyCons) {
+                foreach (SController v in (isDualSenseDevice || isDualShock4Device || isKnownNintendoDevice)
+                        ? Enumerable.Empty<SController>() : Program.thirdPartyCons) {
                     if (enumerate.vendor_id == v.vendor_id && enumerate.product_id == v.product_id && enumerate.serial_number == v.serial_number) {
                         validController = true;
                         thirdParty = v;
@@ -1446,6 +1449,30 @@ namespace BetterJoyForCemu {
                     bool is64 = prod_id == product_n64;
                     bool isDualSense = prod_id == product_dualsense || prod_id == product_dualsense_edge;
                     bool isDualShock4 = prod_id == product_dualshock4_v2;
+                    bool? nintendoIsUsb = null;
+                    if (!isDualSense && !isDualShock4) {
+                        try {
+                            GetControllerTransport(enumerate.path,
+                                out bool nintendoIsUsbBus, out bool nintendoIsBtBus);
+                            if (nintendoIsBtBus)
+                                nintendoIsUsb = false;
+                            else if (nintendoIsUsbBus)
+                                nintendoIsUsb = true;
+                        } catch {
+                            // Fall back to NintendoController's historical serial-number
+                            // heuristic if the PnP parent chain is not ready yet.
+                        }
+                        DebugLog.Write("Nintendo transport resolved: vid=0x" +
+                            enumerate.vendor_id.ToString("X4", CultureInfo.InvariantCulture) +
+                            " pid=0x" +
+                            enumerate.product_id.ToString("X4", CultureInfo.InvariantCulture) +
+                            " serial=\"" + (enumerate.serial_number ?? String.Empty) +
+                            "\" isUsb=" +
+                            (nintendoIsUsb.HasValue
+                                ? nintendoIsUsb.Value.ToString(CultureInfo.InvariantCulture)
+                                : "unknown") +
+                            " path=" + enumerate.path);
+                    }
                     // j.Count (list size, not a stable slot) duplicates an existing PadId the
                     // moment a middle controller disconnects and a new one connects afterward -
                     // e.g. with PadIds 0/1/2 connected, 1 drops, the next new controller would
@@ -1479,13 +1506,26 @@ namespace BetterJoyForCemu {
                     } else if (isDualShock4) {
                         newController = new DualShock4Controller(handle, enumerate.path, enumerate.serial_number, NextAvailablePadId());
                     } else if (isSnes) {
-                        newController = new SnesController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
+                        newController = new SnesController(handle, EnableIMU,
+                            EnableLocalize & EnableIMU, 0.05f, enumerate.path,
+                            enumerate.serial_number, NextAvailablePadId(),
+                            thirdParty != null, nintendoIsUsb);
                     } else if (is64) {
-                        newController = new N64Controller(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
+                        newController = new N64Controller(handle, EnableIMU,
+                            EnableLocalize & EnableIMU, 0.05f, enumerate.path,
+                            enumerate.serial_number, NextAvailablePadId(),
+                            thirdParty != null, nintendoIsUsb);
                     } else if (isPro) {
-                        newController = new ProController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
+                        newController = new ProController(handle, EnableIMU,
+                            EnableLocalize & EnableIMU, 0.05f, enumerate.path,
+                            enumerate.serial_number, NextAvailablePadId(),
+                            thirdParty != null, nintendoIsUsb);
                     } else {
-                        newController = new JoyconController(handle, EnableIMU, EnableLocalize & EnableIMU, 0.05f, isLeft, enumerate.path, enumerate.serial_number, NextAvailablePadId(), thirdParty != null);
+                        newController = new JoyconController(handle, EnableIMU,
+                            EnableLocalize & EnableIMU, 0.05f, isLeft,
+                            enumerate.path, enumerate.serial_number,
+                            NextAvailablePadId(), thirdParty != null,
+                            nintendoIsUsb);
                     }
 
                     byte[] mac = new byte[6];
@@ -1598,7 +1638,12 @@ namespace BetterJoyForCemu {
                 if (jc.state == Controller.state_.NOT_ATTACHED) {
                     try {
                         jc.Attach();
-                    } catch (Exception) {
+                    } catch (Exception ex) {
+                        DebugLog.Write("Attach failed: pad=" + jc.PadId +
+                            " kind=" + jc.Kind +
+                            " path=" + jc.path +
+                            " exception=" + ex.GetType().Name +
+                            " message=\"" + ex.Message + "\"");
                         jc.state = Controller.state_.DROPPED;
                         continue;
                     }

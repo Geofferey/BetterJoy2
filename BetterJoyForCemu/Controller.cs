@@ -544,6 +544,10 @@ namespace BetterJoyForCemu {
                 if (requestedLed >= 0) {
                     SetLEDByPlayerNum(requestedLed);
                 }
+                int requestedHomeLight = Interlocked.Exchange(ref pendingHomeLightOn, -1);
+                if (requestedHomeLight >= 0) {
+                    SetHomeLight(requestedHomeLight != 0);
+                }
                 SendQueuedRumbleIfAny();
                 SendQueuedBluetoothAudioIfAny();
                 ApplyQueuedAutomaticBluetoothPairingIfAny();
@@ -588,7 +592,8 @@ namespace BetterJoyForCemu {
                     // An error on read.
                     //form.AppendTextBox("Pause 5ms");
                     Thread.Sleep((Int32)5);
-                    ++attempts;
+                    if (!AllowsSilentHidIdle)
+                        ++attempts;
                 } else if (a == 0) {
                     // The non-blocking read timed out. No need to sleep.
                     // No need to increase attempts because it's not an error.
@@ -603,8 +608,14 @@ namespace BetterJoyForCemu {
                 // frozen "connected" entry (and virtual controller) indefinitely. This is a
                 // second, independent detector using elapsed wall-clock time since the last
                 // genuinely successful read, regardless of why reads have been failing.
-                if (state > state_.DROPPED &&
+                if (state > state_.DROPPED && !AllowsSilentHidIdle &&
                     (Stopwatch.GetTimestamp() - lastSuccessTimestamp) / (double)Stopwatch.Frequency > StaleConnectionSeconds) {
+                    DebugLog.Write("Poll stale drop: pad=" + PadId +
+                        " kind=" + Kind +
+                        " path=" + path +
+                        " state=" + state +
+                        " attempts=" + attempts.ToString(CultureInfo.InvariantCulture) +
+                        " staleSeconds=" + StaleConnectionSeconds.ToString(CultureInfo.InvariantCulture));
                     state = state_.DROPPED;
                     form.AppendTextBox("Dropped (connection went silent).\r\n");
                     DebugPrint("Connection lost - no successful read in " + StaleConnectionSeconds + "s.", DebugType.ALL);
@@ -636,6 +647,11 @@ namespace BetterJoyForCemu {
         // report-offset bug (d755fae) was a close cousin of this same failure shape. Branch on the
         // report-ID byte (buf[0]) instead; length is fine only as a sanity/validity check.
         protected abstract int ReceiveRaw();
+
+        // Some HID gamepads only send input on state changes rather than continuously streaming
+        // neutral reports. Those should still be owned by BetterJoy while idle; real read errors
+        // continue to use the attempts-based drop path above.
+        protected virtual bool AllowsSilentHidIdle => false;
 
         // No-op by default; Joycon overrides this to send whatever HD-rumble data is queued in
         // rumble_obj (DualSenseController overrides it too, for its own simpler dual-motor rumble)
@@ -871,6 +887,15 @@ namespace BetterJoyForCemu {
             Interlocked.Exchange(ref pendingLedPlayerNum, playerNum);
         }
 
+        protected int pendingHomeLightOn = -1;
+        private int lastRequestedHomeLightOn = -1;
+
+        public void RequestHomeLightUpdate(bool on) {
+            int value = on ? 1 : 0;
+            if (Interlocked.Exchange(ref lastRequestedHomeLightOn, value) != value)
+                Interlocked.Exchange(ref pendingHomeLightOn, value);
+        }
+
         // Establishes the connection - part of the Controller contract (Program.cs's connect
         // loop calls this on anything it opens), but with no shared shell worth extracting:
         // every implementation is either wholly one device-specific handshake or another (see
@@ -908,9 +933,10 @@ namespace BetterJoyForCemu {
             state = state_.NOT_ATTACHED;
         }
 
-        // No-op by default; Joycon overrides this for Nintendo's USB-only "let the controller
-        // talk to Bluetooth again" handshake. See the override for a note on isUSB's DualSense
-        // edge case, preserved as-is rather than fixed by this move.
+        // No-op by default; subclasses can release transport-specific resources before the HID
+        // handle closes. Avoid transport handoff commands here unless they are tied to an
+        // explicit user action, because cleanup also reaches this path after transient read/init
+        // failures.
         protected virtual void OnDetachingWhileAttached() { }
 
         // Shared by ProcessButtonsAndStick (Joy-Con/Pro) and ParseDualSenseReport - diffs the

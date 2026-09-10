@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net.NetworkInformation;
+using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 using Nefarius.ViGEm.Client.Targets.DualShock4;
 using Nefarius.ViGEm.Client.Targets.Xbox360;
@@ -149,7 +151,17 @@ namespace BetterJoyForCemu {
         // every physical press doubles into a second "press" mirrored from the virtual pad.
         public bool thirdParty = false;
 
-        public NintendoController(IntPtr handle_, bool imu, bool localize, float alpha, bool left, string path, string serialNum, int id = 0, bool isPro = false, bool isSnes = false, bool is64 = false, bool thirdParty = false) {
+        // Licensed PowerA wireless pads can expose a USB HID interface that is a Nintendo-family
+        // controller identity but does not answer the official Nintendo USB command handshake.
+        // Keep owning that HID handle and consume any input it emits, but avoid sending Nintendo
+        // output/subcommands that this lane has already shown it will not acknowledge.
+        private bool usbInputOnlyFallback = false;
+        private int usbInputOnlyReportsLogged = 0;
+
+        public NintendoController(IntPtr handle_, bool imu, bool localize, float alpha,
+                bool left, string path, string serialNum, int id = 0, bool isPro = false,
+                bool isSnes = false, bool is64 = false, bool thirdParty = false,
+                bool? isUsbOverride = null) {
             serial_number = serialNum;
             activeData = new float[6];
             handle = handle_;
@@ -166,7 +178,10 @@ namespace BetterJoyForCemu {
             this.isPro = isPro || isSnes || is64;
             this.isSnes = isSnes;
             this.is64 = is64;
-            isUSB = serialNum == "000000000001";
+            // Official Nintendo USB devices use the shared placeholder serial below, but some
+            // third-party Pro controllers expose a real serial over USB. Prefer the transport
+            // resolved from the PnP parent bus and keep the serial check only as a fallback.
+            isUSB = isUsbOverride ?? serialNum == "000000000001";
             this.thirdParty = thirdParty;
 
             this.path = path;
@@ -200,39 +215,40 @@ namespace BetterJoyForCemu {
                 a = Enumerable.Repeat((byte)0, 64).ToArray();
                 form.AppendTextBox("Using USB.\r\n");
 
-                a[0] = 0x80;
-                a[1] = 0x1;
-                HIDapi.hid_write(handle, a, new UIntPtr(2));
-                HIDapi.hid_read_timeout(handle, a, new UIntPtr(64), 100);
-
-                if (a[0] != 0x81) { // can occur when USB connection isn't closed properly
+                bool usbHandshakeMatched = UsbCommand(0x02, a, "handshake", 100, true);
+                if (!usbHandshakeMatched && !thirdParty) {
                     form.AppendTextBox("Resetting USB connection.\r\n");
-                    Subcommand(0x06, new byte[] { 0x01 }, 1);
+                    UsbCommand(0x06, null, "reset", 100);
                     throw new Exception("reset_usb");
                 }
 
+                if (!usbHandshakeMatched)
+                    form.AppendTextBox("USB Nintendo handshake did not answer; trying input-only USB ownership.\r\n");
+
+                UsbCommand(0x03, a, "baudrate-3m", 100, usbHandshakeMatched);
+
+                bool usbHandshake3mMatched = UsbCommand(0x02, a, "handshake-3m", 100, true);
+                if (!usbHandshakeMatched && !usbHandshake3mMatched) {
+                    if (!thirdParty) {
+                        form.AppendTextBox("Resetting USB connection.\r\n");
+                        UsbCommand(0x06, null, "reset", 100);
+                        throw new Exception("reset_usb");
+                    }
+                    usbInputOnlyFallback = true;
+                    form.AppendTextBox("USB Nintendo handshake unavailable; consuming input-only HID lane.\r\n");
+                    DebugLog.Write("Nintendo USB handshake unavailable for third-party controller; consuming input-only HID lane: pad=" +
+                        PadId + " path=" + path);
+                }
+
+                // Linux sends this command but allows it to time out; some controllers simply
+                // start streaming after it without a matching 0x81/0x04 reply.
+                UsbCommand(0x04, a, "no-timeout", 100, false);
+
+                UsbCommand(0x01, a, "status", 100, false);
                 if (a[3] == 0x3) {
                     PadMacAddress = new PhysicalAddress(new byte[] { a[9], a[8], a[7], a[6], a[5], a[4] });
                     mappingProfileId = null;
                 }
-
-                // USB Pairing
-                a = Enumerable.Repeat((byte)0, 64).ToArray();
-                a[0] = 0x80; a[1] = 0x2; // Handshake
-                HIDapi.hid_write(handle, a, new UIntPtr(2));
-                HIDapi.hid_read_timeout(handle, a, new UIntPtr(64), 100);
-
-                a[0] = 0x80; a[1] = 0x3; // 3Mbit baud rate
-                HIDapi.hid_write(handle, a, new UIntPtr(2));
-                HIDapi.hid_read_timeout(handle, a, new UIntPtr(64), 100);
-
-                a[0] = 0x80; a[1] = 0x2; // Handshake at new baud rate
-                HIDapi.hid_write(handle, a, new UIntPtr(2));
-                HIDapi.hid_read_timeout(handle, a, new UIntPtr(64), 100);
-
-                a[0] = 0x80; a[1] = 0x4; // Prevent HID timeout
-                HIDapi.hid_write(handle, a, new UIntPtr(2)); // doesn't actually prevent timout...
-                HIDapi.hid_read_timeout(handle, a, new UIntPtr(64), 100);
 
             }
             dump_calibration_data();
@@ -245,13 +261,15 @@ namespace BetterJoyForCemu {
             // save pairing info
             //Subcommand(0x01, new byte[] { 0x03 }, 1, true);
 
-            BlinkHomeLight();
-            SetLEDByPlayerNum(PadId);
+            if (!usbInputOnlyFallback) {
+                Subcommand(0x3, new byte[] { 0x30 }, 1);
+                Subcommand(0x48, new byte[] { 0x01 }, 1);
 
-            Subcommand(0x40, new byte[] { (imu_enabled ? (byte)0x1 : (byte)0x0) }, 1);
-            Subcommand(0x48, new byte[] { 0x01 }, 1);
+                Subcommand(0x40, new byte[] { (imu_enabled ? (byte)0x1 : (byte)0x0) }, 1);
 
-            Subcommand(0x3, new byte[] { 0x30 }, 1);
+                BlinkHomeLight();
+                SetLEDByPlayerNum(PadId);
+            }
             DebugPrint("Done with init.", DebugType.COMMS);
 
             HIDapi.hid_set_nonblocking(handle, 1);
@@ -259,7 +277,71 @@ namespace BetterJoyForCemu {
             return 0;
         }
 
+        private bool UsbCommand(byte command, byte[] response, string label, int timeoutMs,
+                bool requireAck = true) {
+            byte[] request = { 0x80, command };
+            int read = 0;
+            int reads = 0;
+            int writes = 0;
+            byte report = 0;
+            byte ack = 0;
+            byte state = 0;
+            bool hasResponse = response != null && response.Length > 0;
+            bool matched = false;
+            int maxAttempts = hasResponse ? 2 : 1;
+            for (int attempt = 0; attempt < maxAttempts && !matched; attempt++) {
+                if (attempt > 0)
+                    Thread.Sleep(20);
+                int written = HIDapi.hid_write(handle, request, new UIntPtr(2));
+                writes++;
+                if (!hasResponse) {
+                    matched = written > 0;
+                    break;
+                }
+                Array.Clear(response, 0, response.Length);
+                Stopwatch timeout = Stopwatch.StartNew();
+                int remaining = Math.Max(1, timeoutMs);
+                do {
+                    read = HIDapi.hid_read_timeout(handle, response,
+                        new UIntPtr((uint)response.Length), remaining);
+                    if (read <= 0)
+                        break;
+                    reads++;
+                    report = response[0];
+                    if (response.Length > 1)
+                        ack = response[1];
+                    if (response.Length > 3)
+                        state = response[3];
+                    if (report == 0x81 && ack == command) {
+                        matched = true;
+                        break;
+                    }
+                    Array.Clear(response, 0, response.Length);
+                    remaining = timeoutMs - (int)timeout.ElapsedMilliseconds;
+                } while (remaining > 0);
+                if (!matched)
+                    DebugPrint("USB command 0x" + command.ToString("X2", CultureInfo.InvariantCulture) +
+                        " timed out or received mismatched response.", DebugType.COMMS);
+            }
+            if (!requireAck)
+                matched = true;
+            DebugLog.Write("Nintendo USB command: pad=" + PadId +
+                " label=" + label +
+                " command=0x" + command.ToString("X2", CultureInfo.InvariantCulture) +
+                " thirdParty=" + thirdParty +
+                " writes=" + writes.ToString(CultureInfo.InvariantCulture) +
+                " read=" + read.ToString(CultureInfo.InvariantCulture) +
+                " reads=" + reads.ToString(CultureInfo.InvariantCulture) +
+                " report=0x" + report.ToString("X2", CultureInfo.InvariantCulture) +
+                " ack=0x" + ack.ToString("X2", CultureInfo.InvariantCulture) +
+                " state=0x" + state.ToString("X2", CultureInfo.InvariantCulture) +
+                " matched=" + matched.ToString(CultureInfo.InvariantCulture));
+            return matched;
+        }
+
         public void SetPlayerLED(byte leds_ = 0x0) {
+            if (usbInputOnlyFallback)
+                return;
             Subcommand(0x30, new byte[] { leds_ }, 1);
         }
 
@@ -315,20 +397,13 @@ namespace BetterJoyForCemu {
         }
 
         // Called by Controller.Detach() while the connection had progressed past NO_JOYCONS, right
-        // after the shared hid_set_nonblocking call - Nintendo-only "let the controller talk to
-        // Bluetooth again" handshake. DualSenseController doesn't override this hook at all (as of
-        // step 4 Phase J), so it's now genuinely Nintendo-only in practice, not just in name.
+        // after the shared hid_set_nonblocking call. Do not send the old USB-to-Bluetooth handoff
+        // commands here: a transient USB init/read failure also reaches Detach through CleanUp,
+        // and asking the controller to resume Bluetooth there creates the exact reconnect/light
+        // flash loop that prevents stable USB ownership.
         protected override void OnDetachingWhileAttached() {
             // Subcommand(0x40, new byte[] { 0x0 }, 1); // disable IMU sensor
             //Subcommand(0x48, new byte[] { 0x0 }, 1); // Would turn off rumble?
-
-            if (isUSB) {
-                byte[] a = Enumerable.Repeat((byte)0, 64).ToArray();
-                a[0] = 0x80; a[1] = 0x5; // Allow device to talk to BT again
-                HIDapi.hid_write(handle, a, new UIntPtr(2));
-                a[0] = 0x80; a[1] = 0x6; // Allow device to talk to BT again
-                HIDapi.hid_write(handle, a, new UIntPtr(2));
-            }
         }
 
         private byte ts_en;
@@ -347,7 +422,7 @@ namespace BetterJoyForCemu {
         protected override int ReceiveRaw() {
             if (handle == IntPtr.Zero) return -2;
 
-            byte[] raw_buf = new byte[report_len];
+            byte[] raw_buf = new byte[usbInputOnlyFallback ? 64 : report_len];
             bool captureImuDiagnostics = GyroMouseDebugLogging || GyroStickDebugLogging;
             long hidCallStart = captureImuDiagnostics ? Stopwatch.GetTimestamp() : 0;
             int ret = HIDapi.hid_read_timeout(handle, raw_buf, new UIntPtr(report_len), 5);
@@ -356,6 +431,13 @@ namespace BetterJoyForCemu {
                                    hidCallStart, hidCallEnd);
 
             if (ret > 0) {
+                if (usbInputOnlyFallback) {
+                    LogUsbInputOnlyReport(ret, raw_buf);
+                    if (ProcessUsbInputOnlyReport(raw_buf, ret))
+                        return ret;
+                    if (raw_buf[0] != 0x30 && raw_buf[0] != 0x31)
+                        return ret;
+                }
                 BeginGyroStickDiagnosticReport();
                 // Process packets as soon as they come
                 for (int n = 0; n < 3; n++) {
@@ -433,12 +515,140 @@ namespace BetterJoyForCemu {
             return ret;
         }
 
+        protected override bool AllowsSilentHidIdle => usbInputOnlyFallback;
+
+        private bool ProcessUsbInputOnlyReport(byte[] rawReport, int bytesRead) {
+            if (bytesRead < 1)
+                return false;
+
+            if (rawReport[0] == 0x3F) {
+                if (bytesRead < 12)
+                    return true;
+
+                ProcessSimpleHidReport(rawReport);
+                DispatchParsedInputReport();
+                return true;
+            }
+
+            return false;
+        }
+
+        private void ProcessSimpleHidReport(byte[] report) {
+            if (HasDualSticks) {
+                stick[0] = NormalizeSimpleHidAxis(report[4], report[5]);
+                stick[1] = NormalizeSimpleHidAxis(report[6], report[7]);
+                stick2[0] = NormalizeSimpleHidAxis(report[8], report[9]);
+                stick2[1] = NormalizeSimpleHidAxis(report[10], report[11]);
+            }
+
+            lock (buttons) {
+                lock (down_) {
+                    for (int i = 0; i < buttons.Length; ++i)
+                        down_[i] = buttons[i];
+                }
+
+                buttons = new bool[ButtonCount];
+                byte b1 = report[1];
+                byte b2 = report[2];
+                buttons[(int)Button.DPAD_DOWN] = (b1 & 0x01) != 0;
+                buttons[(int)Button.DPAD_RIGHT] = (b1 & 0x02) != 0;
+                buttons[(int)Button.DPAD_LEFT] = (b1 & 0x04) != 0;
+                buttons[(int)Button.DPAD_UP] = (b1 & 0x08) != 0;
+                buttons[(int)Button.SL] = (b1 & 0x10) != 0;
+                buttons[(int)Button.SR] = (b1 & 0x20) != 0;
+
+                buttons[(int)Button.MINUS] = (b2 & 0x01) != 0;
+                buttons[(int)Button.PLUS] = (b2 & 0x02) != 0;
+                buttons[(int)Button.STICK] = (b2 & 0x04) != 0;
+                buttons[(int)Button.STICK2] = (b2 & 0x08) != 0;
+                buttons[(int)Button.HOME] = (b2 & 0x10) != 0;
+                buttons[(int)Button.CAPTURE] = (b2 & 0x20) != 0;
+
+                if (HasDualSticks) {
+                    buttons[(int)Button.SHOULDER_1] = (b2 & 0x40) != 0;
+                    buttons[(int)Button.SHOULDER2_1] = (b2 & 0x40) != 0;
+                    buttons[(int)Button.SHOULDER_2] = (b2 & 0x80) != 0;
+                    buttons[(int)Button.SHOULDER2_2] = (b2 & 0x80) != 0;
+                } else {
+                    buttons[(int)Button.SHOULDER_1] = (b2 & 0x40) != 0;
+                    buttons[(int)Button.SHOULDER_2] = (b2 & 0x80) != 0;
+                }
+
+                CommitButtonState();
+            }
+        }
+
+        private static float NormalizeSimpleHidAxis(byte lo, byte hi) {
+            int raw = lo | (hi << 8);
+            float value = (raw - 0x8000) / 32768.0f;
+            return Math.Max(-1.0f, Math.Min(1.0f, value));
+        }
+
+        private void DispatchParsedInputReport() {
+            DoThingsWithButtons();
+            packetCounter++;
+
+            if (Program.server != null)
+                Program.server.NewReportIncoming(this);
+
+            if (out_ds4 != null || out_dualsense != null) {
+                var ds4State = MapToDualShock4Input(this);
+                if (out_ds4 != null) {
+                    try {
+                        out_ds4.UpdateInput(ds4State);
+                    } catch (Exception) {
+                        // ignore /shrug
+                    }
+                }
+                if (out_dualsense != null) {
+                    try {
+                        out_dualsense.UpdateInput(ds4State);
+                    } catch (Exception) {
+                        // ignore /shrug
+                    }
+                }
+            }
+
+            if (out_xbox != null) {
+                try {
+                    out_xbox.UpdateInput(MapToXbox360Input(this));
+                } catch (Exception) {
+                    // ignore /shrug
+                }
+            }
+        }
+
+        private void LogUsbInputOnlyReport(int bytesRead, byte[] rawReport) {
+            if (!DebugLog.Enabled || usbInputOnlyReportsLogged >= 16)
+                return;
+
+            usbInputOnlyReportsLogged++;
+            int len = Math.Min(Math.Max(bytesRead, 0), Math.Min(rawReport.Length, 64));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < len; i++) {
+                if (i > 0)
+                    sb.Append(' ');
+                sb.Append(rawReport[i].ToString("X2", CultureInfo.InvariantCulture));
+            }
+            DebugLog.Write("Nintendo USB input-only report: pad=" + PadId +
+                " kind=" + Kind +
+                " path=" + path +
+                " bytes=" + bytesRead.ToString(CultureInfo.InvariantCulture) +
+                " reportId=0x" + rawReport[0].ToString("X2", CultureInfo.InvariantCulture) +
+                " data=" + sb.ToString());
+        }
+
 
         // Called from Controller.Poll()'s shared shell whenever rumble_obj's queue has data -
         // SendRumble's actual Nintendo HD-rumble encoding isn't promoted to Controller, so this
         // stays a hook rather than shared logic. DualSense's own simpler dual-motor rumble lives
         // on DualSenseController.SendQueuedRumbleIfAny now (step 4 Phase J).
         protected override void SendQueuedRumbleIfAny() {
+            if (usbInputOnlyFallback) {
+                while (rumble_obj.queue.Count > 0)
+                    rumble_obj.queue.Dequeue();
+                return;
+            }
             if (rumble_obj.queue.Count > 0) {
                 SendRumble(rumble_obj.GetData());
             }
@@ -686,15 +896,52 @@ namespace BetterJoyForCemu {
             buf_[0] = 0x1;
             if (global_count == 0xf) global_count = 0;
             else ++global_count;
-            if (print) { PrintArray(buf_, DebugType.COMMS, len, 11, "Subcommand 0x" + string.Format("{0:X2}", sc) + " sent. Data: 0x{0:S}"); };
-            HIDapi.hid_write(handle, buf_, new UIntPtr(len + 11));
-            int tries = 0;
-            do {
-                int res = HIDapi.hid_read_timeout(handle, response, new UIntPtr(report_len), 100);
-                if (res < 1) DebugPrint("No response.", DebugType.COMMS);
-                else if (print) { PrintArray(response, DebugType.COMMS, report_len - 1, 1, "Response ID 0x" + string.Format("{0:X2}", response[0]) + ". Data: 0x{0:S}"); }
-                tries++;
-            } while (tries < 10 && response[0] != 0x21 && response[14] != sc);
+            bool matched = false;
+            int lastRead = 0;
+            int reads = 0;
+            int writes = 0;
+            for (int sendAttempt = 0; sendAttempt < 2 && !matched; sendAttempt++) {
+                if (sendAttempt > 0)
+                    Thread.Sleep(isUSB ? 20 : 60);
+                if (print) {
+                    PrintArray(buf_, DebugType.COMMS, len, 11,
+                        "Subcommand 0x" + string.Format("{0:X2}", sc) + " sent. Data: 0x{0:S}");
+                }
+                HIDapi.hid_write(handle, buf_, new UIntPtr(len + 11));
+                writes++;
+                Array.Clear(response, 0, response.Length);
+                for (int tries = 0; tries < 10; tries++) {
+                    lastRead = HIDapi.hid_read_timeout(handle, response, new UIntPtr(report_len), 100);
+                    if (lastRead < 1) {
+                        DebugPrint("No response.", DebugType.COMMS);
+                    } else {
+                        reads++;
+                        if (print) {
+                            PrintArray(response, DebugType.COMMS, report_len - 1, 1,
+                                "Response ID 0x" + string.Format("{0:X2}", response[0]) +
+                                ". Data: 0x{0:S}");
+                        }
+                        if (response[0] == 0x21 && response.Length > 14 && response[14] == sc) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    Array.Clear(response, 0, response.Length);
+                }
+                if (!matched)
+                    DebugPrint("Subcommand 0x" +
+                        sc.ToString("X2", CultureInfo.InvariantCulture) +
+                        " timed out or received mismatched response.", DebugType.COMMS);
+            }
+            DebugLog.Write("Nintendo subcommand: pad=" + PadId +
+                " sc=0x" + sc.ToString("X2", CultureInfo.InvariantCulture) +
+                " thirdParty=" + thirdParty +
+                " writes=" + writes.ToString(CultureInfo.InvariantCulture) +
+                " read=" + lastRead.ToString(CultureInfo.InvariantCulture) +
+                " reads=" + reads.ToString(CultureInfo.InvariantCulture) +
+                " report=0x" + response[0].ToString("X2", CultureInfo.InvariantCulture) +
+                " ackSc=0x" + (response.Length > 14 ? response[14] : (byte)0).ToString("X2", CultureInfo.InvariantCulture) +
+                " matched=" + matched.ToString(CultureInfo.InvariantCulture));
 
             return response;
         }

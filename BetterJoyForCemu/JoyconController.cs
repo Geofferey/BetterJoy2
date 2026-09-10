@@ -16,8 +16,12 @@ namespace BetterJoyForCemu {
         // isLeft is a real, caller-supplied identity here (unlike Pro/SNES/N64, where it's always
         // true by convention) - see NintendoController's base constructor for isPro/isSnes/is64,
         // which this passes as all-false to match a plain Joy-Con's identity.
-        public JoyconController(IntPtr handle_, bool imu, bool localize, float alpha, bool left, string path, string serialNum, int id = 0, bool thirdParty = false)
-            : base(handle_, imu, localize, alpha, left, path, serialNum, id, isPro: false, isSnes: false, is64: false, thirdParty: thirdParty) {
+        public JoyconController(IntPtr handle_, bool imu, bool localize, float alpha,
+                bool left, string path, string serialNum, int id = 0,
+                bool thirdParty = false, bool? isUsbOverride = null)
+            : base(handle_, imu, localize, alpha, left, path, serialNum, id,
+                  isPro: false, isSnes: false, is64: false, thirdParty: thirdParty,
+                  isUsbOverride: isUsbOverride) {
         }
     }
 }

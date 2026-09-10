@@ -23,8 +23,12 @@ namespace BetterJoyForCemu {
         // isLeft is hardcoded true (not a caller parameter) - not semantic for a SNES controller,
         // only there so NintendoController's shared report-parsing code (which still branches on
         // isLeft for byte-offset selection) picks the correct half of the report layout.
-        public SnesController(IntPtr handle_, bool imu, bool localize, float alpha, string path, string serialNum, int id = 0, bool thirdParty = false)
-            : base(handle_, imu, localize, alpha, true, path, serialNum, id, isPro: false, isSnes: true, is64: false, thirdParty: thirdParty) {
+        public SnesController(IntPtr handle_, bool imu, bool localize, float alpha,
+                string path, string serialNum, int id = 0, bool thirdParty = false,
+                bool? isUsbOverride = null)
+            : base(handle_, imu, localize, alpha, true, path, serialNum, id,
+                  isPro: false, isSnes: true, is64: false, thirdParty: thirdParty,
+                  isUsbOverride: isUsbOverride) {
         }
     }
 }
