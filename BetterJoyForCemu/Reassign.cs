@@ -22,6 +22,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_touchpad_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_sensitivity = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_percent = new ContextMenuStrip();
+        ContextMenuStrip menu_charging_indicator = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_axis_scale = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_click_lockout = new ContextMenuStrip();
@@ -86,6 +87,10 @@ namespace BetterJoyForCemu {
         private CheckBox homeLedCheckBox;
         private Label lightColorLabel;
         private Button lightColorButton;
+        private Button chargeGlowColorButton;
+        private Label chargeGlowColorLabel;
+        private Label chargingIndicatorLabel;
+        private SplitButton chargingIndicatorSelector;
         private Label lightingModeLabel;
         private ProfileChoiceSelector lightingModeSelector;
         private Label playerLedLabel;
@@ -255,6 +260,11 @@ namespace BetterJoyForCemu {
                 menu_gyro_stick_percent.Items.Add(
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
             menu_gyro_stick_percent.ItemClicked += GyroStickPercentMenu_ItemClicked;
+
+            foreach (var indicator in ControllerMappings.ChargingIndicators)
+                menu_charging_indicator.Items.Add(
+                    new ToolStripMenuItem(indicator.Label) { Tag = indicator.Value });
+            menu_charging_indicator.ItemClicked += ChargingIndicatorMenu_ItemClicked;
 
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
                 menu_touchpad_axis_scale.Items.Add(
@@ -1418,7 +1428,45 @@ namespace BetterJoyForCemu {
                 "trigger state, so before this existed they always silently went dark regardless " +
                 "of what the controller would otherwise show. Joy-Con, Pro, SNES, and N64 default " +
                 "to Enabled, matching how they've always behaved.");
-            layout.Advance(72);
+
+            chargingIndicatorLabel = CreateLabel("Charging indicator", 320, sectionTop + 45,
+                ProfileText, false);
+            page.Controls.Add(chargingIndicatorLabel);
+            chargingIndicatorSelector = CreateChoiceSplitButton(
+                "btn_charging_indicator", menu_charging_indicator);
+            chargingIndicatorSelector.RightClickHandler = (sender, e) => PromptChargeGlowPeriod();
+            StyleMappingButton(chargingIndicatorSelector);
+            chargingIndicatorSelector.Location = new Point(440, sectionTop + 39);
+            chargingIndicatorSelector.Size = new Size(140, 31);
+            page.Controls.Add(chargingIndicatorSelector);
+            tip_reassign.SetToolTip(chargingIndicatorSelector,
+                "The lightbar pulse BetterJoy draws while this controller is parked on USB " +
+                "waiting for a PS press. Its firmware never reaches its own charging state " +
+                "there, so without this the profile color simply stays lit. Glow uses the Glow " +
+                "color below; Battery ignores it and ramps the pulse from red at empty through " +
+                "to green at full, tracking the charge as it climbs. Right-click to set " +
+                "how long one full breath takes (" +
+                ControllerMappings.MinimumChargeGlowPeriodSeconds + "-" +
+                ControllerMappings.MaximumChargeGlowPeriodSeconds + " seconds). Only DualSense " +
+                "has this pulse today; other controllers ignore it.");
+
+            chargeGlowColorLabel = CreateLabel("Glow color", 24, sectionTop + 84,
+                ProfileText, false);
+            chargeGlowColorButton = new Button {
+                Location = new Point(114, sectionTop + 78),
+                Size = new Size(180, 31),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0),
+            };
+            StyleStandardButton(chargeGlowColorButton, false);
+            chargeGlowColorButton.Click += ChargeGlowColorButton_Click;
+            tip_reassign.SetToolTip(chargeGlowColorButton,
+                "The color the charging pulse reaches at the peak of each breath. It fades from " +
+                "off up to this and back, so this is the color it glows.");
+            page.Controls.Add(chargeGlowColorLabel);
+            page.Controls.Add(chargeGlowColorButton);
+
+            layout.Advance(72 + 39);
 
             layout.Divider();
             layout.Heading("Haptics", "Control controller vibration for this profile.");
@@ -2216,6 +2264,94 @@ namespace BetterJoyForCemu {
             }
         }
 
+        private void ChargeGlowColorButton_Click(object sender, EventArgs e) {
+            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            byte red, green, blue;
+            ControllerMappings.TryParseLightColor(
+                ControllerMappings.ChargeGlowColor(SelectedProfileId),
+                out red, out green, out blue);
+            using (var dialog = new ColorDialog()) {
+                dialog.Color = Color.FromArgb(red, green, blue);
+                dialog.AllowFullOpen = true;
+                dialog.FullOpen = true;
+                dialog.SolidColorOnly = true;
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                    return;
+
+                string value = String.Format("#{0:X2}{1:X2}{2:X2}",
+                    dialog.Color.R, dialog.Color.G, dialog.Color.B);
+                ControllerMappings.SetOptionValue(SelectedProfileId, "ChargeGlowColor", value);
+                UpdateChargeGlowColorButton(value);
+            }
+        }
+
+        private void UpdateChargeGlowColorButton(string value) {
+            if (chargeGlowColorButton == null)
+                return;
+
+            string normalized = ControllerMappings.NormalizeLightColor(value);
+            byte red, green, blue;
+            ControllerMappings.TryParseLightColor(normalized, out red, out green, out blue);
+            Color color = Color.FromArgb(red, green, blue);
+            chargeGlowColorButton.Text = normalized;
+            chargeGlowColorButton.BackColor = color;
+            chargeGlowColorButton.FlatAppearance.MouseOverBackColor = ControlPaint.Light(color);
+            int luminance = red * 299 + green * 587 + blue * 114;
+            chargeGlowColorButton.ForeColor = luminance >= 150000 ? Color.Black : Color.White;
+        }
+
+        // Shows "Glow" / "Disabled", with the period appended when glowing so the right-click
+        // value is visible without hovering - "Glow (4s)".
+        private void UpdateChargingIndicatorButton() {
+            if (chargingIndicatorSelector == null || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            bool enabled = ControllerMappings.ChargeGlowEnabled(SelectedProfileId);
+            bool battery = ControllerMappings.ChargeGlowUsesBattery(SelectedProfileId);
+            string period = ControllerMappings.ChargeGlowPeriodSeconds(SelectedProfileId) + "s)";
+            chargingIndicatorSelector.Text = !enabled
+                ? "Disabled"
+                : (battery ? "Battery (" : "Glow (") + period;
+
+            // Battery derives its own colour from the charge level, so the picker has nothing to
+            // control - grey it out rather than leave a swatch that silently does nothing.
+            if (chargeGlowColorButton != null)
+                chargeGlowColorButton.Enabled = enabled && !battery;
+            if (chargeGlowColorLabel != null)
+                chargeGlowColorLabel.Enabled = enabled && !battery;
+        }
+
+        private void ChargingIndicatorMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            ControllerMappings.SetOptionValue(SelectedProfileId, "ChargingIndicator",
+                (string)e.ClickedItem.Tag);
+            UpdateChargingIndicatorButton();
+        }
+
+        // Right-click sets the pulse period. Only meaningful while glowing, so it says so rather
+        // than silently editing a value that has no effect.
+        private void PromptChargeGlowPeriod() {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+            if (!ControllerMappings.ChargeGlowEnabled(SelectedProfileId)) {
+                MessageBox.Show(this,
+                    "Set Charging indicator to Glow first - the pulse period only applies while " +
+                    "the indicator is glowing.",
+                    "Charging indicator", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            PromptProfileNumber(chargingIndicatorSelector, "ChargeGlowPeriodSeconds",
+                "Charge glow period", "pulse period",
+                ControllerMappings.MinimumChargeGlowPeriodSeconds,
+                ControllerMappings.MaximumChargeGlowPeriodSeconds, "s",
+                value => "Glow (" + value + "s)");
+        }
+
         private void UpdateLightColorButton(string value) {
             if (lightColorButton == null)
                 return;
@@ -2431,6 +2567,7 @@ namespace BetterJoyForCemu {
                 preferredTransportSelector, automaticBluetoothPairingSelector,
                 swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
                 lightColorButton, lightingModeSelector, playerLedSelector,
+                chargingIndicatorSelector, chargeGlowColorButton,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
                 controllerAudioUsbLoopbackSelector, controllerBluetoothMicrophoneSelector,
@@ -2521,6 +2658,9 @@ namespace BetterJoyForCemu {
                 homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
                 UpdateLightColorButton(
                     ControllerMappings.OptionValue(SelectedProfileId, "LightColor"));
+                UpdateChargeGlowColorButton(
+                    ControllerMappings.ChargeGlowColor(SelectedProfileId));
+                UpdateChargingIndicatorButton();
                 string lightingMode = ControllerMappings.LightingMode(SelectedProfileId);
                 int lightingModeIndex = Array.FindIndex(ControllerMappings.LightingModes,
                     m => String.Equals(m.Value, lightingMode, StringComparison.OrdinalIgnoreCase));
@@ -2681,6 +2821,7 @@ namespace BetterJoyForCemu {
                      menu_touchpad_tap_hold, menu_touchpad_click_lockout,
                      menu_touchpad_two_finger_scroll,
                      menu_gyro_stick_mode, menu_gyro_stick_axis, menu_gyro_stick_percent,
+                     menu_charging_indicator,
                      menu_default_orientation }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
@@ -3165,6 +3306,15 @@ namespace BetterJoyForCemu {
 
         private void PromptProfilePercentage(SplitButton button, string key,
             string title, string description, int minimum, int maximum) {
+            PromptProfileNumber(button, key, title, description, minimum, maximum, "%", null);
+        }
+
+        // Same dialog, with the unit and the button's own caption parameterised - a percentage
+        // selector shows "50%", while the charging indicator has to keep reading "Glow (4s)"
+        // rather than turning into a bare number.
+        private void PromptProfileNumber(SplitButton button, string key,
+            string title, string description, int minimum, int maximum,
+            string unit, Func<int, string> formatButtonText) {
             if (String.IsNullOrEmpty(SelectedProfileId))
                 return;
 
@@ -3183,8 +3333,8 @@ namespace BetterJoyForCemu {
                 var label = new Label {
                     AutoSize = true,
                     Location = new Point(18, 18),
-                    Text = String.Format("Enter {0} ({1}%–{2}%):",
-                        description, minimum, maximum),
+                    Text = String.Format("Enter {0} ({1}{3}–{2}{3}):",
+                        description, minimum, maximum, unit),
                     ForeColor = ProfileText,
                 };
                 var input = new TextBox {
@@ -3229,14 +3379,16 @@ namespace BetterJoyForCemu {
 
                 while (prompt.ShowDialog(this) == DialogResult.OK) {
                     string text = input.Text.Trim();
-                    if (text.EndsWith("%", StringComparison.Ordinal))
-                        text = text.Substring(0, text.Length - 1).Trim();
+                    if (text.EndsWith(unit, StringComparison.Ordinal))
+                        text = text.Substring(0, text.Length - unit.Length).Trim();
 
                     int value;
                     if (Int32.TryParse(text, out value) &&
                         value >= minimum && value <= maximum) {
                         ControllerMappings.SetOptionValue(SelectedProfileId, key, value.ToString());
-                        button.Text = value + "%";
+                        button.Text = formatButtonText != null
+                            ? formatButtonText(value)
+                            : value + unit;
                         return;
                     }
 

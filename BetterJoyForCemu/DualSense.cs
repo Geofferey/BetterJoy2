@@ -1537,9 +1537,13 @@ namespace BetterJoyForCemu {
 
             string devicePath = chargeOnlyUsbPath;
             string profileId = ControllerMappings.ProfileIdFor(this);
+            // Seed the battery gradient from what this controller last reported, so a Battery
+            // indicator shows the right colour immediately instead of waiting for the parked pad
+            // to volunteer a report. The monitor refreshes it from any report that does arrive.
+            int seedBatteryPercent = batteryPercent;
             bool queued = ThreadPool.QueueUserWorkItem(_ => {
                 try {
-                    MonitorChargeOnlyUsbWake(devicePath, profileId);
+                    MonitorChargeOnlyUsbWake(devicePath, profileId, seedBatteryPercent);
                 } finally {
                     Interlocked.Exchange(ref chargeOnlyWakeMonitorStarted, 0);
                     Program.mgr.EndChargeOnlyUsbWakeMonitor();
@@ -1551,12 +1555,24 @@ namespace BetterJoyForCemu {
             }
         }
 
-        private static void MonitorChargeOnlyUsbWake(string devicePath, string profileId) {
+        private static void MonitorChargeOnlyUsbWake(string devicePath, string profileId,
+                int seedBatteryPercent) {
             // Opening the USB HID interface during teardown prevents the firmware from reaching
             // its native orange charging state. Let that transition finish first; only then own
             // the input endpoint while waiting for the PS wake edge.
             Thread.Sleep(FirmwarePowerOffWakeSettleMs);
-            bool fakeUsbChargeGlow = true;
+            bool fakeUsbChargeGlow = ControllerMappings.ChargeGlowEnabled(profileId);
+            bool glowFollowsBattery = ControllerMappings.ChargeGlowUsesBattery(profileId);
+            byte glowRed, glowGreen, glowBlue;
+            ControllerMappings.TryParseLightColor(
+                ControllerMappings.ChargeGlowColor(profileId),
+                out glowRed, out glowGreen, out glowBlue);
+            int glowBatteryPercent = seedBatteryPercent;
+            if (glowFollowsBattery)
+                BatteryGlowColor(glowBatteryPercent,
+                    out glowRed, out glowGreen, out glowBlue);
+            double glowPeriodMs =
+                ControllerMappings.ChargeGlowPeriodSeconds(profileId) * 1000.0;
             DebugLog.Write("ChargeOnlyWake: monitor started, path=" + devicePath +
                 " fakeUsbChargeGlow=" + fakeUsbChargeGlow);
             while (Program.mgr.ShouldMonitorChargeOnlyUsbWake(devicePath, profileId)) {
@@ -1586,7 +1602,8 @@ namespace BetterJoyForCemu {
                             long nowTicks = Stopwatch.GetTimestamp();
                             if (nowTicks >= nextGlowAt) {
                                 WriteUsbChargeGlowFrame(wakeHandle,
-                                    glowClock.Elapsed.TotalMilliseconds);
+                                    glowClock.Elapsed.TotalMilliseconds, glowPeriodMs,
+                                    glowRed, glowGreen, glowBlue);
                                 nextGlowAt = nowTicks +
                                     Stopwatch.Frequency * UsbChargeGlowFrameMs / 1000;
                             }
@@ -1597,6 +1614,22 @@ namespace BetterJoyForCemu {
                         if (received < 0) {
                             DebugLog.Write("ChargeOnlyWake: read failed (handle invalid), reopening.");
                             break;
+                        }
+
+                        // Refresh the gradient from whatever the parked pad does send, so the
+                        // colour tracks the charge climbing rather than freezing at the level it
+                        // had when it was parked. Same byte ReceiveRaw reads (r[52 + o], o=1 for
+                        // this USB-framed report) and the same decoder.
+                        if (glowFollowsBattery && received > 53 && report[0] == 0x01) {
+                            int reportedPercent;
+                            ControllerBatteryStatus reportedStatus;
+                            DecodeBatteryStatus(report[53], out reportedPercent,
+                                out reportedStatus);
+                            if (reportedPercent != glowBatteryPercent) {
+                                glowBatteryPercent = reportedPercent;
+                                BatteryGlowColor(glowBatteryPercent,
+                                    out glowRed, out glowGreen, out glowBlue);
+                            }
                         }
 
                         long now = Stopwatch.GetTimestamp();
@@ -1671,15 +1704,36 @@ namespace BetterJoyForCemu {
             DebugLog.Write("ChargeOnlyWake: monitor ended (ShouldMonitor went false).");
         }
 
-        private static void WriteUsbChargeGlowFrame(IntPtr wakeHandle, double elapsedMs) {
+        // Red at empty through to green at full, via yellow at the midpoint. A continuous ramp
+        // rather than LightingModeBattery's three fixed bands: that one quantises to avoid
+        // chattering at the controller every time the charge twitches, which does not apply here
+        // because the pulse is already rewriting the lightbar every frame anyway. An unknown
+        // level (-1, never reported) falls back to the midpoint instead of showing empty-red.
+        private static void BatteryGlowColor(int batteryPercent,
+                out byte red, out byte green, out byte blue) {
+            double level = batteryPercent < 0
+                ? 0.5
+                : Math.Max(0.0, Math.Min(100.0, batteryPercent)) / 100.0;
+            red = (byte)Math.Round(255.0 * (1.0 - level));
+            green = (byte)Math.Round(255.0 * level);
+            blue = 0;
+        }
+
+        // The profile's colour is the PEAK of the breath - the raised cosine scales it from off up
+        // to that colour and back, so a picked colour reads as "the colour it glows", not a floor.
+        private static void WriteUsbChargeGlowFrame(IntPtr wakeHandle, double elapsedMs,
+                double periodMs, byte peakRed, byte peakGreen, byte peakBlue) {
             if (wakeHandle == IntPtr.Zero)
                 return;
 
-            double phase = (elapsedMs % UsbChargeGlowPeriodMs) / UsbChargeGlowPeriodMs;
+            if (periodMs <= 0.0)
+                periodMs = UsbChargeGlowPeriodMs;
+            double phase = (elapsedMs % periodMs) / periodMs;
             double wave = 0.5 - 0.5 * Math.Cos(phase * Math.PI * 2.0);
-            byte red = (byte)Math.Round(wave * 160.0);
-            byte green = (byte)Math.Round(wave * 48.0);
-            WriteUsbChargeGlowColor(wakeHandle, red, green, 0);
+            WriteUsbChargeGlowColor(wakeHandle,
+                (byte)Math.Round(wave * peakRed),
+                (byte)Math.Round(wave * peakGreen),
+                (byte)Math.Round(wave * peakBlue));
         }
 
         private static void WriteUsbChargeGlowOff(IntPtr wakeHandle) {

@@ -103,6 +103,22 @@ namespace BetterJoyForCemu {
             (USBSleepOnConnectBluetooth, "Bluetooth"), (USBSleepOnConnectEnabled, "Enabled"),
             (USBSleepOnConnectDisabled, "Disabled"),
         };
+        // The lightbar pulse BetterJoy draws itself while a controller is parked in charge-only
+        // USB waiting for a PS press (DualSenseController.MonitorChargeOnlyUsbWake). The firmware
+        // never reaches its own charging state there, so without this the profile colour just
+        // stays lit. Amber by default, matching what the real charge animation looks like.
+        public const string ChargingIndicatorGlow = "glow";
+        public const string ChargingIndicatorBattery = "battery";
+        public const string ChargingIndicatorDisabled = "disabled";
+        public static readonly (string Value, string Label)[] ChargingIndicators = {
+            (ChargingIndicatorGlow, "Glow"), (ChargingIndicatorBattery, "Battery"),
+            (ChargingIndicatorDisabled, "Disabled"),
+        };
+        public const string DefaultChargeGlowColor = "#A03000";
+        public const int DefaultChargeGlowPeriodSeconds = 10;
+        public const int MinimumChargeGlowPeriodSeconds = 1;
+        public const int MaximumChargeGlowPeriodSeconds = 60;
+
         public static readonly (string Value, string Label)[] LightingModes = {
             (LightingModeDefault, "Default"), (LightingModeUser, "User"),
             (LightingModeWheel, "Wheel"), (LightingModeWheelToggle, "Wheel (toggle)"),
@@ -171,6 +187,7 @@ namespace BetterJoyForCemu {
             "TouchpadHorizontalScale", "TouchpadVerticalScale",
             "TouchpadTapAndHold", "TouchpadClickMovementLockout",
             "TouchpadTwoFingerScroll",
+            "ChargingIndicator", "ChargeGlowColor", "ChargeGlowPeriodSeconds",
             "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "LightBrightness",
             "LightingOff", "LightingMode",
             "PlayerLedMode",
@@ -578,6 +595,38 @@ namespace BetterJoyForCemu {
         public static bool PlayerLedEnabled(string profileId, bool defaultEnabled) {
             string value = OptionValue(profileId, "PlayerLedMode");
             return String.IsNullOrEmpty(value) ? defaultEnabled : value == ModeEnable;
+        }
+
+        public static bool ChargeGlowEnabled(string profileId) {
+            // Unset means Glow: that is how the indicator behaved before it was configurable.
+            return !String.Equals(OptionValue(profileId, "ChargingIndicator"),
+                ChargingIndicatorDisabled, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Battery mode ignores ChargeGlowColor and derives the peak from the charge level
+        // instead - red at empty through to green at full. Unlike LightingModeBattery's three
+        // fixed bands this is a continuous gradient, because the pulse is already animating so
+        // there is no chatter argument for quantising it.
+        public static bool ChargeGlowUsesBattery(string profileId) {
+            return String.Equals(OptionValue(profileId, "ChargingIndicator"),
+                ChargingIndicatorBattery, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static string ChargeGlowColor(string profileId) {
+            string value = OptionValue(profileId, "ChargeGlowColor");
+            byte red, green, blue;
+            return TryParseLightColor(value, out red, out green, out blue)
+                ? NormalizeLightColor(value)
+                : DefaultChargeGlowColor;
+        }
+
+        public static int ChargeGlowPeriodSeconds(string profileId) {
+            int seconds = IntOption(profileId, "ChargeGlowPeriodSeconds",
+                DefaultChargeGlowPeriodSeconds);
+            if (seconds < MinimumChargeGlowPeriodSeconds ||
+                    seconds > MaximumChargeGlowPeriodSeconds)
+                return DefaultChargeGlowPeriodSeconds;
+            return seconds;
         }
 
         public static string LightingMode(string profileId) {
