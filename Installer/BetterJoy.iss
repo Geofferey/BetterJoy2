@@ -232,8 +232,14 @@ end;
 // upgrade) just fails harmlessly; the calls after it still bring the service to the desired
 // state regardless. The failure action registers automatic recovery (see BetterJoyService.OnStop
 // - a crash otherwise leaves the GUI permanently unable to reconnect until someone notices and
-// restarts it by hand): 3 restart attempts a second apart, and resetperiod resets the failure
-// count after a full day with no further crashes rather than accumulating forever.
+// restarts it by hand): 3 restart attempts a second apart.
+//
+// resetperiod is deliberately short rather than the day it used to be. Waking from sleep now
+// stops the service with a non-zero exit code on purpose so the SCM restarts it as a fresh
+// process (see BetterJoyService.OnPowerEvent), so these actions are ordinary traffic, not just
+// crashes - and a day-long window would let a handful of sleeps accumulate and exhaust them. A
+// minute with no further failure clears the count, which still catches a genuine crash loop. The
+// failureflag call after it is what makes those actions apply to a deliberate stop at all.
 procedure InstallService;
 var
   ResultCode: Integer;
@@ -242,7 +248,11 @@ begin
   Params := 'create {#MyServiceName} binPath= "\"' + ExpandConstant('{app}\{#MyAppExeName}') + '\" -service" start= auto DisplayName= "{#MyServiceName}"';
   Exec(ExpandConstant('{sys}\sc.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\sc.exe'), 'description {#MyServiceName} "Third-party game controller service"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\sc.exe'), 'failure {#MyServiceName} reset= 86400 actions= restart/1000/restart/1000/restart/1000', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\sc.exe'), 'failure {#MyServiceName} reset= 60 actions= restart/1000/restart/1000/restart/1000', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Without this the actions above only ever fire on an actual crash. Waking from sleep stops the
+  // service deliberately with a non-zero exit code, which the SCM classes as a non-crash failure
+  // and, by default, does nothing about - the service just stayed stopped.
+  Exec(ExpandConstant('{sys}\sc.exe'), 'failureflag {#MyServiceName} 1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\sc.exe'), 'start {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 

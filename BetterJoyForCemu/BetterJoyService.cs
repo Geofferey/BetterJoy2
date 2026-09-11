@@ -76,9 +76,12 @@ namespace BetterJoyForCemu {
         // routine - the same two the SCM calls, so a wake reaches exactly the state restarting the
         // service produces, which is the behaviour that was already correct. Windows can deliver
         // more than one resume status for a single wake (ResumeAutomatic then ResumeSuspend when
-        // the machine wakes to a user), so resumeHandled collapses them - starting twice would
-        // leave the first pipeline orphaned. Always returns true: only QuerySuspend (which Windows
-        // no longer sends to services) can be vetoed, and refusing a suspend is never what we want.
+        // the machine wakes to a user), so resumeHandled collapses them. Always returns true: only
+        // QuerySuspend (which Windows no longer sends to services) can be vetoed, and refusing a
+        // suspend is never what we want.
+        //
+        // The suspend half deliberately stays in-process: the controller has to be darkened and
+        // stepped off BEFORE the machine goes down, and exiting would not do that for us.
         protected override bool OnPowerEvent(PowerBroadcastStatus powerStatus) {
             switch (powerStatus) {
                 case PowerBroadcastStatus.Suspend:
@@ -91,8 +94,20 @@ namespace BetterJoyForCemu {
                 case PowerBroadcastStatus.ResumeCritical:
                     if (!resumeHandled) {
                         resumeHandled = true;
-                        DebugLog.Write("Power: resume - running the service start routine");
-                        StartPipeline();
+                        DebugLog.Write("Power: resume - stopping with a failure code so the SCM " +
+                            "restarts us as a fresh process");
+                        // Restarting the service by hand is the one recovery that has never failed,
+                        // and it works because it is a genuinely new process - new ViGEm client, new
+                        // hidapi, new manager, EntryPoint.Main from the top. Re-running the start
+                        // routine in-process is not the same thing and kept finding new ways not to
+                        // be. So ask for the real article: a non-zero ExitCode makes the SCM treat
+                        // this stop as a failure and apply the recovery actions the installer
+                        // registers (sc failure ... actions= restart/1000), which start a new
+                        // process about a second later - by which time the device stacks have had a
+                        // moment to come back too. A stop the SCM itself asked for leaves ExitCode
+                        // at 0 and is not restarted, so this only ever fires on a wake.
+                        ExitCode = 1;
+                        Stop();
                     }
                     break;
             }

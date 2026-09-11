@@ -840,21 +840,37 @@ namespace BetterJoyForCemu {
                 if (scanningStopped)
                     return;
 
-                // Read the real blocklist into the in-memory set first so an external change (a device
-                // manually unhidden in the HidHide UI, another app's entry) is reconciled this pass.
-                SyncHiddenInstanceCacheFromRegistry();
-
-                CleanUp();
-                if (Boolean.Parse(ConfigurationManager.AppSettings["PassiveScan"])) {
-                    CheckForNewControllers();
+                // An exception escaping this pass was permanent, not transient. The timer keeps
+                // firing, but every pass re-entered the same work in the same order and died in the
+                // same place, so nothing was ever enumerated or cleaned up again and no controller
+                // could be adopted until the service was restarted - silently, with no trace,
+                // because there was nothing here to log it. Seen after a Bluetooth radio toggle:
+                // the scan simply stopped and a controller that then connected was never picked up.
+                // One bad pass must cost one pass, so swallow it and let the next tick try again.
+                try {
+                    RunScanPass();
+                } catch (Exception ex) {
+                    DebugLog.Write("Scan pass failed, retrying next tick: " +
+                        ex.GetType().Name + ": " + ex.Message + "\r\n" + ex.StackTrace);
                 }
-
-                // Blocks themselves are applied through the API the instant a node is seen (see
-                // BlockInstance), so nothing is batched here any more. This is only the tidy-up:
-                // drop entries whose device is gone, so the churned-away Bluetooth child ids don't
-                // accumulate in HidHide's list.
-                PruneAbsentDeviceEntries();
             }
+        }
+
+        void RunScanPass() {
+            // Read the real blocklist into the in-memory set first so an external change (a device
+            // manually unhidden in the HidHide UI, another app's entry) is reconciled this pass.
+            SyncHiddenInstanceCacheFromRegistry();
+
+            CleanUp();
+            if (Boolean.Parse(ConfigurationManager.AppSettings["PassiveScan"])) {
+                CheckForNewControllers();
+            }
+
+            // Blocks themselves are applied through the API the instant a node is seen (see
+            // BlockInstance), so nothing is batched here any more. This is only the tidy-up:
+            // drop entries whose device is gone, so the churned-away Bluetooth child ids don't
+            // accumulate in HidHide's list.
+            PruneAbsentDeviceEntries();
         }
 
         // Lets a caller outside the scan loop (see HeadlessJoyconHost's config-file watcher)
@@ -1130,8 +1146,18 @@ namespace BetterJoyForCemu {
         private void HideBluetoothBondByMac(ushort vid, ushort pid, byte[] mac) {
             if (!Program.useHidHide || mac == null || mac.Length != 6)
                 return;
-            if (TryManufactureBluetoothBondInstanceId(vid, pid, mac, out string bondId))
-                BlockInstance(bondId);
+            // Pre-blocking a bond that may not exist yet is an optimisation, not a requirement -
+            // the block is applied again from the node itself when the controller actually
+            // connects. It reaches into HidHide and the BTHENUM subtree, both of which are being
+            // rebuilt underneath us while the Bluetooth radio cycles, so a failure here must cost
+            // this call and nothing else. Unhandled it escaped the whole scan pass.
+            try {
+                if (TryManufactureBluetoothBondInstanceId(vid, pid, mac, out string bondId))
+                    BlockInstance(bondId);
+            } catch (Exception e) {
+                DebugLog.Write("HideBluetoothBondByMac failed, will re-block from the node: " +
+                    e.GetType().Name + ": " + e.Message);
+            }
         }
 
         private static bool TryGetBluetoothHidParentInstanceId(string hidPath, out string bondId) {
@@ -1789,8 +1815,25 @@ namespace BetterJoyForCemu {
                                 "UseAs") != ControllerMappings.UseAsPassthrough);
                     }
 
-                    if (newDualSense != null &&
-                            newDualSense.TryRunAutomaticBluetoothPairingBeforeAttach()) {
+                    // The pairing ceremony talks to the Bluetooth radio and the bond registry, so it
+                    // is the most exposed call in the adopt path while the radio is cycling - and
+                    // it runs before the pad is even in the list, so a throw took the scan pass with
+                    // it and left nothing enumerating. Treat a failure as "not handled by pairing"
+                    // and fall through to the ordinary attach below, which is what happens anyway
+                    // when the ceremony declines.
+                    bool pairingHandledPad = false;
+                    if (newDualSense != null) {
+                        try {
+                            pairingHandledPad = newDualSense.TryRunAutomaticBluetoothPairingBeforeAttach();
+                        } catch (Exception ex) {
+                            DebugLog.Write("Automatic Bluetooth pairing failed, falling through to " +
+                                "the normal attach: path=" + enumerate.path +
+                                " exception=" + ex.GetType().Name +
+                                " message=\"" + ex.Message + "\"");
+                        }
+                    }
+
+                    if (pairingHandledPad) {
                         foundNew = true;
                         ptr = enumerate.next;
                         continue;
@@ -1953,14 +1996,9 @@ namespace BetterJoyForCemu {
             ApplyControllerProfileOptions();
         }
 
-        // suspending=true means the machine is going to sleep rather than BetterJoy going away:
-        // every controller gets a plain disconnect instead of AutoPowerOff's deliberate power-off
-        // ceremony. See Controller.DisconnectForSuspend for why the difference matters.
-        public void OnApplicationQuit(bool suspending = false) {
+        public void OnApplicationQuit() {
             foreach (Controller v in j) {
-                if (suspending)
-                    v.DisconnectForSuspend();
-                else if (ControllerMappings.BoolOption(ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
+                if (ControllerMappings.BoolOption(ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
                     v.PowerOff(shuttingDown: true);
 
                 form.StopUsbAudioLoopback(v.PadId);
@@ -2089,26 +2127,15 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Releases both virtual-bus clients so the next EnsureVigemClient/EnsureViiperServer builds
-        // fresh ones. Stop() used to leave them alone, which was harmless while Stop() only ever ran
-        // at process exit - they died with the process. It stops being harmless the moment Stop() is
-        // followed by another Start() in the same process: the client is then older than the
-        // suspend the bus driver just went through, and the first virtual pad created on it throws
-        // ERROR_IO_PENDING ("Overlapped I/O operation is in progress") out of Start(), before the
-        // scan timer is ever armed - leaving an adopted controller with no scanner to clean it up
-        // and no way to notice a replug. Must run after every target has been disconnected.
-        private static void ReleaseVirtualBusClients() {
+        // Releases the ViGEm client so the next EnsureVigemClient builds a fresh one. Stop() used to
+        // leave it alone, which was harmless while Stop() only ever ran at process exit - it died
+        // with the process. Now that a suspend/resume runs Stop() and Start() in the same process,
+        // leaving it would leak a client per sleep. Must run after every target is disconnected.
+        private static void ReleaseVigemClient() {
             lock (emClientLock) {
                 if (emClient != null) {
                     try { emClient.Dispose(); } catch { }
                     emClient = null;
-                }
-            }
-
-            lock (viiperServerLock) {
-                if (viiperServerHandle != UIntPtr.Zero) {
-                    try { VirtualOutput.LibViiper.CloseUSBServer(viiperServerHandle); } catch { }
-                    viiperServerHandle = UIntPtr.Zero;
                 }
             }
         }
@@ -2181,7 +2208,7 @@ namespace BetterJoyForCemu {
                 mgr.CheckForNewControllers();
             } catch (Exception e) {
                 DebugLog.Write("Start: initial controller scan failed, timer will retry: " +
-                    e.GetType().Name + ": " + e.Message + "\r\n" + e.StackTrace);
+                    e.GetType().Name + ": " + e.Message);
             }
             mgr.Start();
 
@@ -2250,12 +2277,12 @@ namespace BetterJoyForCemu {
 
                 keyboard?.Dispose(); mouse?.Dispose();
                 server.Stop();
-                mgr.OnApplicationQuit(suspending);
+                mgr.OnApplicationQuit();
             } finally {
-                // Last, so every virtual target has already been disconnected off these clients -
-                // but unconditionally, because a Stop() that failed partway is exactly when a
-                // following Start() must not inherit a stale client.
-                ReleaseVirtualBusClients();
+                // Last, so every virtual target has already been disconnected off it - but
+                // unconditionally, because a Stop() that failed partway is exactly when a following
+                // Start() must not inherit a stale client.
+                ReleaseVigemClient();
             }
         }
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Globalization;
 using System.Text;
+using System.Threading;
 
 namespace BetterJoyForCemu {
     // PadId assignment/compaction and virtual controller (ViGEmBus) creation/destruction, split
@@ -315,6 +316,30 @@ namespace BetterJoyForCemu {
         // Shared by attach, profile changes, AssignPadId, and survivor restoration. Reconciles
         // both directions: changing a profile from Xbox to DS4/Disabled removes the old target,
         // while enabling an output creates and connects the requested target.
+        // The bus driver is not ready the instant the machine resumes: the first target Connect()
+        // after a wake throws a Win32Exception carrying a stale last-error (seen as
+        // ERROR_ENVVAR_NOT_FOUND, ERROR_IO_PENDING and ERROR_SUCCESS - none of which describe
+        // anything real), while the very next Connect on that same client succeeds about a second
+        // later. Losing the first one is not cosmetic: the pad is dropped and re-adopted a few
+        // seconds afterwards, and for a controller on Bluetooth with a cable attached that
+        // re-adoption lands before the Bluetooth pad has reached IMU_DATA_OK - so
+        // HasLiveBluetoothDualSense reads false, the transport decision is made on a false premise,
+        // and the pad is put through the wrong power-off path. Retry briefly rather than let one
+        // unready driver call decide any of that.
+        static void ConnectVirtualTarget(Action connect) {
+            const int attempts = 4;
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    connect();
+                    return;
+                } catch (Exception e) when (attempt < attempts) {
+                    DebugLog.Write("Virtual target Connect failed (attempt " + attempt + " of " +
+                        attempts + "), retrying: " + e.GetType().Name + ": " + e.Message);
+                    Thread.Sleep(250);
+                }
+            }
+        }
+
         void CreateOutputControllers(Controller jc) {
             string useAs = ControllerMappings.OptionValue(
                 ControllerMappings.ProfileIdFor(jc), "UseAs");
@@ -355,22 +380,22 @@ namespace BetterJoyForCemu {
             if (useXbox && jc.out_xbox == null) {
                 jc.out_xbox = new VirtualOutput.OutputControllerXbox360();
                 jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
-                jc.out_xbox.Connect();
+                ConnectVirtualTarget(jc.out_xbox.Connect);
             }
             if (useXboxViiper && jc.out_xbox == null) {
                 jc.out_xbox = new VirtualOutput.OutputControllerXbox360Viiper();
                 jc.out_xbox.FeedbackReceived += jc.ReceiveRumble;
-                jc.out_xbox.Connect();
+                ConnectVirtualTarget(jc.out_xbox.Connect);
             }
             if (useDs4 && jc.out_ds4 == null) {
                 jc.out_ds4 = new VirtualOutput.OutputControllerDualShock4();
                 jc.out_ds4.FeedbackReceived += jc.Ds4_FeedbackReceived;
-                jc.out_ds4.Connect();
+                ConnectVirtualTarget(jc.out_ds4.Connect);
             }
             if (useDualSenseViiper && jc.out_dualsense == null) {
                 jc.out_dualsense = new VirtualOutput.OutputControllerDualSenseViiper();
                 jc.out_dualsense.FeedbackReceived += jc.Ds4_FeedbackReceived;
-                jc.out_dualsense.Connect();
+                ConnectVirtualTarget(jc.out_dualsense.Connect);
             }
 
             if (!jc.RumbleEnabled) {
