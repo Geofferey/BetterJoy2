@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
@@ -507,7 +507,7 @@ namespace BetterJoyForCemu {
         // host address and Windows supplies the existing 16-byte classic-Bluetooth link key;
         // report 0x0A reasserts those exact values. If any part cannot be verified, never risk the
         // bond: use the host-side radio disconnect instead.
-        public override void PowerOff() {
+        public override void PowerOff(bool shuttingDown = false) {
             if (state <= state_.DROPPED)
                 return;
             // USB-only: there is no real power-off over a wired handle, so pseudo-sleep instead -
@@ -515,7 +515,7 @@ namespace BetterJoyForCemu {
             // the next PS/Home/Capture press. A Bluetooth-connected controller is a separate
             // (non-USB) pad object and still takes the real Bluetooth power-off path below.
             if (isUSB) {
-                EnterUsbPseudoSleep();
+                EnterUsbPseudoSleep(shuttingDown);
                 return;
             }
             if (!isUSB) {
@@ -533,7 +533,15 @@ namespace BetterJoyForCemu {
                 // host-side radio disconnect - which only drops the link and leaves the controller
                 // AWAKE, so the charge-only wake monitor immediately re-woke it. That is the
                 // sleep-then-wake-back-up loop.
-                bool pairingStateReasserted = ReassertBluetoothPairingStateOverUsb();
+                // ...and it is skipped entirely when BetterJoy is the thing shutting down. The
+                // reassert exists so the bond survives the controller moving between a PS5 and this
+                // PC; a service stop or a machine going to sleep is not a roam, and paying its
+                // documented cost there is what produced exactly the failure described above -
+                // featureReportSent=False, fallback radio disconnect, controller left awake. It
+                // needs the cable to run at all, which is why this is only ever seen with one
+                // attached, and never when the pad is already parked in the wake monitor.
+                bool pairingStateReasserted =
+                    !shuttingDown && ReassertBluetoothPairingStateOverUsb();
                 StopBluetoothMicrophone();
                 StopBluetoothAudioStream();
                 // Native Bluetooth power-off, exactly as originally implemented in df0514e: send
@@ -553,11 +561,30 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // A Bluetooth pad very often has the cable attached too, and that cable keeps it powered
+        // after the link goes: dropping the radio connection on its own leaves it sitting there lit
+        // on whatever colour we last wrote, exactly as closing a wired handle did. Same answer -
+        // darken it first, while the link is still up and the pad is still streaming (the lightbar
+        // write is gated on IMU_DATA_OK), then let the base disconnect it. The wired path does this
+        // for itself inside EnterUsbPseudoSleep.
+        public override void DisconnectForSuspend() {
+            if (!isUSB && state == state_.IMU_DATA_OK) {
+                currentPlayerLeds = 0;
+                SendDualSenseLightbar(0, 0, 0);
+                DebugLog.Write("DualSense: darkened pad=" + PadId + " before suspend disconnect");
+            }
+
+            base.DisconnectForSuspend();
+        }
+
         // USB-only pseudo-sleep. Over USB the controller cannot be truly powered off like a live
         // Bluetooth HID pad, but it can be parked as charge-only: BetterJoy closes its HID handle,
         // suppresses re-adoption, nudges Windows to re-enumerate the USB interface, then a wake
         // monitor waits for the next PS/Home report before releasing the USB path back to scanning.
-        private void EnterUsbPseudoSleep() {
+        // shuttingDown=true when BetterJoy is going away (service stop, or the machine suspending).
+        // Two things change, both because the process is about to stop running code: the pad is
+        // darkened before its handle closes, and no wake monitor is armed.
+        private void EnterUsbPseudoSleep(bool shuttingDown = false) {
             if (!isUSB || state <= state_.DROPPED)
                 return;
 
@@ -567,8 +594,18 @@ namespace BetterJoyForCemu {
             chargeOnlyUsbPath = path;
             Program.mgr.MarkChargeOnlyUsbParked(chargeOnlyUsbPath, profileId);
             Program.mgr.PreserveChargeOnlyUsbAfterLongPressPowerOff(profileId);
-            monitorChargeOnlyWakeAfterPowerOff =
+            monitorChargeOnlyWakeAfterPowerOff = !shuttingDown &&
                 Program.mgr.ShouldMonitorChargeOnlyUsbWake(chargeOnlyUsbPath, profileId);
+
+            // Darken the pad before the handle closes. Closing it tells the controller nothing, so
+            // it holds the last colour we wrote - that is the lightbar left on across the sleep.
+            // A single HID write on an already-open handle costs microseconds and, unlike the
+            // re-enumeration below, cannot block while the machine is suspending.
+            if (shuttingDown) {
+                currentPlayerLeds = 0;
+                SendDualSenseLightbar(0, 0, 0);
+                DebugLog.Write("DualSense USB pseudo-sleep: darkened pad=" + PadId + " before close");
+            }
 
             ForwardNeutralVirtualInput();
             string parkedPath = chargeOnlyUsbPath;
@@ -580,13 +617,22 @@ namespace BetterJoyForCemu {
             Detach(true);
             Program.mgr.j.Remove(this);
 
-            ThreadPool.QueueUserWorkItem(_ => {
-                Thread.Sleep(100);
-                bool reenumerated = UsbDeviceReenumerator.TryReenumerateHidInterface(
-                    parkedPath, out string detail);
-                DebugLog.Write("DualSense USB pseudo-sleep re-enumeration: path=" +
-                    parkedPath + " result=" + reenumerated + " detail=" + detail);
-            });
+            // Re-enumeration is unusable on the way into a suspend, in both directions: queued, the
+            // ThreadPool item is frozen and runs on the far side of the sleep (controller lit all
+            // night, going charge-only only after the wake); inline, the SetupAPI device restart
+            // itself blocks for the whole suspend, so the stop routine was still inside it when the
+            // resume started a second pipeline on top. Neither is survivable here, so a shutting-
+            // down pad is darkened by the write above instead, and the interface is simply closed -
+            // the machine is taking the USB stack down regardless.
+            if (!shuttingDown) {
+                ThreadPool.QueueUserWorkItem(_ => {
+                    Thread.Sleep(100);
+                    bool reenumerated = UsbDeviceReenumerator.TryReenumerateHidInterface(
+                        parkedPath, out string detail);
+                    DebugLog.Write("DualSense USB pseudo-sleep re-enumeration: path=" +
+                        parkedPath + " result=" + reenumerated + " detail=" + detail);
+                });
+            }
 
             if (monitorChargeOnlyWakeAfterPowerOff)
                 BeginChargeOnlyUsbWakeMonitor();

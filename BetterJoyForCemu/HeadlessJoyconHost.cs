@@ -34,6 +34,11 @@ namespace BetterJoyForCemu {
 
         private readonly object controlPipeLock = new object();
         private NamedPipeServerStream controlPipe;
+        // The pipe currently parked in BeginWaitForConnection. Nothing used to hold a reference to
+        // it, which was fine while the only way to stop accepting was the process exiting - see
+        // Shutdown, which has to actually cancel that wait.
+        private NamedPipeServerStream pendingControlPipe;
+        private volatile bool controlServerStopped;
         private NamedPipeServerStream bindingCaptureOwner;
         private volatile bool bindingCaptureSuppressesMappedOutput;
 
@@ -393,6 +398,44 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Full teardown of everything this host started - the counterpart to OnStart's
+        // StartControlServer/StartConfigWatcher pair, which never needed one while the only thing
+        // that ever stopped them was the process exiting. It does now: the service runs its own
+        // stop/start routines in-process across a system suspend, and without this the old host's
+        // accept loop keeps its named pipe and the old FileSystemWatcher keeps firing, so the next
+        // start would stack a second one of each on top.
+        public void Shutdown() {
+            StopInputRouting();
+
+            controlServerStopped = true;
+            lock (controlPipeLock) {
+                if (pendingControlPipe != null) {
+                    try { pendingControlPipe.Dispose(); } catch { }
+                    pendingControlPipe = null;
+                }
+                if (controlPipe != null) {
+                    try { controlPipe.Dispose(); } catch { }
+                    controlPipe = null;
+                }
+            }
+
+            if (configWatcher != null) {
+                try {
+                    configWatcher.EnableRaisingEvents = false;
+                    configWatcher.Dispose();
+                } catch { }
+                configWatcher = null;
+            }
+
+            if (reloadDebounceTimer != null) {
+                try {
+                    reloadDebounceTimer.Stop();
+                    reloadDebounceTimer.Dispose();
+                } catch { }
+                reloadDebounceTimer = null;
+            }
+        }
+
         public void StopInputRouting() {
             lock (pipeLock) {
                 helperReady = false;
@@ -579,6 +622,9 @@ namespace BetterJoyForCemu {
             // the whole service down with it, the way the DACL bug above did. Log and stop
             // trying rather than crash; a GUI just won't get live status until the service is
             // restarted with whatever caused this fixed.
+            if (controlServerStopped)
+                return;
+
             try {
                 var newPipe = new NamedPipeServerStream(
                     ServiceControlIpc.PipeName,
@@ -590,6 +636,8 @@ namespace BetterJoyForCemu {
                     0,
                     ControlPipeSecurity);
 
+                lock (controlPipeLock)
+                    pendingControlPipe = newPipe;
                 newPipe.BeginWaitForConnection(OnControlClientConnected, newPipe);
             } catch (Exception ex) {
                 AppendTextBox("GUI control pipe stopped accepting connections: " + ex.Message);
@@ -602,6 +650,11 @@ namespace BetterJoyForCemu {
                 connectedPipe.EndWaitForConnection(result);
             } catch {
                 return; // service stopping - the pipe was disposed out from under the wait
+            }
+
+            if (controlServerStopped) {
+                try { connectedPipe.Dispose(); } catch { }
+                return;
             }
 
             lock (controlPipeLock) {

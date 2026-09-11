@@ -732,7 +732,41 @@ namespace BetterJoyForCemu {
         // sequence (SetHCIState/Subcommand) - kept as a hook since those are Nintendo-protocol-
         // only, not promoted to Controller. Called from the (now-shared) DoThingsWithButtons on
         // HOME-long-press and power-off-on-inactivity.
-        public virtual void PowerOff() { }
+        // shuttingDown=true means BetterJoy itself is going away (service stop / app exit) rather
+        // than the user asking this controller to switch off. The controller still powers off; what
+        // changes is that no transport-roaming maintenance runs on the way out, because nothing is
+        // roaming anywhere - see DualSenseController's override.
+        public virtual void PowerOff(bool shuttingDown = false) { }
+
+        // Plain host-side disconnect for a machine going to sleep - drop the Bluetooth link and
+        // nothing else. Deliberately NOT PowerOff: that is the "the user asked for this controller
+        // to go off" path, and for DualSense it carries the roaming ceremony (rewriting the 0x0A
+        // pairing report over the cable so the bond survives moving between a PS5 and this PC).
+        // Nothing is roaming anywhere when the machine suspends, and running it there is actively
+        // harmful - the reassert knocks the pad into pairing/low-power broadcast mode, the 0x08/0x02
+        // that follows is then refused (featureReportSent=False), and the fallback radio disconnect
+        // leaves the controller awake and re-announcing. This is that fallback on its own, which is
+        // all a suspend ever wanted: the same primitive DualShock4 and the Nintendo controllers
+        // already use as their entire PowerOff.
+        public virtual void DisconnectForSuspend() {
+            if (state <= state_.DROPPED)
+                return;
+
+            // Wired, so there is no link to drop - and closing our handle tells the controller
+            // nothing at all, leaving it awake on the cable still showing whatever lightbar we last
+            // wrote. Kick it into the charge-only park instead: that is PowerOff's own wired path
+            // (EnterUsbPseudoSleep), and it is the case already confirmed to go dark on suspend,
+            // because releasing and re-enumerating the interface is what lets the firmware reach
+            // its native charge-only state. The wake monitor it arms only has to live long enough
+            // for that transition - the stop routine right behind this ends it.
+            if (isUSB) {
+                PowerOff(shuttingDown: true);
+                return;
+            }
+
+            BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());
+            state = state_.DROPPED;
+        }
 
         // Long-press shutdown can require preparation which must not run for inactivity or
         // application-exit power-off. Sony controllers use this boundary to preserve a
@@ -911,16 +945,21 @@ namespace BetterJoyForCemu {
         public void Detach(bool close = false) {
             stop_polling = true;
 
+            // A target that was created but never actually got plugged in (or was already
+            // unplugged) throws on Disconnect() - the same "wasn't connected in the first place"
+            // case OnApplicationQuit already guards, missed here. Left unhandled it escapes all
+            // the way out of the scan pass, which is how a dropped controller ends up stuck in
+            // the list holding its virtual pad forever (see CleanUp).
             if (out_xbox != null) {
-                out_xbox.Disconnect();
+                try { out_xbox.Disconnect(); } catch { }
             }
 
             if (out_ds4 != null) {
-                out_ds4.Disconnect();
+                try { out_ds4.Disconnect(); } catch { }
             }
 
             if (out_dualsense != null) {
-                out_dualsense.Disconnect();
+                try { out_dualsense.Disconnect(); } catch { }
             }
 
             if (state > state_.NO_JOYCONS) {

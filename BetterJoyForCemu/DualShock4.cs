@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
@@ -426,7 +426,7 @@ namespace BetterJoyForCemu {
         // The DS4 power-off operation is likewise a Bluetooth-radio operation, not a command its
         // wired firmware honors. Preferred transport: Bluetooth leaves USB charge-only, so this
         // existing wireless path can still honor the shared long-press timer while plugged in.
-        public override void PowerOff() {
+        public override void PowerOff(bool shuttingDown = false) {
             if (state > state_.DROPPED && !isUSB) {
                 StopBluetoothAudioStream();
                 BluetoothRadio.DisconnectDevice(PadMacAddress.GetAddressBytes());

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
@@ -425,7 +425,7 @@ namespace BetterJoyForCemu {
             return reply != null && reply.Length > index ? reply[index] : (byte)0x00;
         }
 
-        public override void PowerOff() {
+        public override void PowerOff(bool shuttingDown = false) {
             if (state > state_.DROPPED && !isUSB) {
                 // Preserve Nintendo's controller-side sleep request, then tear down the Windows
                 // Bluetooth link with the same radio-level mechanism used by DualSense and

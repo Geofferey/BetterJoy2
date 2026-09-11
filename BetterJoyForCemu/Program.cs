@@ -504,6 +504,7 @@ namespace BetterJoyForCemu {
         // exits without doing any scan work, instead of racing full teardown.
         volatile bool scanningStopped = false;
 
+
         public static JoyconManager Instance {
             get { return instance; }
         }
@@ -862,6 +863,27 @@ namespace BetterJoyForCemu {
         // own iteration over them. Those are plain Lists, not ConcurrentList, so a Clear()+
         // AddRange() from another thread while a scan enumerates them could throw "Collection
         // was modified" or hand device classification a half-rebuilt list.
+        // Steps every controller off the way a suspend wants it: wired pads into the charge-only
+        // park so the firmware can go dark, Bluetooth pads onto a plain radio disconnect.
+        //
+        // Runs BEFORE StopScanning, deliberately. The park arms a charge-only wake monitor, and
+        // ShouldMonitorChargeOnlyUsbWake refuses to arm one once scanningStopped is set - so doing
+        // this after the scan had already been torn down (which is the order Stop() otherwise uses)
+        // parked the pad without the monitor that owns the interface while the firmware settles,
+        // and the controller just sat there lit.
+        public void ParkControllersForSuspend() {
+            lock (scanLock) {
+                foreach (Controller v in j.ToList()) {
+                    DebugLog.Write("Power: suspend parking pad=" + v.PadId +
+                        " usb=" + v.isUSB + " path=" + v.path);
+                    try { v.DisconnectForSuspend(); } catch (Exception e) {
+                        DebugLog.Write("Power: suspend park failed for pad=" + v.PadId + ": " +
+                            e.GetType().Name + ": " + e.Message);
+                    }
+                }
+            }
+        }
+
         public void RunExclusiveOfScanning(Action action) {
             lock (scanLock) {
                 action();
@@ -1817,27 +1839,46 @@ namespace BetterJoyForCemu {
                     // identity is already resolved before the initial slot is published.
                     form.RefreshControllerState();
 
-                    CreateOutputControllers(jc);
-                    string profileId = ControllerMappings.ProfileIdFor(jc);
-                    bool usbSleepOnConnectQueued =
-                        jc is DualSenseController dualSense &&
-                        dualSense.ApplyUSBSleepOnConnectAfterAttach();
-                    if (!usbSleepOnConnectQueued)
-                        ApplyControllerProfileLighting(jc, profileId);
-                    ControllerMappings.EnsureProfileSaved(profileId);
-                    // Fresh connection: OpenRGB's own device list won't have this controller yet
-                    // unless it happens to already be running a scan - nudge it once it's had a
-                    // moment to see the HID device (OpenRgbRescan's own settle delay).
-                    if (!usbSleepOnConnectQueued &&
-                            ControllerMappings.LightingMode(profileId) ==
-                            ControllerMappings.LightingModeOpenRgb) {
-                        DebugLog.Write("OpenRgbRescan: triggered from Attach, profileId=" + profileId);
-                        OpenRgbRescan.RequestRescan();
-                    }
+                    // Attach() itself has been guarded forever (just above), but the tail after
+                    // it never was - and a throw here is worse, because the pad is already in j.
+                    // It stays there attached, with no virtual controller, no profile policy
+                    // applied and no Poll thread, while every later pass sees alreadyAdded=True and
+                    // leaves it exactly like that. Only a service restart cleared it. Drop it
+                    // instead, the same recovery Attach()'s own catch performs, and the next pass
+                    // adopts it cleanly.
+                    try {
+                        CreateOutputControllers(jc);
+                        string profileId = ControllerMappings.ProfileIdFor(jc);
+                        bool usbSleepOnConnectQueued =
+                            jc is DualSenseController dualSense &&
+                            dualSense.ApplyUSBSleepOnConnectAfterAttach();
+                        if (!usbSleepOnConnectQueued)
+                            ApplyControllerProfileLighting(jc, profileId);
+                        ControllerMappings.EnsureProfileSaved(profileId);
+                        // Fresh connection: OpenRGB's own device list won't have this controller yet
+                        // unless it happens to already be running a scan - nudge it once it's had a
+                        // moment to see the HID device (OpenRgbRescan's own settle delay).
+                        if (!usbSleepOnConnectQueued &&
+                                ControllerMappings.LightingMode(profileId) ==
+                                ControllerMappings.LightingModeOpenRgb) {
+                            DebugLog.Write("OpenRgbRescan: triggered from Attach, profileId=" + profileId);
+                            OpenRgbRescan.RequestRescan();
+                        }
 
-                    jc.Begin();
-                    if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
-                        jc.getActiveData();
+                        jc.Begin();
+                        if (Boolean.Parse(ConfigurationManager.AppSettings["AllowCalibration"])) {
+                            jc.getActiveData();
+                        }
+                    } catch (Exception ex) {
+                        // Full stack, not just the message: the tail spans HidHide, ViGEm and
+                        // VIIPER calls, and which one threw is the entire diagnosis.
+                        DebugLog.Write("Attach tail failed: pad=" + jc.PadId +
+                            " kind=" + jc.Kind +
+                            " path=" + jc.path +
+                            " exception=" + ex.GetType().Name +
+                            " message=\"" + ex.Message + "\"\r\n" + ex.StackTrace);
+                        jc.state = Controller.state_.DROPPED;
+                        continue;
                     }
                 }
             }
@@ -1912,10 +1953,15 @@ namespace BetterJoyForCemu {
             ApplyControllerProfileOptions();
         }
 
-        public void OnApplicationQuit() {
+        // suspending=true means the machine is going to sleep rather than BetterJoy going away:
+        // every controller gets a plain disconnect instead of AutoPowerOff's deliberate power-off
+        // ceremony. See Controller.DisconnectForSuspend for why the difference matters.
+        public void OnApplicationQuit(bool suspending = false) {
             foreach (Controller v in j) {
-                if (ControllerMappings.BoolOption(ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
-                    v.PowerOff();
+                if (suspending)
+                    v.DisconnectForSuspend();
+                else if (ControllerMappings.BoolOption(ControllerMappings.ProfileIdFor(v), "AutoPowerOff"))
+                    v.PowerOff(shuttingDown: true);
 
                 form.StopUsbAudioLoopback(v.PadId);
                 v.Detach();
@@ -2043,6 +2089,30 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Releases both virtual-bus clients so the next EnsureVigemClient/EnsureViiperServer builds
+        // fresh ones. Stop() used to leave them alone, which was harmless while Stop() only ever ran
+        // at process exit - they died with the process. It stops being harmless the moment Stop() is
+        // followed by another Start() in the same process: the client is then older than the
+        // suspend the bus driver just went through, and the first virtual pad created on it throws
+        // ERROR_IO_PENDING ("Overlapped I/O operation is in progress") out of Start(), before the
+        // scan timer is ever armed - leaving an adopted controller with no scanner to clean it up
+        // and no way to notice a replug. Must run after every target has been disconnected.
+        private static void ReleaseVirtualBusClients() {
+            lock (emClientLock) {
+                if (emClient != null) {
+                    try { emClient.Dispose(); } catch { }
+                    emClient = null;
+                }
+            }
+
+            lock (viiperServerLock) {
+                if (viiperServerHandle != UIntPtr.Zero) {
+                    try { VirtualOutput.LibViiper.CloseUSBServer(viiperServerHandle); } catch { }
+                    viiperServerHandle = UIntPtr.Zero;
+                }
+            }
+        }
+
         public static void Start() {
             // Previously only ever called from MainForm_Load, so a Windows Service (which never
             // constructs a MainForm) silently never loaded remap keybinds (capture/home/sl_*/
@@ -2103,7 +2173,16 @@ namespace BetterJoyForCemu {
             mgr = new JoyconManager();
             mgr.form = form;
             mgr.Awake();
-            mgr.CheckForNewControllers();
+            // A failure in the initial pass must not cost us the scan timer below. Without that
+            // timer nothing ever cleans up a controller this pass already adopted and nothing
+            // notices a replug, so one bad pass becomes a permanent zombie pad holding a virtual
+            // controller. The timer's next tick retries exactly this work anyway.
+            try {
+                mgr.CheckForNewControllers();
+            } catch (Exception e) {
+                DebugLog.Write("Start: initial controller scan failed, timer will retry: " +
+                    e.GetType().Name + ": " + e.Message + "\r\n" + e.StackTrace);
+            }
             mgr.Start();
 
             server = new UdpServer(mgr.j);
@@ -2148,25 +2227,47 @@ namespace BetterJoyForCemu {
         public static void OnMouseButtonDown(int buttonCode) => InputState.MouseDown(buttonCode);
         public static void OnMouseButtonUp(int buttonCode) => InputState.MouseUp(buttonCode);
 
-        public static void Stop() {
-            // Stop the background scan first - otherwise it can still be adding to
-            // hiddenInstanceIds (TryHideController) while the loop below enumerates/clears it.
-            mgr.StopScanning();
+        public static void Stop(bool suspending = false) {
+            try {
+                // Park before the scan is torn down - see ParkControllersForSuspend for why the
+                // order is load-bearing. StopScanning below then ends the short-lived wake monitor
+                // it armed, which is all the life that monitor needs.
+                if (suspending)
+                    mgr.ParkControllersForSuspend();
 
-            if (useHidHide && hidHide != null && Boolean.Parse(ConfigurationManager.AppSettings["UnhideOnExit"])) {
-                lock (hiddenInstanceIdsLock) {
-                    foreach (string id in hiddenInstanceIds) {
-                        try { hidHide.RemoveBlockedInstanceId(id); } catch { }
+                // Stop the background scan first - otherwise it can still be adding to
+                // hiddenInstanceIds (TryHideController) while the loop below enumerates/clears it.
+                mgr.StopScanning();
+
+                if (useHidHide && hidHide != null && Boolean.Parse(ConfigurationManager.AppSettings["UnhideOnExit"])) {
+                    lock (hiddenInstanceIdsLock) {
+                        foreach (string id in hiddenInstanceIds) {
+                            try { hidHide.RemoveBlockedInstanceId(id); } catch { }
+                        }
+                        hiddenInstanceIds.Clear();
                     }
-                    hiddenInstanceIds.Clear();
                 }
-            }
 
-            keyboard?.Dispose(); mouse?.Dispose();
-            server.Stop();
-            mgr.OnApplicationQuit();
+                keyboard?.Dispose(); mouse?.Dispose();
+                server.Stop();
+                mgr.OnApplicationQuit(suspending);
+            } finally {
+                // Last, so every virtual target has already been disconnected off these clients -
+                // but unconditionally, because a Stop() that failed partway is exactly when a
+                // following Start() must not inherit a stale client.
+                ReleaseVirtualBusClients();
+            }
         }
 
+        // Sleeping yanks the HID stack out from under every open handle. An attached
+        // controller's Poll thread dies where it stands without ever reaching state_.DROPPED,
+        // so CleanUp() - which removes only DROPPED pads - never releases it, its virtual
+        // target stays plugged, and ControllerAlreadyAdded goes on matching the dead path so
+        // the replug is ignored forever. That is the ghost pad. So mark them dropped ourselves
+        // and let the ordinary scan pass handle it from there, exactly as it does for a real
+        // disconnect - deliberately NOT a Stop()/Start() cycle, which discards the manager's
+        // USB/Bluetooth suppression state and so adopts one physical pad twice on the way back.
+        //
         private static string appGuid = "1bf709e9-c133-41df-933a-c9ff3f664c7b"; // randomly-generated
         public static void Main(string[] args) {
             using (Mutex mutex = new Mutex(false, "Global\\" + appGuid)) {
