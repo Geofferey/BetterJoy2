@@ -597,6 +597,32 @@ namespace BetterJoyForCemu {
             monitorChargeOnlyWakeAfterPowerOff = !shuttingDown &&
                 Program.mgr.ShouldMonitorChargeOnlyUsbWake(chargeOnlyUsbPath, profileId);
 
+            // Write this PC's host MAC and stored link key back to the controller before parking
+            // it. A PS5 asserts its own host MAC and makes the controller generate a fresh key, so
+            // the controller's onboard half of the bond is whatever the last console to touch it
+            // wrote - and it is charging on our cable with a wake monitor about to wait for a PS
+            // press that has to come back to US. Restoring the controller's half of a bond the PC
+            // still owns is exactly what Repair does, so this takes the same route, gated on the
+            // same !created - a bond Windows does not already hold is nothing to reassert.
+            //
+            // Deliberately indiscriminate, and that is the one place it parts company with Repair:
+            // no ReadControllerPairedHost, no "already matches" shortcut, because the case being
+            // fixed IS the one where it does not match. Equally deliberately just the 0x0A write -
+            // no connect trigger, no wake, none of the rest of the ceremony - which is what makes
+            // it safe on every plug-in. Skipped when shutting down: a reassert immediately before a
+            // power-off is what gets that power-off refused.
+            if (!shuttingDown && BluetoothRadio.TryGetOrCreateClassicPairing(
+                    PadMacAddress.GetAddressBytes(), out byte[] pcHostMac, out byte[] pcLinkKey,
+                    out bool pairingCreated) && !pairingCreated) {
+                try {
+                    bool reasserted = SendBluetoothPairingFeatureReport(handle, pcHostMac, pcLinkKey);
+                    DebugLog.Write("DualSense USB park: host bond reasserted=" + reasserted +
+                        " pad=" + PadId);
+                } finally {
+                    Array.Clear(pcLinkKey, 0, pcLinkKey.Length);
+                }
+            }
+
             // Darken the pad before the handle closes. Closing it tells the controller nothing, so
             // it holds the last colour we wrote - that is the lightbar left on across the sleep.
             // A single HID write on an already-open handle costs microseconds and, unlike the
