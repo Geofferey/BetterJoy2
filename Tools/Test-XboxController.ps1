@@ -328,6 +328,17 @@ try {
     Assert-True (-not [bool]$ignoredCaptureKey.Invoke($null, @([int]0x41))) `
         'Capture ignored a real keyboard key (A).'
 
+    # User contract: the Gyro page stays unavailable for Xbox controllers, which have no motion
+    # sensors, while controllers with gyros keep it.
+    $gyroPageAvailable = $reassignType.GetMethod(
+        'KindHasGyroPage', [Reflection.BindingFlags]'Static,NonPublic')
+    Assert-True (-not [bool]$gyroPageAvailable.Invoke($null, @($xboxKind))) `
+        'The Gyro page was available for an Xbox controller.'
+    foreach ($gyroKindName in 'DualSense', 'DualShock4', 'Pro') {
+        Assert-True ([bool]$gyroPageAvailable.Invoke($null, @([Enum]::Parse($kindType, $gyroKindName)))) `
+            "The Gyro page became unavailable for $gyroKindName."
+    }
+
     Write-Output "Passed $script:checks Xbox controller checks."
 } finally {
     Pop-Location

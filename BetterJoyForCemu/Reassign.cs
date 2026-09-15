@@ -3365,6 +3365,12 @@ namespace BetterJoyForCemu {
                 ApplySelectedController();
         }
 
+        // Xbox controllers expose no motion sensors (XboxController.HasGyro is false), so the Gyro
+        // page stays unavailable for them. Every other controller kind - and no selection - keeps it.
+        internal static bool KindHasGyroPage(ControllerKind? kind) {
+            return kind != ControllerKind.Xbox;
+        }
+
         private void ApplySelectedController() {
             CancelComboCapture();
 
@@ -3431,13 +3437,23 @@ namespace BetterJoyForCemu {
             }
             // UpdateControllerAudioControlState (called below) is the source of truth for
             // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
+            bool hasGyroPage = KindHasGyroPage(selected?.Kind);
+            // Unavailable pages fall back to Gyro as before, or Bindings when Gyro is unavailable too.
+            string fallbackPage = hasGyroPage ? "gyro" : "bindings";
+            if (profileNavigationButtons.TryGetValue("gyro", out Button gyroNavigation)) {
+                gyroNavigation.Visible = true;
+                gyroNavigation.Enabled = hasGyroPage;
+            }
+            if (!hasGyroPage && profilePages.TryGetValue("gyro", out Panel gyroPage) &&
+                gyroPage.Visible)
+                ShowProfilePage(fallbackPage);
             if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation)) {
                 touchpadNavigation.Visible = true;
                 touchpadNavigation.Enabled = hasTouchpad;
             }
             if (!hasTouchpad && profilePages.TryGetValue("touchpad", out Panel touchpadPage) &&
                 touchpadPage.Visible)
-                ShowProfilePage("gyro");
+                ShowProfilePage(fallbackPage);
             if (profileNavigationButtons.TryGetValue("adaptive_triggers",
                     out Button adaptiveTriggersNavigation)) {
                 adaptiveTriggersNavigation.Visible = true;
@@ -3445,7 +3461,7 @@ namespace BetterJoyForCemu {
             }
             if (!hasAdaptiveTriggers && profilePages.TryGetValue("adaptive_triggers",
                     out Panel adaptiveTriggersPage) && adaptiveTriggersPage.Visible)
-                ShowProfilePage("gyro");
+                ShowProfilePage(fallbackPage);
             foreach (SplitButton button in specialButtons) {
                 button.Enabled = hasController;
                 GetPrettyName(button);
