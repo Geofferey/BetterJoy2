@@ -490,6 +490,22 @@ try {
     Assert-True ($parts.Count -eq 3 -and $parts[0] -is [Drawing.Image] -and $parts[1] -eq '+' -and
         $parts[2] -is [Drawing.Image]) 'Right Joy-Con B + R must display as two model-specific glyphs.'
 
+    # User contract: the Joy-Con rail buttons section (SL/SR) shows only for Joy-Cons. A joined
+    # pair reports no Kind, so an unknown kind keeps the section; every other controller type,
+    # including Pro, hides it.
+    $railButtons = $reassignType.GetMethod(
+        'KindHasJoyConRailButtons', [Reflection.BindingFlags]'Static,NonPublic')
+    foreach ($railKindName in 'Left', 'Right') {
+        Assert-True ([bool]$railButtons.Invoke($null, @([Enum]::Parse($kindType, $railKindName)))) `
+            "The Joy-Con rail buttons section was hidden for a $railKindName Joy-Con."
+    }
+    Assert-True ([bool]$railButtons.Invoke($null, @($null))) `
+        'A joined Joy-Con pair (no Kind) lost the Joy-Con rail buttons section.'
+    foreach ($railKindName in 'Pro', 'Snes', 'N64', 'DualSense', 'DualShock4', 'Xbox') {
+        Assert-True (-not [bool]$railButtons.Invoke($null, @([Enum]::Parse($kindType, $railKindName)))) `
+            "The Joy-Con rail buttons section was shown for $railKindName."
+    }
+
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {
     Pop-Location

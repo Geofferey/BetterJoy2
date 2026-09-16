@@ -139,6 +139,12 @@ namespace BetterJoyForCemu {
         private Label customBindingsNote;
         private readonly List<CustomBindingRow> customBindingRows =
             new List<CustomBindingRow>();
+        // SL/SR exist only on Joy-Con rails, so the whole section (divider and heading included)
+        // is hidden for every other controller. It is the last section on the Bindings page, so
+        // hiding it leaves no gap - only the page's scroll extent has to shrink with it.
+        private readonly List<Control> joyConRailControls = new List<Control>();
+        private int joyConRailSectionTop;
+        private int bindingsPageFullHeight;
         private bool updatingControllerSelector;
         private bool initialControllerSelection = true;
         private long newestControllerSequence = -1;
@@ -1036,16 +1042,22 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(btn_brightness_up, brightnessTip);
             tip_reassign.SetToolTip(btn_brightness_down, brightnessTip);
 
-            layout.Divider();
-            layout.Heading("Joy-Con rail buttons",
-                "Independent mappings for the SL and SR buttons on each Joy-Con.");
+            joyConRailSectionTop = layout.Y;
+            joyConRailControls.Add(layout.Divider());
+            joyConRailControls.AddRange(layout.Heading("Joy-Con rail buttons",
+                "Independent mappings for the SL and SR buttons on each Joy-Con."));
             layout.RowPair(
                 lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 24, 145, 140,
                 lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 315, 440, 154);
             layout.RowPair(
                 lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 24, 145, 140,
                 lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 315, 440, 154);
+            joyConRailControls.AddRange(new Control[] {
+                lbl_sl_l, btn_sl_l, lbl_sl_r, btn_sl_r,
+                lbl_sr_l, btn_sr_l, lbl_sr_r, btn_sr_r,
+            });
 
+            bindingsPageFullHeight = layout.Y;
             page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
         }
@@ -2206,9 +2218,11 @@ namespace BetterJoyForCemu {
                 Y = startY;
             }
 
-            public void Heading(string title, string description) {
-                owner.AddSectionHeading(page, title, Y, description);
+            // Returns the heading's own controls so a caller can hide the section it introduces.
+            public Control[] Heading(string title, string description) {
+                Control[] controls = owner.AddSectionHeading(page, title, Y, description);
                 Y += HeadingToRowGap;
+                return controls;
             }
 
             public void Row(Label label, SplitButton button, string text, int labelX = 24,
@@ -2236,17 +2250,23 @@ namespace BetterJoyForCemu {
                 Y += pixels;
             }
 
-            public void Divider() {
+            // Returns the divider so a caller hiding the section below it can hide this too.
+            public Control Divider() {
                 // The row just placed already advanced Y by the row-to-row gap; back off to the
                 // (smaller) row-to-divider gap instead of stacking both.
                 Y += RowToDividerGap - RowGap;
-                page.Controls.Add(owner.CreateDivider(24, Y));
+                Control divider = owner.CreateDivider(24, Y);
+                page.Controls.Add(divider);
                 Y += DividerToHeadingGap;
+                return divider;
             }
         }
 
-        private void AddSectionHeading(Panel page, string title, int top, string description) {
-            page.Controls.Add(CreateLabel(title, 24, top, ProfileText, true, 12F));
+        // Returns the controls it created so a caller can hide a whole section (heading text
+        // included) for controllers the section does not apply to.
+        private Control[] AddSectionHeading(Panel page, string title, int top, string description) {
+            Label heading = CreateLabel(title, 24, top, ProfileText, true, 12F);
+            page.Controls.Add(heading);
             Label help = CreateLabel(description, 24, top + 27, ProfileMuted, false, 9F);
             help.AutoSize = false;
             // A transparent WinForms Label still paints its full rectangular bounds. Keeping a
@@ -2255,6 +2275,7 @@ namespace BetterJoyForCemu {
             // Reserve the taller box only for copy that can actually wrap to a second line.
             help.Size = new Size(570, description.Length > 100 ? 40 : 22);
             page.Controls.Add(help);
+            return new Control[] { heading, help };
         }
 
         private void AddMappingRow(Panel page, Label label, SplitButton button, string text,
@@ -3371,6 +3392,14 @@ namespace BetterJoyForCemu {
             return kind != ControllerKind.Xbox;
         }
 
+        // SL/SR are physically on a Joy-Con's rail. A joined pair reports no Kind at all (see
+        // ControllerMappings.ProfileFor/KindFromProfileId, where "pair:" matches no prefix), and
+        // that is the case the section matters most for, so an unknown kind keeps it - which also
+        // preserves today's behavior when no controller is selected.
+        internal static bool KindHasJoyConRailButtons(ControllerKind? kind) {
+            return kind == null || kind == ControllerKind.Left || kind == ControllerKind.Right;
+        }
+
         private void ApplySelectedController() {
             CancelComboCapture();
 
@@ -3437,6 +3466,22 @@ namespace BetterJoyForCemu {
             }
             // UpdateControllerAudioControlState (called below) is the source of truth for
             // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
+            bool hasJoyConRails = KindHasJoyConRailButtons(selected?.Kind);
+            foreach (Control control in joyConRailControls)
+                control.Visible = hasJoyConRails;
+            if (profilePages.TryGetValue("bindings", out Panel bindingsPage) &&
+                    bindingsPageFullHeight > 0) {
+                // Both heights are design-space values captured while building the page, before
+                // ScaleProfileUi shrank everything by ProfileUiScale - so scale them the same way
+                // it did. Writing the raw values back claimed a scroll area taller than the real
+                // content and left a large empty region below the last section.
+                int contentHeight = hasJoyConRails
+                    ? bindingsPageFullHeight
+                    : joyConRailSectionTop;
+                bindingsPage.AutoScrollMinSize = new Size(0,
+                    (int)Math.Round(contentHeight * ProfileUiScale));
+            }
+
             bool hasGyroPage = KindHasGyroPage(selected?.Kind);
             // Unavailable pages fall back to Gyro as before, or Bindings when Gyro is unavailable too.
             string fallbackPage = hasGyroPage ? "gyro" : "bindings";
