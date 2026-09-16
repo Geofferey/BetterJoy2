@@ -490,11 +490,11 @@ try {
     Assert-True ($parts.Count -eq 3 -and $parts[0] -is [Drawing.Image] -and $parts[1] -eq '+' -and
         $parts[2] -is [Drawing.Image]) 'Right Joy-Con B + R must display as two model-specific glyphs.'
 
-    # User contract: the Joy-Con rail buttons section (SL/SR) shows only for Joy-Cons. A joined
-    # pair reports no Kind, so an unknown kind keeps the section; every other controller type,
-    # including Pro, hides it.
+    # User contract: the Joy-Con-only sections - rail buttons (SL/SR) on Bindings and Orientation
+    # on Device behavior - show only for Joy-Cons. A joined pair reports no Kind, so an unknown
+    # kind keeps them; every other controller type, including Pro, hides them.
     $railButtons = $reassignType.GetMethod(
-        'KindHasJoyConRailButtons', [Reflection.BindingFlags]'Static,NonPublic')
+        'KindIsJoyCon', [Reflection.BindingFlags]'Static,NonPublic')
     foreach ($railKindName in 'Left', 'Right') {
         Assert-True ([bool]$railButtons.Invoke($null, @([Enum]::Parse($kindType, $railKindName)))) `
             "The Joy-Con rail buttons section was hidden for a $railKindName Joy-Con."
@@ -505,6 +505,40 @@ try {
         Assert-True (-not [bool]$railButtons.Invoke($null, @([Enum]::Parse($kindType, $railKindName)))) `
             "The Joy-Con rail buttons section was shown for $railKindName."
     }
+
+    # User contract: the Home LED option applies to Joy-Cons and the Pro Controller only - SNES and
+    # N64 have no Home button, and PlayStation/Xbox pads have no such LED. A joined pair reports no
+    # Kind, so an unknown kind keeps it.
+    $homeLed = $reassignType.GetMethod(
+        'KindHasHomeLed', [Reflection.BindingFlags]'Static,NonPublic')
+    foreach ($homeLedKindName in 'Left', 'Right', 'Pro') {
+        Assert-True ([bool]$homeLed.Invoke($null, @([Enum]::Parse($kindType, $homeLedKindName)))) `
+            "The Home LED option was hidden for $homeLedKindName."
+    }
+    Assert-True ([bool]$homeLed.Invoke($null, @($null))) `
+        'A joined Joy-Con pair (no Kind) lost the Home LED option.'
+    foreach ($homeLedKindName in 'Snes', 'N64', 'DualSense', 'DualShock4', 'Xbox') {
+        Assert-True (-not [bool]$homeLed.Invoke($null, @([Enum]::Parse($kindType, $homeLedKindName)))) `
+            "The Home LED option was shown for $homeLedKindName."
+    }
+
+    # User contract: the hold-to-power-off label names the button that controller actually uses -
+    # Capture on a solo left Joy-Con, PS on PlayStation pads, Guide on Xbox, Home otherwise
+    # (including a joined pair, which reports no Kind).
+    $powerOffName = $reassignType.GetMethod(
+        'HomeLongPowerOffButtonName', [Reflection.BindingFlags]'Static,NonPublic')
+    $powerOffNames = @{
+        Left = 'Capture'; Right = 'Home'; Pro = 'Home'; Snes = 'Home'; N64 = 'Home'
+        DualSense = 'PS'; DualShock4 = 'PS'; Xbox = 'Guide'
+    }
+    foreach ($powerOffEntry in $powerOffNames.GetEnumerator()) {
+        $actualName = [string]$powerOffName.Invoke(
+            $null, @([Enum]::Parse($kindType, $powerOffEntry.Key)))
+        Assert-True ($actualName -eq $powerOffEntry.Value) `
+            "$($powerOffEntry.Key) hold-to-power-off named '$actualName', expected '$($powerOffEntry.Value)'."
+    }
+    Assert-True (([string]$powerOffName.Invoke($null, @($null))) -eq 'Home') `
+        'A joined Joy-Con pair (no Kind) must use the Home label.'
 
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {

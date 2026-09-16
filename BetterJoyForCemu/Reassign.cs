@@ -31,6 +31,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_gyro_stick_mode = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_axis = new ContextMenuStrip();
         ContextMenuStrip menu_default_orientation = new ContextMenuStrip();
+        ContextMenuStrip menu_home_long_power_off = new ContextMenuStrip();
 
         private Control curAssignment;
         private bool bindingCaptureSuppressionActive;
@@ -73,8 +74,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_gyro_mouse_inhibit;
         private SplitButton btn_default_orientation;
         private CheckBox autoPowerOffCheckBox;
-        private CheckBox homeLongPowerOffCheckBox;
-        private TextBox homeLongPowerOffHoldInput;
+        private Label homeLongPowerOffLabel;
         private Label preferredTransportLabel;
         private ProfileChoiceSelector preferredTransportSelector;
         private Label automaticBluetoothPairingLabel;
@@ -85,7 +85,8 @@ namespace BetterJoyForCemu {
         private CheckBox dragToggleCheckBox;
         private CheckBox swapAbCheckBox;
         private CheckBox swapXyCheckBox;
-        private CheckBox homeLedCheckBox;
+        private Label homeLedLabel;
+        private ProfileChoiceSelector homeLedSelector;
         private Label lightColorLabel;
         private Button lightColorButton;
         private Button chargeGlowColorButton;
@@ -139,12 +140,12 @@ namespace BetterJoyForCemu {
         private Label customBindingsNote;
         private readonly List<CustomBindingRow> customBindingRows =
             new List<CustomBindingRow>();
-        // SL/SR exist only on Joy-Con rails, so the whole section (divider and heading included)
-        // is hidden for every other controller. It is the last section on the Bindings page, so
-        // hiding it leaves no gap - only the page's scroll extent has to shrink with it.
-        private readonly List<Control> joyConRailControls = new List<Control>();
-        private int joyConRailSectionTop;
-        private int bindingsPageFullHeight;
+        // Sections only Joy-Cons have: SL/SR rail buttons (Bindings) and Orientation (Device
+        // behavior). One key gates both - see PageLayout.Heading and SetSectionVisible.
+        private const string JoyConSectionKey = "joycon";
+        private readonly Dictionary<Panel, List<ProfileSection>> pageSections =
+            new Dictionary<Panel, List<ProfileSection>>();
+        private readonly Dictionary<Panel, int> pageBottomPadding = new Dictionary<Panel, int>();
         private bool updatingControllerSelector;
         private bool initialControllerSelection = true;
         private long newestControllerSequence = -1;
@@ -320,6 +321,16 @@ namespace BetterJoyForCemu {
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
             menu_touchpad_sensitivity.ItemClicked += TouchpadSensitivityMenu_ItemClicked;
 
+            // "0" turns the hold off entirely (HomeLongPowerOff), any other value is the hold
+            // duration. Right-click takes any value in the same 1-10 range the runtime clamps to
+            // (Controller.HomeLongPowerOffHoldSeconds).
+            menu_home_long_power_off.Items.Add(
+                new ToolStripMenuItem("Disabled") { Tag = "0" });
+            for (int seconds = 1; seconds <= 10; seconds++)
+                menu_home_long_power_off.Items.Add(new ToolStripMenuItem(
+                    HomeLongPowerOffHoldText(seconds)) { Tag = seconds.ToString() });
+            menu_home_long_power_off.ItemClicked += HoldPowerOffTimeMenu_ItemClicked;
+
             // Shared by every gyro-stick percentage selector - the deflection limits and the
             // stick reduction alike - since all of them are a plain 0-100.
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
@@ -432,6 +443,7 @@ namespace BetterJoyForCemu {
         private SplitButton btn_active_touchpad_mouse;
         private SplitButton btn_touchpad_inhibit;
         private SplitButton btn_touchpad_sensitivity;
+        private SplitButton btn_home_long_power_off;
         private SplitButton btn_touchpad_stick_sensitivity;
         private SplitButton btn_gyro_stick_reduction_x_left;
         private SplitButton btn_gyro_stick_reduction_y_left;
@@ -586,6 +598,10 @@ namespace BetterJoyForCemu {
             btn_touchpad_sensitivity.RightClickHandler = (sender, e) =>
                 PromptTouchpadSensitivity(btn_touchpad_sensitivity,
                     "TouchpadSensitivity", "Mouse sensitivity", "mouse sensitivity");
+
+            btn_home_long_power_off = CreateChoiceSplitButton(
+                "btn_home_long_power_off", menu_home_long_power_off);
+            btn_home_long_power_off.RightClickHandler = (sender, e) => PromptHoldPowerOffTime();
 
             btn_touchpad_stick_sensitivity = CreateChoiceSplitButton(
                 "btn_touchpad_stick_sensitivity", menu_touchpad_sensitivity);
@@ -787,6 +803,7 @@ namespace BetterJoyForCemu {
             ShowProfilePage("gyro");
 
             ScaleProfileUi(this, ProfileUiScale);
+            CaptureSectionBaselines();
             ClientSize = new Size(
                 (int)Math.Round(ClientSize.Width * ProfileUiScale),
                 (int)Math.Round(ClientSize.Height * ProfileUiScale));
@@ -1042,23 +1059,18 @@ namespace BetterJoyForCemu {
             tip_reassign.SetToolTip(btn_brightness_up, brightnessTip);
             tip_reassign.SetToolTip(btn_brightness_down, brightnessTip);
 
-            joyConRailSectionTop = layout.Y;
-            joyConRailControls.Add(layout.Divider());
-            joyConRailControls.AddRange(layout.Heading("Joy-Con rail buttons",
-                "Independent mappings for the SL and SR buttons on each Joy-Con."));
+            layout.Divider();
+            layout.Heading("Joy-Con rail buttons",
+                "Independent mappings for the SL and SR buttons on each Joy-Con.",
+                JoyConSectionKey);
             layout.RowPair(
                 lbl_sl_l, btn_sl_l, "Left Joy-Con · SL", 24, 145, 140,
                 lbl_sl_r, btn_sl_r, "Right Joy-Con · SL", 315, 440, 154);
             layout.RowPair(
                 lbl_sr_l, btn_sr_l, "Left Joy-Con · SR", 24, 145, 140,
                 lbl_sr_r, btn_sr_r, "Right Joy-Con · SR", 315, 440, 154);
-            joyConRailControls.AddRange(new Control[] {
-                lbl_sl_l, btn_sl_l, lbl_sl_r, btn_sl_r,
-                lbl_sr_l, btn_sr_l, lbl_sr_r, btn_sr_r,
-            });
 
-            bindingsPageFullHeight = layout.Y;
-            page.AutoScrollMinSize = new Size(0, layout.Y);
+            layout.Finish();
             return page;
         }
 
@@ -1738,27 +1750,31 @@ namespace BetterJoyForCemu {
             layout.Divider();
             layout.Heading("Power", "Choose when this controller powers itself off.");
             sectionTop = layout.Y;
-            autoPowerOffCheckBox = CreateProfileCheckBox(
-                "Power off when BetterJoy exits", 24, sectionTop, "AutoPowerOff");
-            homeLongPowerOffCheckBox = CreateProfileCheckBox(
-                "Hold Home / Capture to power off", 315, sectionTop, "HomeLongPowerOff");
-            page.Controls.Add(autoPowerOffCheckBox);
-            page.Controls.Add(homeLongPowerOffCheckBox);
-            page.Controls.Add(CreateLabel("for", 315, sectionTop + 26, ProfileText, false));
-            homeLongPowerOffHoldInput = CreateProfileSecondsInput(page, 340, sectionTop + 20, "HomeLongPowerOffHoldSeconds");
-            page.Controls.Add(CreateLabel("seconds", 396, sectionTop + 26, ProfileText, false));
-            tip_reassign.SetToolTip(homeLongPowerOffHoldInput,
-                "Some controller firmware may also react to a long PS hold. BetterJoy keeps " +
-                "watching the configured timer while the held controller stays available.");
-            page.Controls.Add(CreateLabel("After inactivity", 24, sectionTop + 71, ProfileText, false));
-            inactivitySelector = CreateProfileChoiceSelector(145, sectionTop + 65, 180);
+            // The label names the button this controller actually powers off with - a solo left
+            // Joy-Con uses Capture, not Home (Controller.HomeLongPowerOffButtonIndex), and the
+            // PlayStation and Xbox pads call it PS and Guide. See HomeLongPowerOffButtonName.
+            homeLongPowerOffLabel = CreateLabel("Hold Home", 24, sectionTop + 6,
+                ProfileText, false);
+            page.Controls.Add(homeLongPowerOffLabel);
+            StyleMappingButton(btn_home_long_power_off);
+            btn_home_long_power_off.Location = new Point(145, sectionTop);
+            btn_home_long_power_off.Size = new Size(180, 31);
+            page.Controls.Add(btn_home_long_power_off);
+            tip_reassign.SetToolTip(btn_home_long_power_off,
+                "Hold this controller's own Home / PS / Guide button for the chosen time to power " +
+                "it off, or Disabled to switch the hold off entirely. Right-click for any value " +
+                "from 1 to 10 seconds. Some controller firmware may also react to a long hold; " +
+                "BetterJoy keeps watching the configured timer while the held controller stays " +
+                "available.");
+            page.Controls.Add(CreateLabel("After inactivity", 24, sectionTop + 52, ProfileText, false));
+            inactivitySelector = CreateProfileChoiceSelector(145, sectionTop + 46, 180);
             inactivitySelector.Items.AddRange(new object[] {
                 "Never", "1 minute", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes",
             });
             inactivitySelector.SelectedIndexChanged += ProfileOptionControlChanged;
             page.Controls.Add(inactivitySelector);
-            page.Controls.Add(CreateLabel("USB sleep", 24, sectionTop + 117, ProfileText, false));
-            usbSleepOnConnectSelector = CreateProfileChoiceSelector(145, sectionTop + 111, 180);
+            page.Controls.Add(CreateLabel("USB sleep", 24, sectionTop + 98, ProfileText, false));
+            usbSleepOnConnectSelector = CreateProfileChoiceSelector(145, sectionTop + 92, 180);
             foreach (var mode in ControllerMappings.USBSleepOnConnectModes)
                 usbSleepOnConnectSelector.Items.Add(mode.Label);
             usbSleepOnConnectSelector.SelectedIndexChanged += ProfileOptionControlChanged;
@@ -1768,7 +1784,10 @@ namespace BetterJoyForCemu {
                 "an automatic Bluetooth connection establishes, if Bluetooth was not already live " +
                 "when USB was plugged in. Enabled: same, plus sleep immediately on USB connect. " +
                 "Disabled: never sleep on initial USB connect.");
-            layout.Advance(163);
+            autoPowerOffCheckBox = CreateProfileCheckBox(
+                "Power off when BetterJoy exits", 24, sectionTop + 144, "AutoPowerOff");
+            page.Controls.Add(autoPowerOffCheckBox);
+            layout.Advance(182);
 
             layout.Divider();
             layout.Heading("Input behavior",
@@ -1795,10 +1814,6 @@ namespace BetterJoyForCemu {
             layout.Divider();
             layout.Heading("Lighting", "Choose the lightbar color or Home LED behavior for this profile.");
             sectionTop = layout.Y;
-            homeLedCheckBox = CreateProfileCheckBox(
-                "Keep the Home LED on", 24, sectionTop + 6, "HomeLEDOn");
-            page.Controls.Add(homeLedCheckBox);
-
             lightColorLabel = CreateLabel("Light color", 24, sectionTop + 12, ProfileText, false);
             lightColorButton = new Button {
                 Location = new Point(114, sectionTop),
@@ -1876,6 +1891,17 @@ namespace BetterJoyForCemu {
                 ControllerMappings.MaximumChargeGlowPeriodSeconds + " seconds). Only DualSense " +
                 "has this pulse today; other controllers ignore it.");
 
+            // Its own row rather than sharing row 0 with Light color, which is what let the two
+            // overlap. Only Joy-Cons and the Pro Controller have this LED - see KindHasHomeLed.
+            homeLedLabel = CreateLabel("Home LED", 24, sectionTop + 123, ProfileText, false);
+            page.Controls.Add(homeLedLabel);
+            homeLedSelector = CreateProfileChoiceSelector(114, sectionTop + 117, 140);
+            homeLedSelector.Items.AddRange(new object[] { "Enabled", "Disabled" });
+            homeLedSelector.SelectedIndexChanged += ProfileOptionControlChanged;
+            page.Controls.Add(homeLedSelector);
+            tip_reassign.SetToolTip(homeLedSelector,
+                "Keep the Home button's LED lit on a Joy-Con or Pro Controller.");
+
             playerLedLabel = CreateLabel("Player LED", 24, sectionTop + 84, ProfileText, false);
             page.Controls.Add(playerLedLabel);
             playerLedSelector = CreateProfileChoiceSelector(114, sectionTop + 78, 140);
@@ -1893,7 +1919,7 @@ namespace BetterJoyForCemu {
                 "of what the controller would otherwise show. Joy-Con, Pro, SNES, and N64 default " +
                 "to Enabled, matching how they've always behaved.");
 
-            layout.Advance(72 + 39);
+            layout.Advance(72 + 39 + 39);
 
             layout.Divider();
             layout.Heading("Haptics", "Control controller vibration for this profile.");
@@ -2005,10 +2031,11 @@ namespace BetterJoyForCemu {
 
             layout.Divider();
             layout.Heading("Orientation",
-                "Only applies when this Joy-Con is used solo with no partner");
+                "Only applies when this Joy-Con is used solo with no partner",
+                JoyConSectionKey);
             layout.Row(null, btn_default_orientation, "Default orientation", buttonX: 145, buttonWidth: 449);
 
-            page.AutoScrollMinSize = new Size(0, layout.Y + 35);
+            layout.Finish(35);
             return page;
         }
 
@@ -2213,6 +2240,10 @@ namespace BetterJoyForCemu {
 
             private readonly Reassign owner;
             private readonly Panel page;
+            private readonly List<ProfileSection> sections = new List<ProfileSection>();
+            private ProfileSection current;
+            private int pendingDividerIndex = -1;
+            private int pendingDividerY;
 
             public int Y { get; private set; }
 
@@ -2222,11 +2253,23 @@ namespace BetterJoyForCemu {
                 Y = startY;
             }
 
-            // Returns the heading's own controls so a caller can hide the section it introduces.
-            public Control[] Heading(string title, string description) {
-                Control[] controls = owner.AddSectionHeading(page, title, Y, description);
+            // Every heading starts a section: everything added from here until the next heading
+            // belongs to it, including the divider just above that introduces it. Pass a key to
+            // make the section gateable - Reassign.SetSectionVisible then hides it and reflows the
+            // page, so a section that isn't shown reserves no space.
+            public void Heading(string title, string description, string key = null) {
+                // A pending divider introduces this section, so the previous one ends at the
+                // divider rather than after it - otherwise consecutive sections overlap by the
+                // divider-to-heading gap and stacking them would creep the page upward.
+                CloseSection(pendingDividerIndex >= 0 ? pendingDividerY : Y);
+                current = new ProfileSection {
+                    Key = key,
+                    StartIndex = pendingDividerIndex >= 0 ? pendingDividerIndex : page.Controls.Count,
+                    DesignTop = pendingDividerIndex >= 0 ? pendingDividerY : Y,
+                };
+                pendingDividerIndex = -1;
+                owner.AddSectionHeading(page, title, Y, description);
                 Y += HeadingToRowGap;
-                return controls;
             }
 
             public void Row(Label label, SplitButton button, string text, int labelX = 24,
@@ -2254,23 +2297,57 @@ namespace BetterJoyForCemu {
                 Y += pixels;
             }
 
-            // Returns the divider so a caller hiding the section below it can hide this too.
-            public Control Divider() {
+            public void Divider() {
                 // The row just placed already advanced Y by the row-to-row gap; back off to the
                 // (smaller) row-to-divider gap instead of stacking both.
                 Y += RowToDividerGap - RowGap;
-                Control divider = owner.CreateDivider(24, Y);
-                page.Controls.Add(divider);
+                // Remembered rather than claimed now: the divider introduces the section the next
+                // heading opens, so it is hidden and moved along with it.
+                pendingDividerIndex = page.Controls.Count;
+                pendingDividerY = Y;
+                page.Controls.Add(owner.CreateDivider(24, Y));
                 Y += DividerToHeadingGap;
-                return divider;
+            }
+
+            // Closes the final section and publishes the page's layout. Required on any page that
+            // gates a section, so hiding one can move every section below it.
+            public void Finish(int bottomPadding = 0) {
+                CloseSection(Y);
+                page.AutoScrollMinSize = new Size(0, Y + bottomPadding);
+                owner.RegisterPageSections(page, sections, bottomPadding);
+            }
+
+            // Resolves the section's controls to real references immediately, rather than keeping
+            // indices that a later BringToFront/SetChildIndex could invalidate. Sections tile
+            // exactly - one ends where the next begins - so reflowing with everything visible
+            // reproduces the built layout unchanged.
+            private void CloseSection(int bottom) {
+                if (current == null)
+                    return;
+                for (int i = current.StartIndex; i < page.Controls.Count; i++)
+                    current.Controls.Add(page.Controls[i]);
+                current.DesignBottom = bottom;
+                sections.Add(current);
+                current = null;
             }
         }
 
-        // Returns the controls it created so a caller can hide a whole section (heading text
-        // included) for controllers the section does not apply to.
-        private Control[] AddSectionHeading(Panel page, string title, int top, string description) {
-            Label heading = CreateLabel(title, 24, top, ProfileText, true, 12F);
-            page.Controls.Add(heading);
+        // One heading's worth of a profile page: the controls added while it was open, and the
+        // design-space extent it occupies. Hiding a section takes its height out of the page.
+        private sealed class ProfileSection {
+            public string Key;
+            public int StartIndex;
+            public int DesignTop;
+            public int DesignBottom;
+            public bool Visible = true;
+            public int BaselineTop;
+            public int Height;
+            public int AppliedOffset;
+            public readonly List<Control> Controls = new List<Control>();
+        }
+
+        private void AddSectionHeading(Panel page, string title, int top, string description) {
+            page.Controls.Add(CreateLabel(title, 24, top, ProfileText, true, 12F));
             Label help = CreateLabel(description, 24, top + 27, ProfileMuted, false, 9F);
             help.AutoSize = false;
             // A transparent WinForms Label still paints its full rectangular bounds. Keeping a
@@ -2279,7 +2356,6 @@ namespace BetterJoyForCemu {
             // Reserve the taller box only for copy that can actually wrap to a second line.
             help.Size = new Size(570, description.Length > 100 ? 40 : 22);
             page.Controls.Add(help);
-            return new Control[] { heading, help };
         }
 
         private void AddMappingRow(Panel page, Label label, SplitButton button, string text,
@@ -2494,41 +2570,6 @@ namespace BetterJoyForCemu {
             return (string)input.Tag;
         }
 
-        // Same shape as CreateProfilePercentInput/ProfilePercentInput_Leave above, just with a
-        // 1-10 range instead of 0-100 - a separate clamp range doesn't fit that one cleanly.
-        private TextBox CreateProfileSecondsInput(Panel page, int left, int top, string optionKey) {
-            TextBox input = new TextBox {
-                Location = new Point(left, top),
-                Size = new Size(40, 25),
-                TextAlign = HorizontalAlignment.Center,
-                BackColor = ProfileSurface,
-                ForeColor = ProfileText,
-                BorderStyle = BorderStyle.FixedSingle,
-                Font = new Font("Segoe UI", 9F),
-                Tag = optionKey,
-            };
-            input.KeyPress += (sender, e) => {
-                if (!Char.IsDigit(e.KeyChar) && !Char.IsControl(e.KeyChar))
-                    e.Handled = true;
-            };
-            input.Leave += ProfileSecondsInput_Leave;
-            page.Controls.Add(input);
-            return input;
-        }
-
-        private void ProfileSecondsInput_Leave(object sender, EventArgs e) {
-            if (updatingProfileOptions || String.IsNullOrEmpty(SelectedProfileId))
-                return;
-
-            TextBox input = (TextBox)sender;
-            int value;
-            if (!Int32.TryParse(input.Text, out value))
-                value = 2;
-            value = Math.Max(1, Math.Min(10, value));
-            input.Text = value.ToString();
-            ControllerMappings.SetOptionValue(SelectedProfileId, (string)input.Tag, value.ToString());
-        }
-
         private bool IsDeferredCommitProfileInput(Control control) {
             return control != null && (
                 // The eight gyro deflection limits used to be here too. They are dropdown
@@ -2539,8 +2580,7 @@ namespace BetterJoyForCemu {
                 control == adaptiveTriggerStrengthLeftInput ||
                 control == adaptiveTriggerStartRightInput ||
                 control == adaptiveTriggerSecondaryRightInput ||
-                control == adaptiveTriggerStrengthRightInput ||
-                control == homeLongPowerOffHoldInput);
+                control == adaptiveTriggerStrengthRightInput);
         }
 
         private void ProfileOptionControlChanged(object sender, EventArgs e) {
@@ -2567,6 +2607,9 @@ namespace BetterJoyForCemu {
             } else if (sender == gyroActivationModeSelector) {
                 ControllerMappings.SetOptionValue(SelectedProfileId, "GyroHoldToggle",
                     (gyroActivationModeSelector.SelectedIndex == 0).ToString().ToLowerInvariant());
+            } else if (sender == homeLedSelector) {
+                ControllerMappings.SetOptionValue(SelectedProfileId, "HomeLEDOn",
+                    (homeLedSelector.SelectedIndex == 0).ToString().ToLowerInvariant());
             } else if (sender == inactivitySelector) {
                 int minutes = InactivityMinutesFromText(inactivitySelector.Text);
                 ControllerMappings.SetOptionValue(
@@ -2741,6 +2784,67 @@ namespace BetterJoyForCemu {
 
         // Shows "Glow" / "Disabled", with the period appended when glowing so the right-click
         // value is visible without hovering - "Glow (4s)".
+        private static string HomeLongPowerOffHoldText(int seconds) {
+            return seconds + (seconds == 1 ? " second" : " seconds");
+        }
+
+        // The physical button each controller powers off with. A solo left Joy-Con uses Capture
+        // (Controller.HomeLongPowerOffButtonIndex); a joined pair reports no Kind and uses Home.
+        internal static string HomeLongPowerOffButtonName(ControllerKind? kind) {
+            switch (kind) {
+                case ControllerKind.Left: return "Capture";
+                case ControllerKind.DualSense:
+                case ControllerKind.DualShock4: return "PS";
+                case ControllerKind.Xbox: return "Guide";
+                default: return "Home";
+            }
+        }
+
+        private void UpdateHomeLongPowerOffButton() {
+            if (btn_home_long_power_off == null || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            btn_home_long_power_off.Text =
+                ControllerMappings.BoolOption(SelectedProfileId, "HomeLongPowerOff")
+                    ? HomeLongPowerOffHoldText(ControllerMappings.IntOption(
+                        SelectedProfileId, "HomeLongPowerOffHoldSeconds", 2))
+                    : "Disabled";
+        }
+
+        private void HoldPowerOffTimeMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            int seconds;
+            if (!Int32.TryParse((string)e.ClickedItem.Tag, out seconds))
+                return;
+
+            ControllerMappings.SetOptionValue(SelectedProfileId, "HomeLongPowerOff",
+                (seconds > 0).ToString().ToLowerInvariant());
+            if (seconds > 0) {
+                ControllerMappings.SetOptionValue(SelectedProfileId,
+                    "HomeLongPowerOffHoldSeconds", seconds.ToString());
+            }
+            UpdateHomeLongPowerOffButton();
+        }
+
+        // Right-click sets an arbitrary hold, like Mouse sensitivity on the Touchpad page. Only
+        // meaningful while the hold is on, so it says so rather than editing a value that does
+        // nothing.
+        private void PromptHoldPowerOffTime() {
+            if (String.IsNullOrEmpty(SelectedProfileId))
+                return;
+            if (!ControllerMappings.BoolOption(SelectedProfileId, "HomeLongPowerOff")) {
+                MessageBox.Show(this,
+                    "Choose a hold time first - the duration only applies once the hold is on.",
+                    "Hold to power off", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            PromptProfileNumber(btn_home_long_power_off, "HomeLongPowerOffHoldSeconds",
+                "Hold to power off", "hold time", 1, 10, "s", HomeLongPowerOffHoldText);
+        }
+
         private void UpdateChargingIndicatorButton() {
             if (chargingIndicatorSelector == null || String.IsNullOrEmpty(SelectedProfileId))
                 return;
@@ -3000,9 +3104,9 @@ namespace BetterJoyForCemu {
                 btn_touchpad_stick_sensitivity, btn_touchpad_tap_hold,
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
-                autoPowerOffCheckBox, homeLongPowerOffCheckBox, dragToggleCheckBox,
+                autoPowerOffCheckBox, btn_home_long_power_off, dragToggleCheckBox,
                 preferredTransportSelector, automaticBluetoothPairingSelector,
-                swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedCheckBox,
+                swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedSelector,
                 lightColorButton, lightingModeSelector, playerLedSelector,
                 chargingIndicatorSelector, chargeGlowColorButton,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
@@ -3058,10 +3162,7 @@ namespace BetterJoyForCemu {
                     useAsSelector.SelectedIndex = 5;
                 autoPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "AutoPowerOff");
-                homeLongPowerOffCheckBox.Checked = ControllerMappings.BoolOption(
-                    SelectedProfileId, "HomeLongPowerOff");
-                homeLongPowerOffHoldInput.Text = ControllerMappings.IntOption(
-                    SelectedProfileId, "HomeLongPowerOffHoldSeconds", 2).ToString();
+                UpdateHomeLongPowerOffButton();
                 string preferredTransport = ControllerMappings.PreferredTransport(SelectedProfileId);
                 int preferredTransportIndex = Array.FindIndex(
                     ControllerMappings.PreferredTransports,
@@ -3092,7 +3193,8 @@ namespace BetterJoyForCemu {
                 int rumbleIndex = Array.FindIndex(ControllerMappings.RumbleModes,
                     m => String.Equals(m.Value, rumbleMode, StringComparison.OrdinalIgnoreCase));
                 rumbleModeSelector.SelectedIndex = Math.Max(0, rumbleIndex);
-                homeLedCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "HomeLEDOn");
+                homeLedSelector.SelectedIndex = ControllerMappings.BoolOption(
+                    SelectedProfileId, "HomeLEDOn") ? 0 : 1;
                 UpdateLightColorButton(
                     ControllerMappings.OptionValue(SelectedProfileId, "LightColor"));
                 UpdateChargeGlowColorButton(
@@ -3396,11 +3498,82 @@ namespace BetterJoyForCemu {
             return kind != ControllerKind.Xbox;
         }
 
-        // SL/SR are physically on a Joy-Con's rail. A joined pair reports no Kind at all (see
-        // ControllerMappings.ProfileFor/KindFromProfileId, where "pair:" matches no prefix), and
-        // that is the case the section matters most for, so an unknown kind keeps it - which also
-        // preserves today's behavior when no controller is selected.
-        internal static bool KindHasJoyConRailButtons(ControllerKind? kind) {
+        private void RegisterPageSections(Panel page, List<ProfileSection> sections,
+                int bottomPadding) {
+            pageSections[page] = sections;
+            pageBottomPadding[page] = bottomPadding;
+        }
+
+        // Captured after ScaleProfileUi, so every measurement here is in real on-screen pixels and
+        // reflow only ever adds and subtracts actual positions - there is no scale factor left to
+        // reapply, which is what made hand-computed scroll extents wrong before.
+        private void CaptureSectionBaselines() {
+            foreach (KeyValuePair<Panel, List<ProfileSection>> entry in pageSections) {
+                foreach (ProfileSection section in entry.Value) {
+                    section.BaselineTop = (int)Math.Round(section.DesignTop * ProfileUiScale);
+                    section.Height = (int)Math.Round(
+                        (section.DesignBottom - section.DesignTop) * ProfileUiScale);
+                    section.AppliedOffset = 0;
+                }
+                pageBottomPadding[entry.Key] =
+                    (int)Math.Round(pageBottomPadding[entry.Key] * ProfileUiScale);
+            }
+        }
+
+        // Shows or hides every section registered under key, then reflows the pages holding them.
+        private void SetSectionVisible(string key, bool visible) {
+            foreach (KeyValuePair<Panel, List<ProfileSection>> entry in pageSections) {
+                bool changed = false;
+                foreach (ProfileSection section in entry.Value) {
+                    if (section.Key != key || section.Visible == visible)
+                        continue;
+                    section.Visible = visible;
+                    changed = true;
+                }
+                if (changed)
+                    ReflowPage(entry.Key);
+            }
+        }
+
+        // Stacks the visible sections back to back from the first section's original top, so a
+        // hidden section leaves no space behind and the scroll extent matches what is shown.
+        private void ReflowPage(Panel page) {
+            List<ProfileSection> sections = pageSections[page];
+            if (sections.Count == 0)
+                return;
+
+            int top = sections[0].BaselineTop;
+            foreach (ProfileSection section in sections) {
+                foreach (Control control in section.Controls)
+                    control.Visible = section.Visible;
+                if (!section.Visible)
+                    continue;
+
+                int offset = top - section.BaselineTop;
+                int delta = offset - section.AppliedOffset;
+                if (delta != 0) {
+                    foreach (Control control in section.Controls)
+                        control.Top += delta;
+                    section.AppliedOffset = offset;
+                }
+                top += section.Height;
+            }
+            page.AutoScrollMinSize = new Size(0, top + pageBottomPadding[page]);
+        }
+
+        // The Home button's LED exists on Joy-Cons and the Pro Controller. SNES and N64 pads have
+        // no Home button, and the PlayStation/Xbox pads have no such LED. An unknown kind is a
+        // joined Joy-Con pair (see KindIsJoyCon) or no selection, both of which keep it.
+        internal static bool KindHasHomeLed(ControllerKind? kind) {
+            return KindIsJoyCon(kind) || kind == ControllerKind.Pro;
+        }
+
+        // Gates the Joy-Con-only sections: SL/SR rail buttons (Bindings) and Orientation (Device
+        // behavior). A joined pair reports no Kind at all (see ControllerMappings.ProfileFor/
+        // KindFromProfileId, where "pair:" matches no prefix), and a pair is exactly where those
+        // sections matter, so an unknown kind counts as a Joy-Con - which also preserves today's
+        // behavior when no controller is selected.
+        internal static bool KindIsJoyCon(ControllerKind? kind) {
             return kind == null || kind == ControllerKind.Left || kind == ControllerKind.Right;
         }
 
@@ -3452,8 +3625,16 @@ namespace BetterJoyForCemu {
                 playerLedSelector.Visible = hasPlayerLed;
                 playerLedSelector.Enabled = hasPlayerLed;
             }
-            if (homeLedCheckBox != null)
-                homeLedCheckBox.Visible = !hasConfigurableLight;
+            if (homeLongPowerOffLabel != null)
+                homeLongPowerOffLabel.Text = "Hold " + HomeLongPowerOffButtonName(selected?.Kind);
+
+            bool hasHomeLed = KindHasHomeLed(selected?.Kind);
+            if (homeLedLabel != null)
+                homeLedLabel.Visible = hasHomeLed;
+            if (homeLedSelector != null) {
+                homeLedSelector.Visible = hasHomeLed;
+                homeLedSelector.Enabled = hasController && hasHomeLed;
+            }
             if (preferredTransportLabel != null)
                 preferredTransportLabel.Enabled = hasSelectableTransport;
             if (preferredTransportSelector != null)
@@ -3470,21 +3651,7 @@ namespace BetterJoyForCemu {
             }
             // UpdateControllerAudioControlState (called below) is the source of truth for
             // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
-            bool hasJoyConRails = KindHasJoyConRailButtons(selected?.Kind);
-            foreach (Control control in joyConRailControls)
-                control.Visible = hasJoyConRails;
-            if (profilePages.TryGetValue("bindings", out Panel bindingsPage) &&
-                    bindingsPageFullHeight > 0) {
-                // Both heights are design-space values captured while building the page, before
-                // ScaleProfileUi shrank everything by ProfileUiScale - so scale them the same way
-                // it did. Writing the raw values back claimed a scroll area taller than the real
-                // content and left a large empty region below the last section.
-                int contentHeight = hasJoyConRails
-                    ? bindingsPageFullHeight
-                    : joyConRailSectionTop;
-                bindingsPage.AutoScrollMinSize = new Size(0,
-                    (int)Math.Round(contentHeight * ProfileUiScale));
-            }
+            SetSectionVisible(JoyConSectionKey, KindIsJoyCon(selected?.Kind));
 
             bool hasGyroPage = KindHasGyroPage(selected?.Kind);
             // Unavailable pages fall back to Gyro as before, or Bindings when Gyro is unavailable too.
