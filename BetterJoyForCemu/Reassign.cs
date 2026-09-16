@@ -1835,9 +1835,50 @@ namespace BetterJoyForCemu {
                 "OpenRGB to rescan for devices on connect and whenever it changes what's hidden " +
                 "from other programs.");
 
-            playerLedLabel = CreateLabel("Player LED", 24, sectionTop + 45, ProfileText, false);
+            // Left column reads Light color -> Charge color -> Player LED, so the two colour
+            // pickers sit together and Player LED is the last row on the left. The right column
+            // (Mode, Style) is unchanged, and the section still occupies the same three rows.
+            chargeGlowColorLabel = CreateLabel("Charge color", 24, sectionTop + 45,
+                ProfileText, false);
+            chargeGlowColorButton = new Button {
+                Location = new Point(114, sectionTop + 39),
+                Size = new Size(180, 31),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0),
+            };
+            StyleStandardButton(chargeGlowColorButton, false);
+            chargeGlowColorButton.Click += ChargeGlowColorButton_Click;
+            tip_reassign.SetToolTip(chargeGlowColorButton,
+                "The color the charging pulse reaches at the peak of each breath. It fades from " +
+                "off up to this and back, so this is the color it glows.");
+            page.Controls.Add(chargeGlowColorLabel);
+            page.Controls.Add(chargeGlowColorButton);
+
+            chargingIndicatorLabel = CreateLabel("Style", 320, sectionTop + 45,
+                ProfileText, false);
+            page.Controls.Add(chargingIndicatorLabel);
+            chargingIndicatorSelector = CreateChoiceSplitButton(
+                "btn_charging_indicator", menu_charging_indicator);
+            chargingIndicatorSelector.RightClickHandler = (sender, e) => PromptChargeGlowPeriod();
+            StyleMappingButton(chargingIndicatorSelector);
+            // Same x and width as the Mode selector above it, so the right column lines up.
+            chargingIndicatorSelector.Location = new Point(365, sectionTop + 39);
+            chargingIndicatorSelector.Size = new Size(140, 31);
+            page.Controls.Add(chargingIndicatorSelector);
+            tip_reassign.SetToolTip(chargingIndicatorSelector,
+                "The lightbar pulse BetterJoy draws while this controller is parked on USB " +
+                "waiting for a PS press. Its firmware never reaches its own charging state " +
+                "there, so without this the profile color simply stays lit. Glow uses the Charge " +
+                "color beside it; Battery ignores it and ramps the pulse from red at empty " +
+                "through to green at full, tracking the charge as it climbs. Right-click to set " +
+                "how long one full breath takes (" +
+                ControllerMappings.MinimumChargeGlowPeriodSeconds + "-" +
+                ControllerMappings.MaximumChargeGlowPeriodSeconds + " seconds). Only DualSense " +
+                "has this pulse today; other controllers ignore it.");
+
+            playerLedLabel = CreateLabel("Player LED", 24, sectionTop + 84, ProfileText, false);
             page.Controls.Add(playerLedLabel);
-            playerLedSelector = CreateProfileChoiceSelector(114, sectionTop + 39, 140);
+            playerLedSelector = CreateProfileChoiceSelector(114, sectionTop + 78, 140);
             foreach (var mode in ControllerMappings.PlayerLedModes)
                 playerLedSelector.Items.Add(mode.Label);
             playerLedSelector.SelectedIndexChanged += ControllerAudioOptionChanged;
@@ -1851,43 +1892,6 @@ namespace BetterJoyForCemu {
                 "trigger state, so before this existed they always silently went dark regardless " +
                 "of what the controller would otherwise show. Joy-Con, Pro, SNES, and N64 default " +
                 "to Enabled, matching how they've always behaved.");
-
-            chargingIndicatorLabel = CreateLabel("Charging indicator", 320, sectionTop + 45,
-                ProfileText, false);
-            page.Controls.Add(chargingIndicatorLabel);
-            chargingIndicatorSelector = CreateChoiceSplitButton(
-                "btn_charging_indicator", menu_charging_indicator);
-            chargingIndicatorSelector.RightClickHandler = (sender, e) => PromptChargeGlowPeriod();
-            StyleMappingButton(chargingIndicatorSelector);
-            chargingIndicatorSelector.Location = new Point(440, sectionTop + 39);
-            chargingIndicatorSelector.Size = new Size(140, 31);
-            page.Controls.Add(chargingIndicatorSelector);
-            tip_reassign.SetToolTip(chargingIndicatorSelector,
-                "The lightbar pulse BetterJoy draws while this controller is parked on USB " +
-                "waiting for a PS press. Its firmware never reaches its own charging state " +
-                "there, so without this the profile color simply stays lit. Glow uses the Glow " +
-                "color below; Battery ignores it and ramps the pulse from red at empty through " +
-                "to green at full, tracking the charge as it climbs. Right-click to set " +
-                "how long one full breath takes (" +
-                ControllerMappings.MinimumChargeGlowPeriodSeconds + "-" +
-                ControllerMappings.MaximumChargeGlowPeriodSeconds + " seconds). Only DualSense " +
-                "has this pulse today; other controllers ignore it.");
-
-            chargeGlowColorLabel = CreateLabel("Glow color", 24, sectionTop + 84,
-                ProfileText, false);
-            chargeGlowColorButton = new Button {
-                Location = new Point(114, sectionTop + 78),
-                Size = new Size(180, 31),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 0, 0),
-            };
-            StyleStandardButton(chargeGlowColorButton, false);
-            chargeGlowColorButton.Click += ChargeGlowColorButton_Click;
-            tip_reassign.SetToolTip(chargeGlowColorButton,
-                "The color the charging pulse reaches at the peak of each breath. It fades from " +
-                "off up to this and back, so this is the color it glows.");
-            page.Controls.Add(chargeGlowColorLabel);
-            page.Controls.Add(chargeGlowColorButton);
 
             layout.Advance(72 + 39);
 
