@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Configuration;
@@ -4413,8 +4413,12 @@ namespace BetterJoyForCemu {
         // (observed 2026-09-14 on a SCUF Valor Pro). It is not a real keyboard key: capturing it
         // saved a Guide bind as "key_7+joy_7", which displayed as "+XBOX" and fired on every Guide
         // press. Capture ignores it and leaves it to the rest of the hook chain.
-        internal static bool IsIgnoredCaptureKey(int virtualKey) {
-            return virtualKey == 0x07;
+        //
+        // Scoped to a physical Xbox pad on purpose: ignoring it for every controller stopped the
+        // Guide / PS output binding working on non-Xbox controllers (reported after 11cdf7d), so
+        // every other kind keeps the pre-11cdf7d behaviour.
+        internal static bool IsIgnoredCaptureKey(int virtualKey, ControllerKind? kind) {
+            return kind == ControllerKind.Xbox && virtualKey == 0x07;
         }
 
         private void Keyboard_KeyEvent(object sender, WindowsInput.Events.Sources.EventSourceEventArgs<WindowsInput.Events.Sources.KeyboardEvent> e) {
@@ -4422,7 +4426,8 @@ namespace BetterJoyForCemu {
                 return;
 
             WindowsInput.Events.KeyCode? capturedKey = e.Data.KeyDown?.Key ?? e.Data.KeyUp?.Key;
-            if (capturedKey.HasValue && IsIgnoredCaptureKey((int)capturedKey.Value))
+            if (capturedKey.HasValue &&
+                    IsIgnoredCaptureKey((int)capturedKey.Value, SelectedProfile?.Kind))
                 return;
 
             if (comboMembers != null) {
