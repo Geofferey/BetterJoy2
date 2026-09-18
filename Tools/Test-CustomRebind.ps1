@@ -540,11 +540,47 @@ try {
     Assert-True (([string]$powerOffName.Invoke($null, @($null))) -eq 'Home') `
         'A joined Joy-Con pair (no Kind) must use the Home label.'
 
+    # User contract: a profile section is made of rows discovered from the built layout, and each
+    # row owns the gap above it. Collapsing a row whose items are all hidden therefore removes
+    # exactly that row's height - no page reserves space for something it is not showing. A label
+    # sitting a few pixels below its selector shares that selector's row rather than starting one.
+    Add-Type -AssemblyName System.Windows.Forms
+    $sectionType = $reassignType.GetNestedType('ProfileSection', [Reflection.BindingFlags]'NonPublic')
+    $buildRows = $reassignType.GetMethod(
+        'BuildSectionRows', [Reflection.BindingFlags]'Static,NonPublic')
+    $section = [Activator]::CreateInstance($sectionType)
+    $sectionType.GetField('BaselineTop').SetValue($section, 0)
+    $sectionType.GetField('BaselineBottom').SetValue($section, 150)
+    $sectionControls = $sectionType.GetField('Controls').GetValue($section)
+    # Three rows, 39px apart, each a selector with its label offset 6px down beside it.
+    foreach ($rowTop in 0, 39, 78) {
+        $selector = New-Object Windows.Forms.Button
+        $selector.SetBounds(114, $rowTop, 140, 31)
+        $sectionControls.Add($selector)
+        $rowLabel = New-Object Windows.Forms.Label
+        $rowLabel.SetBounds(24, $rowTop + 6, 80, 17)
+        $sectionControls.Add($rowLabel)
+    }
+    $buildRows.Invoke($null, @($section)) | Out-Null
+    $rows = $sectionType.GetField('Rows').GetValue($section)
+    Assert-True ($rows.Count -eq 3) `
+        "A selector and its offset label must share one row: got $($rows.Count) rows, expected 3."
+    $rowType = $reassignType.GetNestedType('ProfileRow', [Reflection.BindingFlags]'NonPublic')
+    $rowTops = @($rows | ForEach-Object { [int]$rowType.GetField('BaselineTop').GetValue($_) })
+    $rowHeights = @($rows | ForEach-Object { [int]$rowType.GetField('Height').GetValue($_) })
+    Assert-True (($rowTops -join ',') -eq '0,39,78') `
+        "Rows started at $($rowTops -join ','), expected 0,39,78."
+    # The first two rows carry the 39px spacing; the last extends to the section's own bottom, so
+    # the heights add up to the whole section and collapsing any row reclaims all of its space.
+    Assert-True (($rowHeights -join ',') -eq '39,39,72') `
+        "Row heights were $($rowHeights -join ','), expected 39,39,72."
+    Assert-True ((($rowHeights | Measure-Object -Sum).Sum) -eq 150) `
+        'Row heights must add up to the section height, or collapsing rows would drift.'
+
     # User contract: each control belongs to exactly one section, and sections tile - one ends
     # where the next begins. A divider introduces the section below it, so closing the previous
     # section past that divider handed the same control to both; reflow then moved it twice and
     # dragged content up across dividers.
-    $sectionType = $reassignType.GetNestedType('ProfileSection', [Reflection.BindingFlags]'NonPublic')
     $layoutType = $reassignType.GetNestedType('PageLayout', [Reflection.BindingFlags]'NonPublic')
     $splitButtonType = $assembly.GetType('BetterJoyForCemu.SplitButton', $true)
     $anyInstance = [Reflection.BindingFlags]'Public,NonPublic,Instance'

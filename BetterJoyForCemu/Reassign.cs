@@ -2343,6 +2343,15 @@ namespace BetterJoyForCemu {
             public int DesignBottom;
             public bool Visible = true;
             public int BaselineTop;
+            public int BaselineBottom;
+            public readonly List<Control> Controls = new List<Control>();
+            public readonly List<ProfileRow> Rows = new List<ProfileRow>();
+        }
+
+        // One line within a section - a single mapping row, or a left/right pair sharing a line.
+        // Rows own the gap above them, so a row that collapses takes its spacing with it.
+        private sealed class ProfileRow {
+            public int BaselineTop;
             public int Height;
             public int AppliedOffset;
             public readonly List<Control> Controls = new List<Control>();
@@ -3513,13 +3522,69 @@ namespace BetterJoyForCemu {
             foreach (KeyValuePair<Panel, List<ProfileSection>> entry in pageSections) {
                 foreach (ProfileSection section in entry.Value) {
                     section.BaselineTop = (int)Math.Round(section.DesignTop * ProfileUiScale);
-                    section.Height = (int)Math.Round(
-                        (section.DesignBottom - section.DesignTop) * ProfileUiScale);
-                    section.AppliedOffset = 0;
+                    section.BaselineBottom = (int)Math.Round(
+                        section.DesignBottom * ProfileUiScale);
+                    BuildSectionRows(section);
                 }
                 pageBottomPadding[entry.Key] =
                     (int)Math.Round(pageBottomPadding[entry.Key] * ProfileUiScale);
             }
+        }
+
+        // Rows are discovered from the built layout rather than declared: controls whose vertical
+        // spans overlap share one, which is what a left/right column pair on a single line looks
+        // like. A label sitting a few pixels below its selector therefore joins that selector's
+        // row instead of starting its own.
+        private static void BuildSectionRows(ProfileSection section) {
+            section.Rows.Clear();
+            ProfileRow current = null;
+            int currentBottom = 0;
+            foreach (Control control in section.Controls.OrderBy(c => c.Top)) {
+                if (current == null || control.Top >= currentBottom) {
+                    current = new ProfileRow {
+                        // The first row starts at the section's own top so the gap under the
+                        // divider belongs to it; later rows start at their own content.
+                        BaselineTop = section.Rows.Count == 0 ? section.BaselineTop : control.Top,
+                    };
+                    section.Rows.Add(current);
+                    currentBottom = control.Bottom;
+                } else {
+                    currentBottom = Math.Max(currentBottom, control.Bottom);
+                }
+                current.Controls.Add(control);
+            }
+
+            for (int i = 0; i < section.Rows.Count; i++) {
+                int nextTop = i + 1 < section.Rows.Count
+                    ? section.Rows[i + 1].BaselineTop
+                    : section.BaselineBottom;
+                section.Rows[i].Height = Math.Max(0, nextTop - section.Rows[i].BaselineTop);
+                section.Rows[i].AppliedOffset = 0;
+            }
+        }
+
+        // Control.Visible reads false for every control on a page that is not the one currently
+        // shown, so reflow cannot use it to tell "this controller does not have it" from "you are
+        // looking at another page". Capability code records the intent here instead.
+        private readonly HashSet<Control> hiddenProfileItems = new HashSet<Control>();
+
+        private void SetProfileItemVisible(Control control, bool visible) {
+            if (control == null)
+                return;
+
+            control.Visible = visible;
+            if (visible)
+                hiddenProfileItems.Remove(control);
+            else
+                hiddenProfileItems.Add(control);
+        }
+
+        private bool RowHasVisibleItem(ProfileRow row) {
+            foreach (Control control in row.Controls) {
+                if (!hiddenProfileItems.Contains(control))
+                    return true;
+            }
+            return false;
         }
 
         // Shows or hides every section registered under key, then reflows the pages holding them.
@@ -3537,8 +3602,14 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Stacks the visible sections back to back from the first section's original top, so a
-        // hidden section leaves no space behind and the scroll extent matches what is shown.
+        private void ReflowProfilePages() {
+            foreach (Panel page in pageSections.Keys)
+                ReflowPage(page);
+        }
+
+        // Stacks visible rows back to back, and visible sections after one another, from the first
+        // section's original top. A hidden section, and a row whose every item is hidden, leave no
+        // space behind - and the scroll extent ends up matching exactly what is shown.
         private void ReflowPage(Panel page) {
             List<ProfileSection> sections = pageSections[page];
             if (sections.Count == 0)
@@ -3546,19 +3617,22 @@ namespace BetterJoyForCemu {
 
             int top = sections[0].BaselineTop;
             foreach (ProfileSection section in sections) {
-                foreach (Control control in section.Controls)
-                    control.Visible = section.Visible;
                 if (!section.Visible)
                     continue;
 
-                int offset = top - section.BaselineTop;
-                int delta = offset - section.AppliedOffset;
-                if (delta != 0) {
-                    foreach (Control control in section.Controls)
-                        control.Top += delta;
-                    section.AppliedOffset = offset;
+                foreach (ProfileRow row in section.Rows) {
+                    if (!RowHasVisibleItem(row))
+                        continue;
+
+                    int offset = top - row.BaselineTop;
+                    int delta = offset - row.AppliedOffset;
+                    if (delta != 0) {
+                        foreach (Control control in row.Controls)
+                            control.Top += delta;
+                        row.AppliedOffset = offset;
+                    }
+                    top += row.Height;
                 }
-                top += section.Height;
             }
             page.AutoScrollMinSize = new Size(0, top + pageBottomPadding[page]);
         }
@@ -3609,34 +3683,27 @@ namespace BetterJoyForCemu {
             // implemented for it.
             bool hasPlayerLed = selected != null &&
                 selected.Kind != ControllerKind.DualShock4;
-            // These controls intentionally share one occupied row. Unlike the capability
-            // controls below, swapping them does not leave an unexplained layout gap.
-            if (lightColorLabel != null)
-                lightColorLabel.Visible = hasConfigurableLight;
-            if (lightColorButton != null)
-                lightColorButton.Visible = hasConfigurableLight;
-            if (lightingModeLabel != null)
-                lightingModeLabel.Visible = hasConfigurableLight;
-            if (lightingModeSelector != null) {
-                lightingModeSelector.Visible = hasConfigurableLight;
+            // Capability rules hide items through SetProfileItemVisible so ReflowProfilePages can
+            // collapse a row once nothing in it is left to show - no page reserves space for what
+            // it is not showing.
+            SetProfileItemVisible(lightColorLabel, hasConfigurableLight);
+            SetProfileItemVisible(lightColorButton, hasConfigurableLight);
+            SetProfileItemVisible(lightingModeLabel, hasConfigurableLight);
+            SetProfileItemVisible(lightingModeSelector, hasConfigurableLight);
+            if (lightingModeSelector != null)
                 lightingModeSelector.Enabled = hasConfigurableLight;
-            }
-            if (playerLedLabel != null)
-                playerLedLabel.Visible = hasPlayerLed;
-            if (playerLedSelector != null) {
-                playerLedSelector.Visible = hasPlayerLed;
+            SetProfileItemVisible(playerLedLabel, hasPlayerLed);
+            SetProfileItemVisible(playerLedSelector, hasPlayerLed);
+            if (playerLedSelector != null)
                 playerLedSelector.Enabled = hasPlayerLed;
-            }
             if (homeLongPowerOffLabel != null)
                 homeLongPowerOffLabel.Text = "Hold " + HomeLongPowerOffButtonName(selected?.Kind);
 
             bool hasHomeLed = KindHasHomeLed(selected?.Kind);
-            if (homeLedLabel != null)
-                homeLedLabel.Visible = hasHomeLed;
-            if (homeLedSelector != null) {
-                homeLedSelector.Visible = hasHomeLed;
+            SetProfileItemVisible(homeLedLabel, hasHomeLed);
+            SetProfileItemVisible(homeLedSelector, hasHomeLed);
+            if (homeLedSelector != null)
                 homeLedSelector.Enabled = hasController && hasHomeLed;
-            }
             if (preferredTransportLabel != null)
                 preferredTransportLabel.Enabled = hasSelectableTransport;
             if (preferredTransportSelector != null)
@@ -3648,8 +3715,7 @@ namespace BetterJoyForCemu {
                 controllerAudioEndpointSelector, controllerAudioTestButton,
                 controllerAudioUsbLoopbackSelector, controllerAudioUsbLoopbackLabel,
             }) {
-                if (control != null)
-                    control.Visible = true;
+                SetProfileItemVisible(control, true);
             }
             // UpdateControllerAudioControlState (called below) is the source of truth for
             // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
@@ -3707,6 +3773,9 @@ namespace BetterJoyForCemu {
                     supportsAutomaticBluetoothPairing;
             UpdateControllerAudioControlState();
             UpdateProfilePresentation(selected);
+            // Last: every capability rule above has had its say, so rows with nothing left to show
+            // collapse and the pages close up around them.
+            ReflowProfilePages();
         }
 
         private void UpdateProfilePresentation(ControllerProfileInfo selected) {
