@@ -648,6 +648,22 @@ try {
     Assert-True ($firstBottom -eq $secondTop) `
         "Sections must tile: first ends at $firstBottom, second starts at $secondTop."
 
+    # User contract: the Home LED row is Nintendo-only, and Player LED is shown for the
+    # Nintendo-protocol pads (a joined pair reports no Kind) plus the DualSense, which drives its
+    # own player LEDs. Only DualShock 4 and Xbox lose the row.
+    $nintendoKind = $reassignType.GetMethod(
+        'KindIsNintendo', [Reflection.BindingFlags]'Static,NonPublic')
+    foreach ($nintendoKindName in 'Left', 'Right', 'Pro', 'Snes', 'N64') {
+        Assert-True ([bool]$nintendoKind.Invoke($null, @([Enum]::Parse($kindType, $nintendoKindName)))) `
+            "$nintendoKindName was not treated as a Nintendo-protocol controller."
+    }
+    Assert-True ([bool]$nintendoKind.Invoke($null, @($null))) `
+        'A joined Joy-Con pair (no Kind) was not treated as a Nintendo-protocol controller.'
+    foreach ($nonNintendoKindName in 'DualSense', 'DualShock4', 'Xbox') {
+        Assert-True (-not [bool]$nintendoKind.Invoke($null, @([Enum]::Parse($kindType, $nonNintendoKindName)))) `
+            "$nonNintendoKindName was treated as a Nintendo-protocol controller."
+    }
+
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {
     Pop-Location

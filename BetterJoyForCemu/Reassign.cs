@@ -143,6 +143,8 @@ namespace BetterJoyForCemu {
         // Sections only Joy-Cons have: SL/SR rail buttons (Bindings) and Orientation (Device
         // behavior). One key gates both - see PageLayout.Heading and SetSectionVisible.
         private const string JoyConSectionKey = "joycon";
+        // Audio is Sony-only hardware, so that whole section is gated the same way.
+        private const string PlayStationSectionKey = "playstation";
         private readonly Dictionary<Panel, List<ProfileSection>> pageSections =
             new Dictionary<Panel, List<ProfileSection>>();
         private readonly Dictionary<Panel, int> pageBottomPadding = new Dictionary<Panel, int>();
@@ -1937,7 +1939,8 @@ namespace BetterJoyForCemu {
 
             layout.Divider();
             layout.Heading("Audio",
-                "Route Windows audio to supported controller speakers, headphones, and microphones.");
+                "Route Windows audio to supported controller speakers, headphones, and microphones.",
+                PlayStationSectionKey);
             sectionTop = layout.Y;
             controllerAudioEnabledLabel = CreateLabel(
                 "Controller audio", 24, sectionTop + 6, ProfileText, false);
@@ -3637,6 +3640,13 @@ namespace BetterJoyForCemu {
             page.AutoScrollMinSize = new Size(0, top + pageBottomPadding[page]);
         }
 
+        // Nintendo-protocol controllers: Joy-Cons (a joined pair reports no Kind), Pro, SNES and
+        // N64. The Home LED and Player LED rows are shown only for these.
+        internal static bool KindIsNintendo(ControllerKind? kind) {
+            return KindIsJoyCon(kind) || kind == ControllerKind.Pro ||
+                kind == ControllerKind.Snes || kind == ControllerKind.N64;
+        }
+
         // The Home button's LED exists on Joy-Cons and the Pro Controller. SNES and N64 pads have
         // no Home button, and the PlayStation/Xbox pads have no such LED. An unknown kind is a
         // joined Joy-Con pair (see KindIsJoyCon) or no selection, both of which keep it.
@@ -3676,13 +3686,11 @@ namespace BetterJoyForCemu {
             bool hasConfigurableLight = selected != null &&
                 (selected.Kind == ControllerKind.DualSense ||
                  selected.Kind == ControllerKind.DualShock4);
-            // Player LED applies to DualSense (DualSenseController.SetLEDByPlayerNum) and every
-            // Nintendo-protocol device - Joy-Con, Pro, SNES, N64 (NintendoController's own
-            // override, shared by all of them) - everything except DualShock4, which doesn't get
-            // one here even though it has physically the same LED strip, since this hasn't been
-            // implemented for it.
+            // Player LED covers the Nintendo-protocol pads (NintendoController.SetLEDByPlayerNum)
+            // plus the DualSense (DualSenseController.SetLEDByPlayerNum). DualShock 4 has the same
+            // LED strip physically but no implementation here, and Xbox has none at all.
             bool hasPlayerLed = selected != null &&
-                selected.Kind != ControllerKind.DualShock4;
+                (KindIsNintendo(selected.Kind) || selected.Kind == ControllerKind.DualSense);
             // Capability rules hide items through SetProfileItemVisible so ReflowProfilePages can
             // collapse a row once nothing in it is left to show - no page reserves space for what
             // it is not showing.
@@ -3692,6 +3700,12 @@ namespace BetterJoyForCemu {
             SetProfileItemVisible(lightingModeSelector, hasConfigurableLight);
             if (lightingModeSelector != null)
                 lightingModeSelector.Enabled = hasConfigurableLight;
+            // The charging pulse paints the lightbar, so it belongs with the rows above.
+            // UpdateChargingIndicatorButton still owns .Enabled for the colour picker.
+            SetProfileItemVisible(chargeGlowColorLabel, hasConfigurableLight);
+            SetProfileItemVisible(chargeGlowColorButton, hasConfigurableLight);
+            SetProfileItemVisible(chargingIndicatorLabel, hasConfigurableLight);
+            SetProfileItemVisible(chargingIndicatorSelector, hasConfigurableLight);
             SetProfileItemVisible(playerLedLabel, hasPlayerLed);
             SetProfileItemVisible(playerLedSelector, hasPlayerLed);
             if (playerLedSelector != null)
@@ -3720,6 +3734,7 @@ namespace BetterJoyForCemu {
             // UpdateControllerAudioControlState (called below) is the source of truth for
             // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
             SetSectionVisible(JoyConSectionKey, KindIsJoyCon(selected?.Kind));
+            SetSectionVisible(PlayStationSectionKey, hasConfigurableLight);
 
             bool hasGyroPage = KindHasGyroPage(selected?.Kind);
             // Unavailable pages fall back to Gyro as before, or Bindings when Gyro is unavailable too.
