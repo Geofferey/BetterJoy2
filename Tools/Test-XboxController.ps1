@@ -319,14 +319,23 @@ try {
     Assert-True (-not [bool]$mapBattery.Invoke($null, $wiredArguments)) `
         'A wired XInput controller invented a battery level.'
 
-    # User contract: binding capture ignores reserved virtual-key 0x07, which arrives with a physical
-    # Xbox Guide press, so assigning Guide records only the controller button (never key_7+joy_7).
+    # User contract: binding capture ignores reserved virtual-key 0x07 only for a physical Xbox
+    # controller, where it arrives with a Guide press, so assigning Guide records just the
+    # controller button (never key_7+joy_7). Every other controller keeps capturing normally -
+    # ignoring 0x07 for all of them stopped the Guide / PS output binding working.
     $ignoredCaptureKey = $reassignType.GetMethod(
         'IsIgnoredCaptureKey', [Reflection.BindingFlags]'Static,NonPublic')
-    Assert-True ([bool]$ignoredCaptureKey.Invoke($null, @([int]0x07))) `
+    Assert-True ([bool]$ignoredCaptureKey.Invoke($null, @([int]0x07, $xboxKind))) `
         'Capture still records reserved virtual-key 0x07 from an Xbox Guide press.'
-    Assert-True (-not [bool]$ignoredCaptureKey.Invoke($null, @([int]0x41))) `
-        'Capture ignored a real keyboard key (A).'
+    Assert-True (-not [bool]$ignoredCaptureKey.Invoke($null, @([int]0x41, $xboxKind))) `
+        'Capture ignored a real keyboard key (A) on an Xbox controller.'
+    foreach ($captureKindName in 'DualSense', 'DualShock4', 'Left', 'Right', 'Pro') {
+        Assert-True (-not [bool]$ignoredCaptureKey.Invoke($null, @(
+            [int]0x07, [Enum]::Parse($kindType, $captureKindName)))) `
+            "Capture dropped virtual-key 0x07 on $captureKindName, which breaks Guide / PS output."
+    }
+    Assert-True (-not [bool]$ignoredCaptureKey.Invoke($null, @([int]0x07, $null))) `
+        'Capture dropped virtual-key 0x07 with no controller selected.'
 
     # User contract: the Gyro page stays unavailable for Xbox controllers, which have no motion
     # sensors, while controllers with gyros keep it.
