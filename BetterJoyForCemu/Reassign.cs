@@ -2160,8 +2160,8 @@ namespace BetterJoyForCemu {
             layout.Advance(50);
 
             layout.Divider();
-            layout.Heading("OpenRGB SDK server",
-                "Expose a fixed BetterJoy2 device to OpenRGB - always present, loopback-only.");
+            layout.Heading("OpenRGB",
+                "Expose a fixed BetterJoy2 device to OpenRGB and nudge OpenRGB to rescan.");
             sectionTop = layout.Y;
             page.Controls.Add(CreateLabel("Server", 24, sectionTop + 6, ProfileText, false));
             page.Controls.Add(CreateGlobalChoiceSelector(
@@ -2180,7 +2180,19 @@ namespace BetterJoyForCemu {
                 "BetterJoy2 restart, same as a real device's software layer without any onboard " +
                 "memory. Enabled with cache: also remembers the last color OpenRGB set across a " +
                 "BetterJoy2 restart, the way a real RGB device's own onboard memory would.");
-            layout.Advance(50);
+            page.Controls.Add(CreateLabel("Rescan", 24, sectionTop + 45, ProfileText, false));
+            page.Controls.Add(CreateGlobalChoiceSelector(
+                90, sectionTop + 39, 160, "OpenRgbRescanMode", OpenRgbRescan.Modes));
+            tip_reassign.SetToolTip(globalOptionSelectors["OpenRgbRescanMode"],
+                "The other half of BetterJoy2's OpenRGB support, and independent of the server " +
+                "above: when a controller set to Lighting Mode: OpenRGB connects, or its raw HID " +
+                "device stops being hidden, BetterJoy2 asks a running OpenRGB to rescan so it " +
+                "picks the controller up without you clicking Rescan in OpenRGB yourself. " +
+                "Disabled: BetterJoy2 never contacts OpenRGB's own SDK server (127.0.0.1:6742). " +
+                "Worth disabling if another OpenRGB client mishandles a device appearing " +
+                "mid-session (confirmed with Artemis 2) - the SDK server above is the " +
+                "alternative, since it is present in OpenRGB's list from OpenRGB's own startup.");
+            layout.Advance(89);
 
             layout.Divider();
             layout.Heading("Microphone backend",

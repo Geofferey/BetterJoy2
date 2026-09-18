@@ -664,6 +664,43 @@ try {
             "$nonNintendoKindName was treated as a Nintendo-protocol controller."
     }
 
+    # User contract: Global options > OpenRGB offers a Rescan dropdown with Enabled/Disabled, and
+    # Disabled stops BetterJoy2 initiating an OpenRGB rescan at all. Enabled stays the default so
+    # existing installs (which get the key seeded by AddMissingSettingsFromTemplate) keep the
+    # long-standing nudge; only an explicit Disabled turns it off.
+    $rescanType = $assembly.GetType('BetterJoyForCemu.OpenRgbRescan', $true)
+    $rescanModes = $rescanType.GetField('Modes', [Reflection.BindingFlags]'Static,Public').GetValue($null)
+    Assert-True ($rescanModes.Length -eq 2) 'The OpenRGB Rescan dropdown did not offer exactly two options.'
+    Assert-True ($rescanModes[0].Item1 -eq 'Enabled' -and $rescanModes[0].Item2 -eq 'Enabled') `
+        'Enabled was not the OpenRGB Rescan dropdown default (first) option.'
+    Assert-True ($rescanModes[1].Item1 -eq 'Disabled' -and $rescanModes[1].Item2 -eq 'Disabled') `
+        'Disabled was missing from the OpenRGB Rescan dropdown.'
+
+    $rescanEnabled = $rescanType.GetMethod(
+        'IsEnabledMode', [Reflection.BindingFlags]'Static,NonPublic')
+    Assert-True (-not [bool]$rescanEnabled.Invoke($null, @('Disabled'))) `
+        'OpenRGB Rescan set to Disabled still initiated a rescan.'
+    Assert-True (-not [bool]$rescanEnabled.Invoke($null, @('disabled'))) `
+        'A differently cased Disabled value still initiated an OpenRGB rescan.'
+    foreach ($rescanValue in 'Enabled', '', 'something-else') {
+        Assert-True ([bool]$rescanEnabled.Invoke($null, @($rescanValue))) `
+            "OpenRGB rescan was suppressed for the non-Disabled value '$rescanValue'."
+    }
+
+    # The stored key has to be a known global option, or ApplicationSettings.SetValue refuses the
+    # dropdown's write, and has to ship in App.config so existing configs get it seeded.
+    $settingsType = $assembly.GetType('BetterJoyForCemu.ApplicationSettings', $true)
+    $isGlobalOption = $settingsType.GetMethod(
+        'IsGlobalOption', [Reflection.BindingFlags]'Static,Public')
+    Assert-True ([bool]$isGlobalOption.Invoke($null, @('OpenRgbRescanMode'))) `
+        'OpenRgbRescanMode is not registered as a global option.'
+    $appConfig = [xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\BetterJoyForCemu\App.config') -Raw)
+    $rescanSetting = $appConfig.configuration.appSettings.add |
+        Where-Object { $_.key -eq 'OpenRgbRescanMode' }
+    Assert-True ($null -ne $rescanSetting) 'App.config does not ship an OpenRgbRescanMode default.'
+    Assert-True ($rescanSetting.value -eq 'Enabled') `
+        'App.config shipped an OpenRgbRescanMode default other than Enabled.'
+
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {
     Pop-Location

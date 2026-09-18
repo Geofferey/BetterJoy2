@@ -10,7 +10,8 @@ namespace BetterJoyForCemu {
     // UI. Needed because OpenRGB's device list only reflects HID visibility as of its own last
     // scan, and BetterJoy's HidHide state can change afterward (a fresh connection, Passthrough
     // being toggled) - see Program.cs's two call sites (on Attach, and on a real HidHide
-    // hidden-to-visible transition), both gated on Lighting Mode: OpenRGB.
+    // hidden-to-visible transition), both gated on Lighting Mode: OpenRGB, and all of them gated
+    // on the Global Options "OpenRGB > Rescan" dropdown inside RequestRescan below.
     //
     // Talks to OpenRGB's SDK server directly over its documented TCP protocol (127.0.0.1:6742) -
     // no OpenRGB plugin or extra dependency needed. Packet IDs confirmed against OpenRGB's own
@@ -42,11 +43,42 @@ namespace BetterJoyForCemu {
 
         private static int inFlight;
 
+        // Global Options' "OpenRGB > Rescan" dropdown (Reassign.cs) - single source of truth for
+        // both the stored OpenRgbRescanMode value and the dropdown's own Items, same pattern as
+        // OpenRgbServer.Modes. Enabled first, so it is also the fallback LoadGlobalOptions and
+        // IsEnabled below use: this nudge predates the option and stays on unless turned off.
+        public const string ModeEnabled = "Enabled";
+        public const string ModeDisabled = "Disabled";
+        public static readonly (string Value, string Label)[] Modes = {
+            (ModeEnabled, "Enabled"), (ModeDisabled, "Disabled"),
+        };
+
+        // Only an explicit Disabled turns the nudge off - an empty, unknown or hand-mangled value
+        // keeps the long-standing behavior rather than silently disabling OpenRGB support.
+        internal static bool IsEnabledMode(string mode) {
+            return !String.Equals(mode, ModeDisabled, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Read per request rather than cached: the service refreshes appSettings on every config
+        // change (HeadlessJoyconHost's watcher), so the next connection honors a change made in
+        // the UI a moment ago without any extra plumbing.
+        private static bool IsEnabled() {
+            return IsEnabledMode(ApplicationSettings.StringValue("OpenRgbRescanMode", ModeEnabled));
+        }
+
         // Fire-and-forget, single-flight like the original script's named mutex - a rescan
         // already in progress makes a second request redundant rather than additive, so this
         // drops it instead of queuing (matches the script's WaitOne(0) exiting immediately when
         // the mutex is already held).
+        //
+        // The Rescan option is enforced here rather than at the call sites so no future caller
+        // can contact OpenRGB behind a user who turned it off.
         public static void RequestRescan() {
+            if (!IsEnabled()) {
+                DebugLog.Write("OpenRgbRescan: skipped, Global option OpenRgbRescanMode is Disabled");
+                return;
+            }
+
             if (Interlocked.CompareExchange(ref inFlight, 1, 0) != 0)
                 return;
 
