@@ -540,6 +540,78 @@ try {
     Assert-True (([string]$powerOffName.Invoke($null, @($null))) -eq 'Home') `
         'A joined Joy-Con pair (no Kind) must use the Home label.'
 
+    # User contract: each control belongs to exactly one section, and sections tile - one ends
+    # where the next begins. A divider introduces the section below it, so closing the previous
+    # section past that divider handed the same control to both; reflow then moved it twice and
+    # dragged content up across dividers.
+    $sectionType = $reassignType.GetNestedType('ProfileSection', [Reflection.BindingFlags]'NonPublic')
+    $layoutType = $reassignType.GetNestedType('PageLayout', [Reflection.BindingFlags]'NonPublic')
+    $splitButtonType = $assembly.GetType('BetterJoyForCemu.SplitButton', $true)
+    $anyInstance = [Reflection.BindingFlags]'Public,NonPublic,Instance'
+    $layoutOwner = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($reassignType)
+    foreach ($dictionaryField in 'pageSections', 'pageBottomPadding') {
+        $field = $reassignType.GetField($dictionaryField, [Reflection.BindingFlags]'NonPublic,Instance')
+        $field.SetValue($layoutOwner, [Activator]::CreateInstance($field.FieldType))
+    }
+    $layoutPage = New-Object Windows.Forms.Panel
+    # Typed argument arrays, assigned element by element: an inline cast leaves PSObject wrappers
+    # that reflection cannot bind to the real parameter types.
+    $layoutArguments = New-Object object[] 3
+    $layoutArguments[0] = $layoutOwner.PSObject.BaseObject
+    $layoutArguments[1] = $layoutPage.PSObject.BaseObject
+    $layoutArguments[2] = [int]96
+    # ConstructorInfo.Invoke binds by position; Activator's binder refuses this nested private type.
+    $layout = $layoutType.GetConstructors($anyInstance)[0].Invoke($layoutArguments)
+    $headingMethod = $layoutType.GetMethod('Heading', $anyInstance)
+    $rowMethod = $layoutType.GetMethod('Row', $anyInstance)
+    $dividerMethod = $layoutType.GetMethod('Divider', $anyInstance)
+    $finishMethod = $layoutType.GetMethod('Finish', $anyInstance)
+
+    function Invoke-LayoutHeading([string]$Title, [string]$Description, $Key) {
+        $headingArguments = New-Object object[] 3
+        $headingArguments[0] = $Title
+        $headingArguments[1] = $Description
+        $headingArguments[2] = $Key
+        $headingMethod.Invoke($layout, $headingArguments) | Out-Null
+    }
+
+    function Invoke-LayoutRow([string]$Text) {
+        $rowArguments = New-Object object[] 6
+        $rowArguments[0] = $null
+        $rowArguments[1] = ([Activator]::CreateInstance($splitButtonType)).PSObject.BaseObject
+        $rowArguments[2] = $Text
+        $rowArguments[3] = [int]24
+        $rowArguments[4] = [int]150
+        $rowArguments[5] = [int]430
+        $rowMethod.Invoke($layout, $rowArguments) | Out-Null
+    }
+
+    Invoke-LayoutHeading 'First' 'First section' $null
+    Invoke-LayoutRow 'One'
+    $dividerMethod.Invoke($layout, (New-Object object[] 0)) | Out-Null
+    Invoke-LayoutHeading 'Second' 'Second section' 'gated'
+    Invoke-LayoutRow 'Two'
+    $finishArguments = New-Object object[] 1
+    $finishArguments[0] = [int]0
+    $finishMethod.Invoke($layout, $finishArguments) | Out-Null
+
+    $builtSections = @($reassignType.GetField('pageSections',
+        [Reflection.BindingFlags]'NonPublic,Instance').GetValue($layoutOwner)[$layoutPage])
+    Assert-True ($builtSections.Count -eq 2) `
+        "Each heading must open a section: got $($builtSections.Count), expected 2."
+    $seenControls = New-Object 'Collections.Generic.List[object]'
+    foreach ($builtSection in $builtSections) {
+        foreach ($sectionControl in $sectionType.GetField('Controls').GetValue($builtSection)) {
+            Assert-True (-not $seenControls.Contains($sectionControl)) `
+                'A control belongs to two sections, so reflow would move it twice.'
+            $seenControls.Add($sectionControl) | Out-Null
+        }
+    }
+    $firstBottom = [int]$sectionType.GetField('DesignBottom').GetValue($builtSections[0])
+    $secondTop = [int]$sectionType.GetField('DesignTop').GetValue($builtSections[1])
+    Assert-True ($firstBottom -eq $secondTop) `
+        "Sections must tile: first ends at $firstBottom, second starts at $secondTop."
+
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {
     Pop-Location

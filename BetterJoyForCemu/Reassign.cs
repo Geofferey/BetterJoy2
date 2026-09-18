@@ -2259,9 +2259,11 @@ namespace BetterJoyForCemu {
             // page, so a section that isn't shown reserves no space.
             public void Heading(string title, string description, string key = null) {
                 // A pending divider introduces this section, so the previous one ends at the
-                // divider rather than after it - otherwise consecutive sections overlap by the
-                // divider-to-heading gap and stacking them would creep the page upward.
-                CloseSection(pendingDividerIndex >= 0 ? pendingDividerY : Y);
+                // divider rather than after it - in height and in membership alike. Closing it
+                // past the divider handed the same control to both sections, and reflow then moved
+                // it twice, dragging content up across the divider above it.
+                CloseSection(pendingDividerIndex >= 0 ? pendingDividerY : Y,
+                    pendingDividerIndex >= 0 ? pendingDividerIndex : page.Controls.Count);
                 current = new ProfileSection {
                     Key = key,
                     StartIndex = pendingDividerIndex >= 0 ? pendingDividerIndex : page.Controls.Count,
@@ -2312,7 +2314,7 @@ namespace BetterJoyForCemu {
             // Closes the final section and publishes the page's layout. Required on any page that
             // gates a section, so hiding one can move every section below it.
             public void Finish(int bottomPadding = 0) {
-                CloseSection(Y);
+                CloseSection(Y, page.Controls.Count);
                 page.AutoScrollMinSize = new Size(0, Y + bottomPadding);
                 owner.RegisterPageSections(page, sections, bottomPadding);
             }
@@ -2321,10 +2323,10 @@ namespace BetterJoyForCemu {
             // indices that a later BringToFront/SetChildIndex could invalidate. Sections tile
             // exactly - one ends where the next begins - so reflowing with everything visible
             // reproduces the built layout unchanged.
-            private void CloseSection(int bottom) {
+            private void CloseSection(int bottom, int endIndex) {
                 if (current == null)
                     return;
-                for (int i = current.StartIndex; i < page.Controls.Count; i++)
+                for (int i = current.StartIndex; i < endIndex && i < page.Controls.Count; i++)
                     current.Controls.Add(page.Controls[i]);
                 current.DesignBottom = bottom;
                 sections.Add(current);
