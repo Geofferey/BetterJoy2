@@ -200,6 +200,11 @@ namespace BetterJoyForCemu {
         private const byte DualSenseValidLightingFlag2 =
             DualSenseValidLedBrightnessControl | DualSenseValidLightbarSetupControl;
         private const byte DualSensePowerSaveMicMute = 0x10; // DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE
+        // Powers down the whole audio DSP - speaker, headphone and microphone processing alike.
+        // Not in hid-playstation; documented as PowerSave.DisableAudio by nsfm/dualsense-ts
+        // (https://github.com/nsfm/dualsense-ts, src/hid/command.ts), in the same
+        // power_save_control byte and under the same valid_flag1 enable as the mic mute above.
+        private const byte DualSensePowerSaveDisableAudio = 0x08;
         // Two frames keep startup latency near 21 ms while retaining one frame of capture/IPC
         // cushion. A transient underrun is handled below by withholding the missing speaker report
         // instead of inserting a hard-silence Opus packet into otherwise continuous audio.
@@ -275,6 +280,10 @@ namespace BetterJoyForCemu {
         // active. See WriteRetainedRumbleAndTriggerState.
         private volatile bool microphoneMuted;
         private volatile bool microphoneMuteStatePending;
+        // Profile-side half of the audio DSP power-down: true while nothing needs the speaker or
+        // headphone path (Controller audio off, or Require headphones with the jack empty). The
+        // DSP only actually powers down while the mic is muted too - see PowerSaveControlByte.
+        private volatile bool audioOutputIdle;
         // USB has no equivalent to StartBluetoothMicrophone's "genuine fresh start" moment - the
         // mic is a native USB Audio Class endpoint, no BetterJoy-owned capture pipeline to start
         // at all - so ApplyUsbMicrophoneMuteDefault needs its own one-shot latch instead, reset
@@ -3475,7 +3484,44 @@ namespace BetterJoyForCemu {
         // allowed to drift from what SetMicrophoneMuted's caller asked for.
         private void WriteMicrophoneMuteState(byte[] report, int offset, bool muted) {
             report[offset + 8] = MicIndicatorLedByte(muted); // mute_button_led
-            report[offset + 9] = muted ? DualSensePowerSaveMicMute : (byte)0; // power_save_control
+            report[offset + 9] = PowerSaveControlByte(muted, audioOutputIdle); // power_save_control
+        }
+
+        // The DSP carries the microphone as well as the outputs, so it may only power down while
+        // the mic is muted and no output is wanted. Unmuting - the physical button included -
+        // therefore clears DisableAudio in the same report that unmutes, and plugging headphones
+        // in under Require headphones clears it through SetAudioOutputIdle.
+        internal static byte PowerSaveControlByte(bool microphoneMuted, bool audioOutputIdle) {
+            if (!microphoneMuted)
+                return 0;
+            return audioOutputIdle
+                ? (byte)(DualSensePowerSaveMicMute | DualSensePowerSaveDisableAudio)
+                : DualSensePowerSaveMicMute;
+        }
+
+        // Transition-only, like SilenceControllerAudio: profile reconciliation calls this every
+        // scan pass. Program.cs calls it before PrepareUsbAudio/StartBluetoothAudioStream, so on
+        // the way back up the DSP is powered before anything writes volume or streams audio.
+        public void SetAudioOutputIdle(bool idle) {
+            if (audioOutputIdle == idle)
+                return;
+
+            audioOutputIdle = idle;
+            AudioDebugLog.Write("DualSensePower",
+                "audioOutputIdle=" + idle + " micMuted=" + microphoneMuted +
+                " powerSave=0x" + PowerSaveControlByte(microphoneMuted, idle).ToString("X2"));
+            // With the mic live the byte doesn't change, so there's nothing to publish.
+            if (!microphoneMuted)
+                return;
+
+            // Same publication path SetMicrophoneMuted uses: the 0x36 carrier picks the byte up
+            // through bluetoothOutputStateDirty, everything else through the rumble report.
+            lock (bluetoothAudioStateLock) {
+                lock (outputReportLock)
+                    bluetoothOutputStateDirty = true;
+            }
+            microphoneMuteStatePending = true;
+            SendDualSenseRumble(currentLeftMotor, currentRightMotor);
         }
 
         // "Mic indicator" profile option: what the mute-button LED actually shows, independent of
@@ -3762,10 +3808,9 @@ namespace BetterJoyForCemu {
         // that either: they set valid_flag0 to DualSenseValidRumbleAndTriggers, which omits the
         // audio-volume validity bits, so their zeroed volume bytes are ignored by the controller.
         //
-        // There is no DAC or amp power bit to use instead. power_save_control's only defined bit
-        // is MIC_MUTE (BIT 4) - confirmed against both the upstream Linux hid-playstation defines
-        // and DS4Windows's own DualSense implementation - so zeroed volume is as close to "output
-        // off" as this protocol goes.
+        // Zeroed volume is still needed alongside power_save_control's DisableAudio bit, which
+        // only powers the DSP down while the mic is muted too (see SetAudioOutputIdle). With the
+        // mic live the DSP stays up, and these zeroed levels are what keep the outputs silent.
         //
         // Deliberately transition-only. Profile reconciliation calls this every scan pass, and
         // re-sending an identical report would cost battery for nothing: output reports on this

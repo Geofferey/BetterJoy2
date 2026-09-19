@@ -448,7 +448,10 @@ this repository:
   incorporated into this repository. The physical headphone/microphone detection bits and common
   input/output report layout were independently cross-checked against Sony's upstream Linux
   [`hid-playstation` driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c)
-  (GPL-2.0-or-later).
+  (GPL-2.0-or-later). The `power_save_control` audio-DSP disable bit, which that driver does not
+  define, is documented by [nsfm/dualsense-ts](https://github.com/nsfm/dualsense-ts)
+  (LGPL-3.0 reference project) as `PowerSave.DisableAudio`; only the bit value is used, and no
+  source code from that project is incorporated.
 * DualSense Opus encoding uses [Concentus](https://github.com/lostromb/concentus) 2.2.2 by Logan
   Stromberg, a managed C# implementation of the Xiph.Org Opus codec distributed under its
   BSD-style license. [NAudio](https://github.com/naudio/NAudio) (MIT) supplies Windows WASAPI

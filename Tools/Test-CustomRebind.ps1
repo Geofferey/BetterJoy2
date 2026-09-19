@@ -701,6 +701,26 @@ try {
     Assert-True ($rescanSetting.value -eq 'Enabled') `
         'App.config shipped an OpenRgbRescanMode default other than Enabled.'
 
+    # User contract: the DualSense audio DSP (power_save_control DisableAudio, 0x08) powers down
+    # only while the mic is muted AND no output is wanted - Controller audio off, or Require
+    # headphones with the jack empty. The DSP carries the mic too, so a live mic always keeps it
+    # up, and the mic-mute bit (0x10) keeps its existing meaning either way.
+    $dualSenseType = $assembly.GetType('BetterJoyForCemu.DualSenseController', $true)
+    $powerSaveByte = $dualSenseType.GetMethod(
+        'PowerSaveControlByte', [Reflection.BindingFlags]'Static,NonPublic')
+    $powerSaveCases = @(
+        @{ Muted = $true; Idle = $true; Expected = 0x18; Why = 'muted mic with no output wanted did not power the DSP down' },
+        @{ Muted = $true; Idle = $false; Expected = 0x10; Why = 'the DSP powered down while an output was still wanted' },
+        @{ Muted = $false; Idle = $true; Expected = 0x00; Why = 'the DSP powered down under a live microphone' },
+        @{ Muted = $false; Idle = $false; Expected = 0x00; Why = 'power_save_control was set with the mic live and output wanted' }
+    )
+    foreach ($powerSaveCase in $powerSaveCases) {
+        $actual = [int]$powerSaveByte.Invoke($null, @($powerSaveCase.Muted, $powerSaveCase.Idle))
+        Assert-True ($actual -eq $powerSaveCase.Expected) `
+            ("DualSense power_save_control: $($powerSaveCase.Why) " +
+             "(got 0x{0:X2}, expected 0x{1:X2})." -f $actual, $powerSaveCase.Expected)
+    }
+
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {
     Pop-Location

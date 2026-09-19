@@ -719,6 +719,13 @@ namespace BetterJoyForCemu {
                     bool usbHeadphonesSatisfied = !requireHeadphones ||
                         (jc is DualShock4Controller ds4Headphones && ds4Headphones.HeadphonesConnected) ||
                         (jc is DualSenseController dualSenseHeadphones && dualSenseHeadphones.HeadphonesConnected);
+                    // Same condition both transports use below to decide whether any output plays,
+                    // so the DualSense audio DSP powers down exactly when none does - Controller
+                    // audio off, or Require headphones with the jack empty - and back up on the
+                    // headphone plug-in that re-runs this pass. Ahead of PrepareUsbAudio and
+                    // StartBluetoothAudioStream so the DSP is up before either touches it.
+                    if (jc is DualSenseController dualSenseAudioPower)
+                        dualSenseAudioPower.SetAudioOutputIdle(!(audioEnabled && usbHeadphonesSatisfied));
                     if (audioEnabled && usbHeadphonesSatisfied)
                         jc.PrepareUsbAudio(audioVolume);
                     else
