@@ -698,6 +698,15 @@ namespace BetterJoyForCemu {
         protected float diagIntervalMinGyrGX = float.MaxValue, diagIntervalMaxGyrGX = float.MinValue;
         protected float diagIntervalMinRollDeg = float.MaxValue, diagIntervalMaxRollDeg = float.MinValue;
 
+        // Exact processed sensor values handed to GyroMousePlayerSpace.Update: canonical frame,
+        // stationary bias removed, and Re-Centre Gyro's neutral-frame rotation already applied.
+        // Keep the last sample beside interval statistics so the instantaneous fused/target
+        // gravity vectors below can be compared with the exact input that produced them, while
+        // min/max still expose a brief cross-axis spike that a 150ms average could hide.
+        protected Vector3 diagIntervalSumFusionGyro, diagLastFusionGyro, diagLastFusionAccel;
+        protected Vector3 diagIntervalMinFusionGyro = new Vector3(float.MaxValue);
+        protected Vector3 diagIntervalMaxFusionGyro = new Vector3(float.MinValue);
+
         // Timing evidence for the Joy-Con-only jagged-pointer investigation. HID arrival is
         // captured immediately after hid_read_timeout returns a report; pointer request timing
         // is captured immediately before BetterJoy hands a non-zero delta to its host. Keeping
@@ -886,10 +895,12 @@ namespace BetterJoyForCemu {
             ResetGyroMouseTimingInterval();
         }
 
-        // Called for every sub-sample - accumulates this interval's stats and runs the stillness
-        // streak check - and again whenever a flush actually injects movement (with the real
-        // dx/dy that were sent, 0/0 otherwise). Enqueues at most once per DiagLogIntervalSeconds.
-        protected void RecordGyroMouseDiagnosticSample(int dx, int dy, float rollDeg, float yawRate, float pitchRate) {
+        // Called exactly once for every active sub-sample. A flush sample carries the real dx/dy
+        // injected into the mouse; an intermediate sample carries 0/0. Enqueues at most once per
+        // DiagLogIntervalSeconds.
+        protected void RecordGyroMouseDiagnosticSample(int dx, int dy, float rollDeg,
+                                                       float yawRate, float pitchRate,
+                                                       Vector3 fusionGyro, Vector3 fusionAccel) {
             if (!GyroMouseDebugLogging)
                 return;
 
@@ -918,6 +929,12 @@ namespace BetterJoyForCemu {
 
             diagIntervalSumYawRate += yawRate;
             diagIntervalSumPitchRate += pitchRate;
+
+            diagIntervalSumFusionGyro += fusionGyro;
+            diagIntervalMinFusionGyro = Vector3.Min(diagIntervalMinFusionGyro, fusionGyro);
+            diagIntervalMaxFusionGyro = Vector3.Max(diagIntervalMaxFusionGyro, fusionGyro);
+            diagLastFusionGyro = fusionGyro;
+            diagLastFusionAccel = fusionAccel;
 
             UpdateStillnessStreak();
 
@@ -959,6 +976,9 @@ namespace BetterJoyForCemu {
                 ? diagIntervalOutsideHidMinMs : 0.0;
             double outsideHidMaximum = diagIntervalHidPhaseCount > 0
                 ? diagIntervalOutsideHidMaxMs : 0.0;
+            Vector3 fusedGravity = gyroMousePlayerSpace.Gravity;
+            Vector3 targetGravity = gyroMousePlayerSpace.TargetGravity;
+            Vector3 propagationGyro = gyroMousePlayerSpace.LastPropagationGyro;
 
             string line = string.Format(
                 "{0:HH:mm:ss.fff}  Y(pitch,raw): avg={1,7:F3} min={2,7:F3} max={3,7:F3} pos={4,4} neg={5,4}  |  Z(yaw,raw): avg={6,7:F3} min={7,7:F3} max={8,7:F3}  |  X(roll rate): avg={9,7:F3} min={10,7:F3} max={11,7:F3}  |  Roll angle(quat): avg={12,7:F2} min={13,7:F2} max={14,7:F2}deg  |  mapped: yaw avg={15,7:F3} pitch avg={16,7:F3}  |  raw gyr_r[1] avg={17,8:F1} neutral({18})={19,8:F1}  |  interval dx={20,5} dy={21,5}  samples={22,4}",
@@ -973,7 +993,22 @@ namespace BetterJoyForCemu {
                 allowCalibration ? "activeData[1]" : "gyr_neutral[1]", neutralValue,
                 diagIntervalDx, diagIntervalDy, diagIntervalSampleCount);
             line += string.Format(
-                "  |  gravity trust={0,5:F3} yaw-dom={1,5:F3} pitch-dom={2,5:F3} roll-dom={3,5:F3} error={4,6:F2}deg y-leak={5,7:F4} y-corr={6,7:F3} p-leak={7,7:F4} p-corr={8,7:F3}  |  timing[{9}]: HID ms avg={10,6:F2} min={11,6:F2} max={12,6:F2} n={13,3}; timer d avg={14,5:F2} min={15,3} max={16,3} unexpected={17,3}; phase ms/report HID-wait avg={18,6:F2} min={19,6:F2} max={20,6:F2}, outside-HID avg={21,6:F2} min={22,6:F2} max={23,6:F2} n={24,3}; pointer-request ms avg={25,6:F2} min={26,6:F2} max={27,6:F2} n={28,3}\r\n",
+                "  |  fusion-prop gyro last=({0,7:F3},{1,7:F3},{2,7:F3})",
+                propagationGyro.X, propagationGyro.Y, propagationGyro.Z);
+            line += string.Format(
+                "  |  fusion-in gyro last=({0,7:F3},{1,7:F3},{2,7:F3}) avg=({3,7:F3},{4,7:F3},{5,7:F3}) min=({6,7:F3},{7,7:F3},{8,7:F3}) max=({9,7:F3},{10,7:F3},{11,7:F3}) accel=({12,7:F4},{13,7:F4},{14,7:F4}) |g|={15,6:F4}  |  gravity fused=({16,7:F4},{17,7:F4},{18,7:F4}) target=({19,7:F4},{20,7:F4},{21,7:F4}) trust={22,5:F3} yaw-dom={23,5:F3} pitch-dom={24,5:F3} roll-dom={25,5:F3} error={26,6:F2}deg y-leak={27,7:F4} y-corr={28,7:F3} p-leak={29,7:F4} p-corr={30,7:F3}  |  timing[{31}]: HID ms avg={32,6:F2} min={33,6:F2} max={34,6:F2} n={35,3}; timer d avg={36,5:F2} min={37,3} max={38,3} unexpected={39,3}; phase ms/report HID-wait avg={40,6:F2} min={41,6:F2} max={42,6:F2}, outside-HID avg={43,6:F2} min={44,6:F2} max={45,6:F2} n={46,3}; pointer-request ms avg={47,6:F2} min={48,6:F2} max={49,6:F2} n={50,3}\r\n",
+                diagLastFusionGyro.X, diagLastFusionGyro.Y, diagLastFusionGyro.Z,
+                diagIntervalSumFusionGyro.X / diagIntervalSampleCount,
+                diagIntervalSumFusionGyro.Y / diagIntervalSampleCount,
+                diagIntervalSumFusionGyro.Z / diagIntervalSampleCount,
+                diagIntervalMinFusionGyro.X, diagIntervalMinFusionGyro.Y,
+                diagIntervalMinFusionGyro.Z,
+                diagIntervalMaxFusionGyro.X, diagIntervalMaxFusionGyro.Y,
+                diagIntervalMaxFusionGyro.Z,
+                diagLastFusionAccel.X, diagLastFusionAccel.Y, diagLastFusionAccel.Z,
+                diagLastFusionAccel.Length(),
+                fusedGravity.X, fusedGravity.Y, fusedGravity.Z,
+                targetGravity.X, targetGravity.Y, targetGravity.Z,
                 gyroMousePlayerSpace.GravityCorrectionTrust,
                 gyroMousePlayerSpace.YawDominance,
                 gyroMousePlayerSpace.PitchDominance,
@@ -1004,6 +1039,10 @@ namespace BetterJoyForCemu {
             diagIntervalMinGyrGZ = float.MaxValue; diagIntervalMaxGyrGZ = float.MinValue;
             diagIntervalMinGyrGX = float.MaxValue; diagIntervalMaxGyrGX = float.MinValue;
             diagIntervalMinRollDeg = float.MaxValue; diagIntervalMaxRollDeg = float.MinValue;
+            diagIntervalSumFusionGyro = Vector3.Zero;
+            diagLastFusionGyro = Vector3.Zero; diagLastFusionAccel = Vector3.Zero;
+            diagIntervalMinFusionGyro = new Vector3(float.MaxValue);
+            diagIntervalMaxFusionGyro = new Vector3(float.MinValue);
             ResetGyroMouseTimingInterval();
         }
 
@@ -1911,7 +1950,8 @@ namespace BetterJoyForCemu {
                 pendingMouseDx = pendingMouseDy = 0.0f;
                 filteredGyroMouseRate = Vector2.Zero;
                 filteredGyroMouseRateInitialized = false;
-                RecordGyroMouseDiagnosticSample(0, 0, 0.0f, 0.0f, 0.0f);
+                RecordGyroMouseDiagnosticSample(0, 0, 0.0f, 0.0f, 0.0f,
+                                                mouseGyroRate, mouseAccel);
                 return;
             }
 
@@ -1968,7 +2008,8 @@ namespace BetterJoyForCemu {
             float rollDeg = rollRad * (180.0f / (float)Math.PI);
 
             if (!flushToMouse) {
-                RecordGyroMouseDiagnosticSample(0, 0, rollDeg, yawRate, pitchRate);
+                RecordGyroMouseDiagnosticSample(0, 0, rollDeg, yawRate, pitchRate,
+                                                mouseGyroRate, mouseAccel);
                 return;
             }
 
@@ -1980,7 +2021,8 @@ namespace BetterJoyForCemu {
             if (dx != 0 || dy != 0)
                 RecordGyroMousePointerRequestTiming();
 
-            RecordGyroMouseDiagnosticSample(dx, dy, rollDeg, yawRate, pitchRate);
+            RecordGyroMouseDiagnosticSample(dx, dy, rollDeg, yawRate, pitchRate,
+                                            mouseGyroRate, mouseAccel);
 
             if (dx != 0 || dy != 0)
                 MoveGyroMouseBy(dx, dy);

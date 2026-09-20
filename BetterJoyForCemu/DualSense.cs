@@ -380,6 +380,10 @@ namespace BetterJoyForCemu {
             // so it stays off there and on only here.
             gyroMousePlayerSpace.EnableExtendedAxisCorrection = true;
             gyroStickPlayerSpace.EnableExtendedAxisCorrection = true;
+            // DualSense roll is reversed only in the gravity-propagation basis. Keep direct
+            // mouse yaw/pitch untouched; GyroMousePlayerSpace isolates the roll component using
+            // accelerometer gravity so ordinary yaw at a tilted resting angle is not inverted.
+            gyroMousePlayerSpace.CorrectMeasuredRollPropagation = true;
         }
 
         // No shared shell worth extracting - see Controller.Attach's abstract declaration. This is

@@ -80,6 +80,9 @@ namespace BetterJoyForCemu {
         private const float EvenLeakReleaseHalfTime = 0.50f;
 
         private Vector3 gravity;
+        // Most recent accelerometer-derived gravity direction, retained for diagnostics so it
+        // can be compared with the gyro-propagated/fused gravity vector at the same log instant.
+        private Vector3 targetGravity;
         private Vector3 smoothedAccel;
         private float shakiness;
         private bool gravityInitialized;
@@ -92,6 +95,7 @@ namespace BetterJoyForCemu {
         private float evenYawLeakCorrection;
         private float signedPitchLeakRatio;
         private float signedPitchLeakCorrection;
+        private Vector3 lastPropagationGyro;
 
         // Gates every generalization beyond 2027652's original yaw-dominant-only formula: pitch
         // dominance and roll dominance both folded into gravity-trust reduction, and pitch->yaw
@@ -105,7 +109,17 @@ namespace BetterJoyForCemu {
         // opt-in rather than assumed to generalize - set true only from DualSenseController.
         public bool EnableExtendedAxisCorrection;
 
+        // DualSense reports roll with the opposite propagation sense from the pitch/yaw basis
+        // already proven by its direct mouse output. Correct only the component around the
+        // measured player-relative roll axis, and only for gravity propagation. Building that
+        // axis from accelerometer gravity keeps it independent of the fused estimate it is
+        // repairing; using the fused estimate here creates a positive feedback loop once roll
+        // tracking falls behind. Mouse mapping continues to receive the original gyro vector.
+        public bool CorrectMeasuredRollPropagation;
+
         public Vector3 Gravity => gravity;
+        public Vector3 TargetGravity => targetGravity;
+        public Vector3 LastPropagationGyro => lastPropagationGyro;
         public float GravityCorrectionTrust => gravityCorrectionTrust;
         public float YawDominance => yawDominance;
         public float PitchDominance => pitchDominance;
@@ -118,6 +132,7 @@ namespace BetterJoyForCemu {
 
         public void Reset() {
             gravity = Vector3.Zero;
+            targetGravity = Vector3.Zero;
             smoothedAccel = Vector3.Zero;
             shakiness = 0.0f;
             gravityInitialized = false;
@@ -130,12 +145,14 @@ namespace BetterJoyForCemu {
             evenYawLeakCorrection = 0.0f;
             signedPitchLeakRatio = 0.0f;
             signedPitchLeakCorrection = 0.0f;
+            lastPropagationGyro = Vector3.Zero;
         }
 
         public void Update(Vector3 gyroDegPerSec, Vector3 accel, float deltaTime) {
             float accelMagnitude = accel.Length();
-            Vector3 rotationRadians = gyroDegPerSec * DegreesToRadians;
-            float angularSpeed = rotationRadians.Length();
+            Vector3 measuredGravity = accelMagnitude > 0.0f
+                ? -accel / accelMagnitude
+                : targetGravity;
 
             // BetterJoy has already transformed and calibrated this sample into the controller's
             // active coordinate basis. Seed gravity from it immediately instead of spending the
@@ -143,7 +160,8 @@ namespace BetterJoyForCemu {
             // removes the slow correction users could feel after attach or a Joy-Con layout
             // change; the guarded fusion below still handles subsequent accumulated error.
             if (!gravityInitialized && accelMagnitude > 0.0f) {
-                gravity = -accel / accelMagnitude;
+                targetGravity = measuredGravity;
+                gravity = targetGravity;
                 smoothedAccel = accel;
                 shakiness = 0.0f;
                 gravityInitialized = true;
@@ -154,8 +172,15 @@ namespace BetterJoyForCemu {
                 gravityErrorDegrees = 0.0f;
                 evenYawLeakCorrection = 0.0f;
                 signedPitchLeakCorrection = 0.0f;
+                lastPropagationGyro = gyroDegPerSec;
                 return;
             }
+
+            lastPropagationGyro = CorrectMeasuredRollPropagation && accelMagnitude > 0.0f
+                ? ReflectMeasuredRollComponent(gyroDegPerSec, measuredGravity)
+                : gyroDegPerSec;
+            Vector3 rotationRadians = lastPropagationGyro * DegreesToRadians;
+            float angularSpeed = rotationRadians.Length();
 
             // Gravity is world-fixed, so in controller-local coordinates it rotates opposite the
             // controller. Doing this from gyro preserves immediate response while accelerometer
@@ -173,7 +198,7 @@ namespace BetterJoyForCemu {
 
             // BetterJoy's accelerometer reports apparent gravity upward at rest, so the physical
             // down/gravity vector is its negation. Its calibrated nominal magnitude is 1 g.
-            Vector3 targetGravity = -Vector3.Normalize(accel);
+            targetGravity = measuredGravity;
             Vector3 gravityError = targetGravity - gravity;
             float errorLength = gravityError.Length();
             Vector3 gravityDirection = gravity.LengthSquared() > 0.0f
@@ -290,6 +315,31 @@ namespace BetterJoyForCemu {
             gravity = correction.LengthSquared() < gravityError.LengthSquared()
                 ? gravity + correction
                 : targetGravity;
+        }
+
+        private Vector3 ReflectMeasuredRollComponent(Vector3 gyroDegPerSec,
+                                                       Vector3 measuredGravity) {
+            if (measuredGravity.LengthSquared() <= 0.0f)
+                return gyroDegPerSec;
+
+            Vector3 gravityDirection = Vector3.Normalize(measuredGravity);
+            Vector3 pitchAxis = ComputeWorldPitchAxis(gravityDirection,
+                                                       out float ignoredSideReduction);
+            if (pitchAxis.LengthSquared() <= 0.0f)
+                return gyroDegPerSec;
+
+            // gravity, pitch, roll form an orthogonal player-relative basis. Reflecting only the
+            // roll projection reverses its propagation sense while leaving any simultaneous yaw
+            // and pitch components mathematically unchanged. This is deliberately not a blanket
+            // local-Z sign flip: a tilted controller's legitimate yaw contains local Z.
+            Vector3 rollAxis = Vector3.Cross(gravityDirection, pitchAxis);
+            float rollAxisLength = rollAxis.Length();
+            if (rollAxisLength <= 0.0f)
+                return gyroDegPerSec;
+            rollAxis /= rollAxisLength;
+
+            float measuredRollRate = Vector3.Dot(gyroDegPerSec, rollAxis);
+            return gyroDegPerSec - 2.0f * measuredRollRate * rollAxis;
         }
 
         public void Map(Vector3 gyroDegPerSec, float deltaTime, out float yawRate,
