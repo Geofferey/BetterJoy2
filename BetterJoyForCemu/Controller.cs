@@ -2692,8 +2692,10 @@ namespace BetterJoyForCemu {
             int moveY = (int)scaledY;
             touchpadMovementRemainderX = scaledX - moveX;
             touchpadMovementRemainderY = scaledY - moveY;
-            if ((moveX != 0 || moveY != 0) && form != null)
-                form.SimulateMoveBy(moveX, moveY);
+            if (moveX != 0 || moveY != 0)
+                EmitPointerMove(moveX, moveY,
+                    ProfileBoolOption("TouchpadMouseDirectCursor"),
+                    ProfileBoolOption("TouchpadMouseScreenWrap"));
         }
 
         protected void ReleaseTouchpadMouseActions() {

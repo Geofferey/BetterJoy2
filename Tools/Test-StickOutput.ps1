@@ -185,6 +185,36 @@ try {
         Assert-Check ($optionKeys -contains $optionKey) "Option key $optionKey is not registered."
     }
 
+    # User contract: direct cursor and screen wrap are per profile AND per pane - gyro, touchpad
+    # and sticks each route their own pointer output. The two gyro keys keep their old global
+    # names so LegacyOptionValue still reads the App.config value as the fallback, which is what
+    # stops an existing setup changing behaviour.
+    foreach ($cursorKey in 'GyroMouseDirectCursor', 'GyroMouseScreenWrap',
+                           'TouchpadMouseDirectCursor', 'TouchpadMouseScreenWrap',
+                           'StickMouseDirectCursor', 'StickMouseScreenWrap') {
+        Assert-Check ($optionKeys -contains $cursorKey) `
+            "Cursor option $cursorKey is not registered, so the pane cannot save it."
+    }
+    $legacyOptionValue = $mappingsType.GetMethod('LegacyOptionValue', $staticNonPublic)
+    $appConfig = [xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\BetterJoyForCemu\App.config') -Raw)
+    foreach ($cursorKey in 'GyroMouseDirectCursor', 'GyroMouseScreenWrap',
+                           'TouchpadMouseDirectCursor', 'TouchpadMouseScreenWrap',
+                           'StickMouseDirectCursor', 'StickMouseScreenWrap') {
+        $shipped = $appConfig.configuration.appSettings.add |
+            Where-Object { $_.key -eq $cursorKey }
+        Assert-Check ($null -ne $shipped) "App.config does not ship a $cursorKey default."
+        [Configuration.ConfigurationManager]::AppSettings.Set($cursorKey, $shipped.value)
+        Assert-Check ([string]$legacyOptionValue.Invoke($null, @($cursorKey)) -eq $shipped.value) `
+            "$cursorKey did not fall back to its App.config value for a profile that never set it."
+    }
+    # Touchpad mouse has always emitted relative movement, so its pair must default off.
+    foreach ($relativeKey in 'TouchpadMouseDirectCursor', 'TouchpadMouseScreenWrap') {
+        $shipped = $appConfig.configuration.appSettings.add |
+            Where-Object { $_.key -eq $relativeKey }
+        Assert-Check ($shipped.value -eq 'false') `
+            "$relativeKey defaulted on, changing how touchpad mouse has always moved the pointer."
+    }
+
     # User contract: the directions default to W/A/S/D. Both default paths have to agree - Value()
     # falls through to LegacyValue, while middle-click-to-reset uses DefaultValue.
     $defaultValue = $mappingsType.GetMethod('DefaultValue', [Reflection.BindingFlags]'Static,Public')

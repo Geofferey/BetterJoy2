@@ -246,8 +246,12 @@ namespace BetterJoyForCemu {
             int moveY = (int)scaledY;
             stickMouseRemainderX = scaledX - moveX;
             stickMouseRemainderY = scaledY - moveY;
-            if (moveX != 0 || moveY != 0)
-                MoveGyroMouseBy(moveX, moveY); // inherits IsModifierHeld gating + cursor routing
+            // Same modifier gating gyro mouse applies (see MoveGyroMouseBy), but routed by the
+            // Sticks page's own cursor settings rather than the Gyro page's.
+            if ((moveX != 0 || moveY != 0) && !IsModifierHeld())
+                EmitPointerMove(moveX, moveY,
+                    ProfileBoolOption("StickMouseDirectCursor"),
+                    ProfileBoolOption("StickMouseScreenWrap"));
         }
 
         private void CollectStickKeyOutputs(float[] source, bool isLeftStick) {

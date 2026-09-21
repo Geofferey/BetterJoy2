@@ -41,8 +41,13 @@ namespace BetterJoyForCemu {
         // capturing a test.
         protected bool GyroMouseDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDebugLogging"]);
         protected bool GyroStickDebugLogging = Boolean.Parse(ConfigurationManager.AppSettings["GyroStickDebugLogging"]);
-        protected bool GyroMouseDirectCursor = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseDirectCursor"]);
-        protected bool GyroMouseScreenWrap = Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseScreenWrap"]);
+        // Per-profile, and live-reloaded, rather than read once at construction like the tuning
+        // constants around them: the Gyro pane edits these. The App.config entries of the same
+        // name stay the fallback LegacyOptionValue returns for a profile that never set them, so
+        // an existing setup keeps whatever it had. Touchpad and stick mouse have their own pair
+        // of keys - see ProcessTouchpadMouse and StickOutput.EmitStickMouse.
+        protected bool GyroMouseDirectCursor => ProfileBoolOption("GyroMouseDirectCursor");
+        protected bool GyroMouseScreenWrap => ProfileBoolOption("GyroMouseScreenWrap");
         protected int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
         protected int GyroMouseSensitivityY = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityY"]);
         const float GyroMouseDefaultScreenTraversalDegrees = 45.0f;
@@ -1523,9 +1528,20 @@ namespace BetterJoyForCemu {
             if (IsModifierHeld())
                 return;
 
-            if (!GyroMouseDirectCursor) {
+            EmitPointerMove(dx, dy, GyroMouseDirectCursor, GyroMouseScreenWrap);
+        }
+
+        // The one place a pointer delta leaves BetterJoy, shared by gyro, touchpad and stick
+        // mouse so all three route identically - each caller just supplies its own pane's two
+        // settings. Relative movement is what games expecting raw mouse input want; direct is
+        // exact pixel placement, and wrap only means anything on top of direct.
+        protected void EmitPointerMove(int dx, int dy, bool directCursor, bool screenWrap) {
+            if (form == null)
+                return;
+
+            if (!directCursor) {
                 form.SimulateMoveBy(dx, dy);
-            } else if (GyroMouseScreenWrap) {
+            } else if (screenWrap) {
                 form.SimulateWrappedCursorMoveBy(dx, dy);
             } else {
                 form.SimulateCursorMoveBy(dx, dy);

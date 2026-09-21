@@ -316,6 +316,14 @@ namespace BetterJoyForCemu {
             "StickMouseCurveLeft", "StickMouseCurveRight",
             "StickKeysThresholdLeft", "StickKeysThresholdRight",
             "StickInhibitLeft", "StickInhibitRight", "StickMouseInhibitButtons",
+            // Pointer routing, per pane: relative movement (what games wanting raw mouse input
+            // expect), exact pixel placement, or exact placement that wraps at the screen edge.
+            // The two gyro keys were global App.config settings first - keeping those exact names
+            // means LegacyOptionValue still reads the old global as the fallback, so an existing
+            // setup keeps behaving until the profile overrides it.
+            "GyroMouseDirectCursor", "GyroMouseScreenWrap",
+            "TouchpadMouseDirectCursor", "TouchpadMouseScreenWrap",
+            "StickMouseDirectCursor", "StickMouseScreenWrap",
         };
 
         // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected

@@ -27,6 +27,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_stick_curve = new ContextMenuStrip();
         ContextMenuStrip menu_stick_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_stick_hold_toggle = new ContextMenuStrip();
+        ContextMenuStrip menu_cursor_mode = new ContextMenuStrip();
         ContextMenuStrip menu_charging_indicator = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_axis_scale = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
@@ -369,6 +370,12 @@ namespace BetterJoyForCemu {
             menu_stick_hold_toggle.Items.Add(new ToolStripMenuItem("Toggle") { Tag = "false" });
             menu_stick_hold_toggle.ItemClicked += StickOptionMenu_ItemClicked;
 
+            // Shared by all six cursor selectors (gyro, touchpad and stick x direct/wrap) - each
+            // button carries its own option key on Tag, so one menu and one handler serve them.
+            menu_cursor_mode.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
+            menu_cursor_mode.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
+            menu_cursor_mode.ItemClicked += CursorModeMenu_ItemClicked;
+
             foreach (var indicator in ControllerMappings.ChargingIndicators)
                 menu_charging_indicator.Items.Add(
                     new ToolStripMenuItem(indicator.Label) { Tag = indicator.Value });
@@ -473,6 +480,15 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> stickMouseButtons = new List<SplitButton>();
         private SplitButton btn_stick_mouse_inhibit;
         private SplitButton btn_stick_hold_toggle;
+        // Pointer routing, one pair per pane. Screen wrap only means anything while its own
+        // pane's direct cursor is on, which is why each pair is loaded and greyed together
+        // (see UpdateCursorModeControlState).
+        private SplitButton btn_gyro_direct_cursor;
+        private SplitButton btn_gyro_screen_wrap;
+        private SplitButton btn_touchpad_direct_cursor;
+        private SplitButton btn_touchpad_screen_wrap;
+        private SplitButton btn_stick_direct_cursor;
+        private SplitButton btn_stick_screen_wrap;
         private SplitButton btn_ratchet_gyro;
         private SplitButton btn_guide;
         private SplitButton btn_mic_mute;
@@ -689,6 +705,19 @@ namespace BetterJoyForCemu {
                 "Withhold the controller buttons assigned to these mouse actions from the " +
                 "virtual controller while a stick is driving the pointer, so a button used to " +
                 "click doesn't also reach the game.");
+
+            btn_gyro_direct_cursor = CreateCursorModeButton(
+                "btn_gyro_direct_cursor", "GyroMouseDirectCursor", true, "gyro");
+            btn_gyro_screen_wrap = CreateCursorModeButton(
+                "btn_gyro_screen_wrap", "GyroMouseScreenWrap", false, "gyro");
+            btn_touchpad_direct_cursor = CreateCursorModeButton(
+                "btn_touchpad_direct_cursor", "TouchpadMouseDirectCursor", true, "the touchpad");
+            btn_touchpad_screen_wrap = CreateCursorModeButton(
+                "btn_touchpad_screen_wrap", "TouchpadMouseScreenWrap", false, "the touchpad");
+            btn_stick_direct_cursor = CreateCursorModeButton(
+                "btn_stick_direct_cursor", "StickMouseDirectCursor", true, "a stick");
+            btn_stick_screen_wrap = CreateCursorModeButton(
+                "btn_stick_screen_wrap", "StickMouseScreenWrap", false, "a stick");
 
             btn_stick_hold_toggle = CreateChoiceSplitButton(
                 "btn_stick_hold_toggle", menu_stick_hold_toggle);
@@ -1702,7 +1731,13 @@ namespace BetterJoyForCemu {
                 mouseActionTop + 3 * mouseActionRowSpacing, 24, 114, 181);
             tip_reassign.SetToolTip(btn_gyro_mouse_inhibit,
                 "Inhibit controller actions in mouse mode.");
-            layout.Advance(17 + 4 * mouseActionRowSpacing + 24);
+            // Pointer routing, per profile now - the same pair appears on the Touchpad and
+            // Sticks pages, each driving its own source.
+            AddMappingRow(page, null, btn_gyro_direct_cursor, "Direct cursor",
+                mouseActionTop + 4 * mouseActionRowSpacing, 24, 114, 181);
+            AddMappingRow(page, null, btn_gyro_screen_wrap, "Screen wrap",
+                mouseActionTop + 4 * mouseActionRowSpacing, 323, 423, 171);
+            layout.Advance(17 + 5 * mouseActionRowSpacing + 24);
 
             page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
@@ -1735,6 +1770,9 @@ namespace BetterJoyForCemu {
             layout.RowPair(
                 null, stickMouseButtons[4], "Scroll up", 24, 114, 181,
                 null, stickMouseButtons[5], "Scroll down", 323, 423, 171);
+            layout.RowPair(
+                null, btn_stick_direct_cursor, "Direct cursor", 24, 114, 181,
+                null, btn_stick_screen_wrap, "Screen wrap", 323, 423, 171);
             layout.Row(null, btn_stick_mouse_inhibit, "Inhibit", buttonX: 114, buttonWidth: 181);
 
             layout.Divider();
@@ -1866,7 +1904,13 @@ namespace BetterJoyForCemu {
                 actionTop + 3 * actionSpacing, 323, 423, 171);
             tip_reassign.SetToolTip(btn_touchpad_click_lockout,
                 "Prevent pointer movement while the physical touchpad is pressed.");
-            layout.Advance(17 + 4 * actionSpacing + 35);
+            // Touchpad mouse always emitted relative movement before these existed, which is why
+            // this pane's pair defaults off while the Gyro page's keeps its old global value.
+            AddMappingRow(page, null, btn_touchpad_direct_cursor, "Direct cursor",
+                actionTop + 4 * actionSpacing, 24, 114, 181);
+            AddMappingRow(page, null, btn_touchpad_screen_wrap, "Screen wrap",
+                actionTop + 4 * actionSpacing, 323, 423, 171);
+            layout.Advance(17 + 5 * actionSpacing + 35);
 
             page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
@@ -3392,6 +3436,9 @@ namespace BetterJoyForCemu {
                 adaptiveTriggerStrengthLeftInput, adaptiveTriggerStartRightInput,
                 adaptiveTriggerSecondaryRightInput, adaptiveTriggerStrengthRightInput,
                 btn_stick_hold_toggle,
+                btn_gyro_direct_cursor, btn_gyro_screen_wrap,
+                btn_touchpad_direct_cursor, btn_touchpad_screen_wrap,
+                btn_stick_direct_cursor, btn_stick_screen_wrap,
             };
             updatingProfileOptions = true;
             try {
@@ -3576,6 +3623,14 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "StickHoldToggle") ? "Hold" : "Toggle";
                 btn_stick_mouse_inhibit.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "StickMouseInhibitButtons") ? "Enabled" : "Disabled";
+                foreach (SplitButton cursorButton in new[] {
+                    btn_gyro_direct_cursor, btn_gyro_screen_wrap,
+                    btn_touchpad_direct_cursor, btn_touchpad_screen_wrap,
+                    btn_stick_direct_cursor, btn_stick_screen_wrap,
+                }) {
+                    cursorButton.Text = ControllerMappings.BoolOption(
+                        SelectedProfileId, (string)cursorButton.Tag) ? "Enabled" : "Disabled";
+                }
 
                 LoadAdaptiveTriggerMode(adaptiveTriggerModeLeftSelector,
                     ControllerMappings.OptionValue(SelectedProfileId,
@@ -3597,6 +3652,7 @@ namespace BetterJoyForCemu {
                 }
                 inactivitySelector.SelectedIndex = inactivityIndex;
                 UpdateAdaptiveTriggerControlState(true);
+                UpdateCursorModeControlState(true);
             } finally {
                 updatingProfileOptions = false;
             }
@@ -3673,7 +3729,7 @@ namespace BetterJoyForCemu {
                      menu_gyro_stick_mode, menu_gyro_stick_axis, menu_gyro_stick_percent,
                      menu_charging_indicator,
                      menu_default_orientation, menu_stick_key, menu_stick_curve,
-                     menu_stick_inhibit, menu_stick_hold_toggle }) {
+                     menu_stick_inhibit, menu_stick_hold_toggle, menu_cursor_mode }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 // Menu images only render inside the image margin, so the controller-button
@@ -4396,6 +4452,49 @@ namespace BetterJoyForCemu {
                 SetBindValue((string)target.Tag, values[offset]);
                 GetPrettyName(target);
             }
+        }
+
+        // One factory for all six, since only the wording differs: direct cursor places the
+        // pointer at an exact pixel, wrap continues from the opposite edge once it gets there.
+        private SplitButton CreateCursorModeButton(string name, string optionKey,
+                                                   bool isDirectCursor, string source) {
+            SplitButton button = CreateChoiceSplitButton(name, menu_cursor_mode);
+            button.Tag = optionKey;
+            tip_reassign.SetToolTip(button, isDirectCursor
+                ? "Place the pointer at an exact pixel while " + source + " drives it, instead " +
+                  "of sending relative mouse movement. Exact placement ignores Windows pointer " +
+                  "acceleration, which is what makes it track 1:1; turn it off for games that " +
+                  "need raw relative input."
+                : "When exact placement reaches an edge of the pointer's own monitor, continue " +
+                  "from the opposite edge, so travel is never limited by the screen. Only " +
+                  "applies while Direct cursor is enabled.");
+            return button;
+        }
+
+        // Wrap is meaningless without direct placement (the runtime ignores it), so it follows
+        // its own pane's direct setting rather than sitting there looking effective.
+        private void UpdateCursorModeControlState(bool hasProfile) {
+            foreach (var pair in new[] {
+                (direct: btn_gyro_direct_cursor, wrap: btn_gyro_screen_wrap),
+                (direct: btn_touchpad_direct_cursor, wrap: btn_touchpad_screen_wrap),
+                (direct: btn_stick_direct_cursor, wrap: btn_stick_screen_wrap),
+            }) {
+                if (pair.direct == null || pair.wrap == null)
+                    continue;
+                pair.wrap.Enabled = hasProfile && !String.IsNullOrEmpty(SelectedProfileId) &&
+                    ControllerMappings.BoolOption(SelectedProfileId, (string)pair.direct.Tag);
+            }
+        }
+
+        private void CursorModeMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            SplitButton button = menu_cursor_mode.Tag as SplitButton;
+            if (button == null || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string value = (string)e.ClickedItem.Tag;
+            ControllerMappings.SetOptionValue(SelectedProfileId, (string)button.Tag, value);
+            button.Text = e.ClickedItem.Text;
+            UpdateCursorModeControlState(true);
         }
 
         private static string StickCurveDisplayText(string curve) {
