@@ -266,6 +266,12 @@ namespace BetterJoyForCemu {
         // gyro-mouse, but keeps independent state so enabling one feature cannot perturb the
         // other. Fusion determines the gravity-relative axes; only gyro rate creates output.
         internal readonly GyroMousePlayerSpace gyroStickPlayerSpace = new GyroMousePlayerSpace();
+        // DualSense Rate mode can opt into the corrected roll-propagation basis without changing
+        // the gravity state used by Absolute/Hybrid modes. Keeping a second tracker matters when
+        // the two sticks use different modes at the same time; a shared corrected tracker would
+        // silently change the supposedly untouched Absolute/Hybrid stick too.
+        internal readonly GyroMousePlayerSpace gyroStickRatePlayerSpace =
+            new GyroMousePlayerSpace();
         // Independent per stick, not shared: GyroStickAxisXLeft/Right can differ, so each side
         // must accumulate its own X source (see ProcessGyroStickSample).
         protected float pendingGyroStickDxLeft, pendingGyroStickDyLeft;
@@ -1631,8 +1637,10 @@ namespace BetterJoyForCemu {
             heldGyroStickDxRight = heldGyroStickDyRight = 0.0f;
             gyroLeftStickActiveThisReport = false;
             gyroRightStickActiveThisReport = false;
-            if (resetPlayerSpace)
+            if (resetPlayerSpace) {
                 gyroStickPlayerSpace.Reset();
+                gyroStickRatePlayerSpace.Reset();
+            }
         }
 
         // Fraction of the physical stick that survives while a gyro-stick output is active - the
@@ -1736,6 +1744,10 @@ namespace BetterJoyForCemu {
             // Keep gravity current while the activation control is released so reactivation has
             // no stale-frame correction. Update cannot create output by itself.
             gyroStickPlayerSpace.Update(stickGyroRate, stickAccel, subSamplePeriod);
+            bool useCorrectedRateSpace =
+                gyroStickRatePlayerSpace.CorrectMeasuredRollPropagation;
+            if (useCorrectedRateSpace)
+                gyroStickRatePlayerSpace.Update(stickGyroRate, stickAccel, subSamplePeriod);
 
             bool anyStickActive = gyroLeftStickActiveThisReport ||
                                   gyroRightStickActiveThisReport;
@@ -1749,6 +1761,15 @@ namespace BetterJoyForCemu {
                 gyroStickPlayerSpace.Map(stickGyroRate, subSamplePeriod, out yawRate,
                                          out pitchRate, out rollRadians);
                 gyroStickLatestWorldRoll = rollRadians;
+                float correctedRateYaw = yawRate;
+                float correctedRatePitch = pitchRate;
+                if (useCorrectedRateSpace) {
+                    float ignoredRateRoll;
+                    gyroStickRatePlayerSpace.Map(stickGyroRate, subSamplePeriod,
+                                                 out correctedRateYaw,
+                                                 out correctedRatePitch,
+                                                 out ignoredRateRoll);
+                }
                 pendingGyroStickSamplePeriod += subSamplePeriod;
 
                 // Rate mode with roll selected as the X source uses the raw local roll rate
@@ -1758,20 +1779,30 @@ namespace BetterJoyForCemu {
                 // is "yaw", so this is unchanged (xRate == yawRate) unless a profile opts in.
                 // Accumulated independently per stick since left/right axis choice can differ.
                 if (gyroLeftStickActiveThisReport) {
-                    float xRate = GyroStickAxisXLeft == "roll" ? stickGyroRate.Z : yawRate;
+                    bool rateMode = GyroStickModeLeft == "rate";
+                    float selectedYaw = rateMode ? correctedRateYaw : yawRate;
+                    float selectedPitch = rateMode ? correctedRatePitch : pitchRate;
+                    float xRate = GyroStickAxisXLeft == "roll"
+                        ? stickGyroRate.Z
+                        : selectedYaw;
                     pendingGyroStickDxLeft += GyroStickSensitivityX * xRate *
                                               subSamplePeriod * degreesToRadians;
                     // The canonical Player Space pitch axis is opposite BetterJoy's virtual-stick
                     // Y convention. Positive mapped pitch therefore adds to stick Y here; the
                     // previous subtraction made raising/lowering aim feel inverted.
-                    pendingGyroStickDyLeft += GyroStickSensitivityY * pitchRate *
+                    pendingGyroStickDyLeft += GyroStickSensitivityY * selectedPitch *
                                               subSamplePeriod * degreesToRadians;
                 }
                 if (gyroRightStickActiveThisReport) {
-                    float xRate = GyroStickAxisXRight == "roll" ? stickGyroRate.Z : yawRate;
+                    bool rateMode = GyroStickModeRight == "rate";
+                    float selectedYaw = rateMode ? correctedRateYaw : yawRate;
+                    float selectedPitch = rateMode ? correctedRatePitch : pitchRate;
+                    float xRate = GyroStickAxisXRight == "roll"
+                        ? stickGyroRate.Z
+                        : selectedYaw;
                     pendingGyroStickDxRight += GyroStickSensitivityX * xRate *
                                                subSamplePeriod * degreesToRadians;
-                    pendingGyroStickDyRight += GyroStickSensitivityY * pitchRate *
+                    pendingGyroStickDyRight += GyroStickSensitivityY * selectedPitch *
                                                subSamplePeriod * degreesToRadians;
                 }
             }

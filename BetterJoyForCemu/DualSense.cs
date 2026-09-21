@@ -384,6 +384,10 @@ namespace BetterJoyForCemu {
             // mouse yaw/pitch untouched; GyroMousePlayerSpace isolates the roll component using
             // accelerometer gravity so ordinary yaw at a tilted resting angle is not inverted.
             gyroMousePlayerSpace.CorrectMeasuredRollPropagation = true;
+            // Gyro-to-stick keeps a separate corrected tracker used only by Rate mode. The
+            // existing gyroStickPlayerSpace remains the source for Absolute/Hybrid modes.
+            gyroStickRatePlayerSpace.EnableExtendedAxisCorrection = true;
+            gyroStickRatePlayerSpace.CorrectMeasuredRollPropagation = true;
         }
 
         // No shared shell worth extracting - see Controller.Attach's abstract declaration. This is
