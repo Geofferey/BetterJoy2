@@ -243,6 +243,11 @@ namespace BetterJoyForCemu {
             "stick_left_key_left", "stick_left_key_right",
             "stick_right_key_up", "stick_right_key_down",
             "stick_right_key_left", "stick_right_key_right",
+            // Mouse actions available while a stick is driving the pointer, mirroring the gyro
+            // mouse actions. Pointer lock is the stick's counterpart to Clench gyro: it freezes
+            // pointer travel while held without disturbing the clicks.
+            "stick_left_click", "stick_right_click", "stick_center_click",
+            "stick_scroll_up", "stick_scroll_down", "stick_pointer_lock",
         };
 
         // Profile-owned behavior which historically lived in App.config. App.config remains the
@@ -310,7 +315,7 @@ namespace BetterJoyForCemu {
             "StickMouseSensitivityXRight", "StickMouseSensitivityYRight",
             "StickMouseCurveLeft", "StickMouseCurveRight",
             "StickKeysThresholdLeft", "StickKeysThresholdRight",
-            "StickInhibitLeft", "StickInhibitRight",
+            "StickInhibitLeft", "StickInhibitRight", "StickMouseInhibitButtons",
         };
 
         // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected
@@ -352,6 +357,14 @@ namespace BetterJoyForCemu {
             new HashSet<string>(StringComparer.Ordinal) {
                 "active_stick_mouse_left", "active_stick_mouse_right",
                 "active_stick_keys_left", "active_stick_keys_right",
+            };
+        // Unbound until the user assigns them, stated explicitly rather than left to fall through
+        // to Config - these have no legacy App.config entry to migrate from, unlike the gyro
+        // mouse actions they mirror.
+        public static readonly HashSet<string> StickActionKeys =
+            new HashSet<string>(StringComparer.Ordinal) {
+                "stick_left_click", "stick_right_click", "stick_center_click",
+                "stick_scroll_up", "stick_scroll_down", "stick_pointer_lock",
             };
         // Both sticks default to the same WASD set. That can't collide: a stick's key output only
         // fires while its own active_stick_keys_* bind is on, and both of those default Disabled.
@@ -1087,7 +1100,8 @@ namespace BetterJoyForCemu {
                 return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
-            if (TouchpadActivationKeys.Contains(key) || StickActivationKeys.Contains(key))
+            if (TouchpadActivationKeys.Contains(key) || StickActivationKeys.Contains(key) ||
+                    StickActionKeys.Contains(key))
                 return "0";
             if (key == "touchpad_two_finger_tap" ||
                 key == "touchpad_two_finger_scroll_up" ||
@@ -1524,7 +1538,8 @@ namespace BetterJoyForCemu {
                 return "joy_" + (int)Controller.Button.MIC_MUTE;
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
-            if (TouchpadActivationKeys.Contains(key) || StickActivationKeys.Contains(key))
+            if (TouchpadActivationKeys.Contains(key) || StickActivationKeys.Contains(key) ||
+                    StickActionKeys.Contains(key))
                 return "0";
             if (key == "touchpad_two_finger_tap" ||
                 key == "touchpad_two_finger_scroll_up" ||

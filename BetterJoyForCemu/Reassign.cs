@@ -196,7 +196,9 @@ namespace BetterJoyForCemu {
             "left_click", "right_click", "center_click", "scroll_up", "scroll_down",
             "clench_gyro", "ratchet_gyro", "touchpad_left_click", "touchpad_right_click",
             "touchpad_center_click", "touchpad_scroll_up", "touchpad_scroll_down",
-            "touchpad_pointer_lock", "color_wheel", "brightness_up", "brightness_down"
+            "touchpad_pointer_lock", "color_wheel", "brightness_up", "brightness_down",
+            "stick_left_click", "stick_right_click", "stick_center_click",
+            "stick_scroll_up", "stick_scroll_down", "stick_pointer_lock"
         };
 
         private ControllerProfileInfo SelectedProfile {
@@ -419,6 +421,7 @@ namespace BetterJoyForCemu {
             specialButtons.AddRange(stickMouseActivationButtons);
             specialButtons.AddRange(stickKeysActivationButtons);
             specialButtons.AddRange(stickDirectionButtons);
+            specialButtons.AddRange(stickMouseButtons);
 
             foreach (SplitButton c in specialButtons) {
                 c.Tag = c == btn_active_gyro
@@ -465,6 +468,10 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> stickCurveSelectors = new List<SplitButton>();
         private readonly List<SplitButton> stickKeyThresholdButtons = new List<SplitButton>();
         private readonly List<SplitButton> stickInhibitButtons = new List<SplitButton>();
+        // Mouse actions shared by both sticks - they only matter while a stick is driving the
+        // pointer, which is one pointer either way, so there is nothing per-stick about them.
+        private readonly List<SplitButton> stickMouseButtons = new List<SplitButton>();
+        private SplitButton btn_stick_mouse_inhibit;
         private SplitButton btn_stick_hold_toggle;
         private SplitButton btn_ratchet_gyro;
         private SplitButton btn_guide;
@@ -666,6 +673,22 @@ namespace BetterJoyForCemu {
                     "A gyro or touchpad contribution to the same stick still gets through.");
                 stickInhibitButtons.Add(inhibit);
             }
+
+            // Order must match BuildSticksPage's own labels array - each entry becomes this
+            // button's saved config key via the specialButtons Tag pass.
+            foreach (string key in new[] {
+                "stick_left_click", "stick_right_click", "stick_center_click",
+                "stick_pointer_lock", "stick_scroll_up", "stick_scroll_down",
+            })
+                stickMouseButtons.Add(new SplitButton { Name = "btn_" + key });
+
+            btn_stick_mouse_inhibit = CreateChoiceSplitButton(
+                "btn_stick_mouse_inhibit", menu_stick_inhibit);
+            btn_stick_mouse_inhibit.Tag = "StickMouseInhibitButtons";
+            tip_reassign.SetToolTip(btn_stick_mouse_inhibit,
+                "Withhold the controller buttons assigned to these mouse actions from the " +
+                "virtual controller while a stick is driving the pointer, so a button used to " +
+                "click doesn't also reach the game.");
 
             btn_stick_hold_toggle = CreateChoiceSplitButton(
                 "btn_stick_hold_toggle", menu_stick_hold_toggle);
@@ -1699,6 +1722,20 @@ namespace BetterJoyForCemu {
             AddStickSection(layout, page, 0);
             layout.Divider();
             AddStickSection(layout, page, 1);
+
+            layout.Divider();
+            layout.Heading("Mouse actions",
+                "Controller inputs available while a stick is driving the pointer.");
+            layout.RowPair(
+                null, stickMouseButtons[0], "Left click", 24, 114, 181,
+                null, stickMouseButtons[1], "Right click", 323, 423, 171);
+            layout.RowPair(
+                null, stickMouseButtons[2], "Middle click", 24, 114, 181,
+                null, stickMouseButtons[3], "Pointer lock", 323, 423, 171);
+            layout.RowPair(
+                null, stickMouseButtons[4], "Scroll up", 24, 114, 181,
+                null, stickMouseButtons[5], "Scroll down", 323, 423, 171);
+            layout.Row(null, btn_stick_mouse_inhibit, "Inhibit", buttonX: 114, buttonWidth: 181);
 
             layout.Divider();
             layout.Heading("Activation style",
@@ -3537,6 +3574,8 @@ namespace BetterJoyForCemu {
                 }
                 btn_stick_hold_toggle.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "StickHoldToggle") ? "Hold" : "Toggle";
+                btn_stick_mouse_inhibit.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "StickMouseInhibitButtons") ? "Enabled" : "Disabled";
 
                 LoadAdaptiveTriggerMode(adaptiveTriggerModeLeftSelector,
                     ControllerMappings.OptionValue(SelectedProfileId,
@@ -3578,6 +3617,7 @@ namespace BetterJoyForCemu {
                 yield return button;
             foreach (SplitButton button in stickInhibitButtons)
                 yield return button;
+            yield return btn_stick_mouse_inhibit;
         }
 
         private void LoadGyroStickModeButton(SplitButton selector, string optionKey) {

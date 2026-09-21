@@ -159,6 +159,12 @@ namespace BetterJoyForCemu {
             bool leftKeys = owns && stickKeysLeftEnabledThisReport;
             bool rightKeys = owns && stickKeysRightEnabledThisReport;
 
+            // Reconciled on every report, including reports where no stick drives the pointer -
+            // otherwise leaving that state while a synthetic button is down skips the only path
+            // that could send its matching up (the same reason gyro reconciles its own actions
+            // unconditionally).
+            ReconcileStickMouseActions(leftMouse || rightMouse);
+
             if (!leftMouse && !rightMouse && !leftKeys && !rightKeys) {
                 ReleaseStickOutputs();
                 return;
@@ -168,10 +174,14 @@ namespace BetterJoyForCemu {
                 Math.Min(StickMouseMaxReportSeconds, reportSeconds));
             float dx = 0.0f;
             float dy = 0.0f;
-            if (leftMouse)
-                AccumulateStickMouse(physicalStickSnapshot, true, clampedSeconds, ref dx, ref dy);
-            if (rightMouse)
-                AccumulateStickMouse(physicalStick2Snapshot, false, clampedSeconds, ref dx, ref dy);
+            // Pointer lock freezes travel without touching activation, so the clicks and the key
+            // output above keep working while it is held - the stick's counterpart to Clench gyro.
+            if (!IsStickMovementLocked()) {
+                if (leftMouse)
+                    AccumulateStickMouse(physicalStickSnapshot, true, clampedSeconds, ref dx, ref dy);
+                if (rightMouse)
+                    AccumulateStickMouse(physicalStick2Snapshot, false, clampedSeconds, ref dx, ref dy);
+            }
             EmitStickMouse(dx, dy);
 
             desiredStickKeyOutputs.Clear();
@@ -183,6 +193,26 @@ namespace BetterJoyForCemu {
             ApplyStickKeyOutputs();
 
             ApplyStickInhibit(leftMouse || leftKeys, rightMouse || rightKeys);
+        }
+
+        private bool IsStickMovementLocked() {
+            string pointerLock = MappingValue("stick_pointer_lock");
+            return !String.IsNullOrEmpty(pointerLock) && pointerLock != "0" &&
+                IsComboHeld(pointerLock);
+        }
+
+        // The Sticks page's own mouse actions, on the shared edge bookkeeping gyro and touchpad
+        // mouse already use. Each has its own binding, so a stick-mouse click never collides with
+        // the gyro one.
+        private void ReconcileStickMouseActions(bool enabled) {
+            SimulateMouseActionButton("stick_left_click",
+                (int)WindowsInput.Events.ButtonCode.Left, enabled);
+            SimulateMouseActionButton("stick_right_click",
+                (int)WindowsInput.Events.ButtonCode.Right, enabled);
+            SimulateMouseActionButton("stick_center_click",
+                (int)WindowsInput.Events.ButtonCode.Middle, enabled);
+            SimulateMouseActionScroll("stick_scroll_up", true, enabled);
+            SimulateMouseActionScroll("stick_scroll_down", false, enabled);
         }
 
         private void AccumulateStickMouse(float[] source, bool isLeftStick, float reportSeconds,
@@ -308,6 +338,8 @@ namespace BetterJoyForCemu {
         // already calls ReleaseGyroMouseActions - a missed one leaves Windows holding W with no
         // controller left to release it.
         protected void ReleaseStickOutputs() {
+            if (form != null)
+                ReconcileStickMouseActions(false);
             for (int i = heldStickKeyOutputs.Count - 1; i >= 0; i--)
                 SetCustomDesktopOutput(heldStickKeyOutputs[i], false);
             heldStickKeyOutputs.Clear();

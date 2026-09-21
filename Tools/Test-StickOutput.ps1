@@ -4,6 +4,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Configuration
+# Reading a static field on Controller runs its static initializer, which expects the app's own
+# config - the same seeding Test-CustomRebind does before touching controller state.
+[Configuration.ConfigurationManager]::AppSettings.Set('AHRS_beta', '0.1')
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) {
@@ -166,9 +169,12 @@ try {
                          'stick_left_key_up', 'stick_left_key_down',
                          'stick_left_key_left', 'stick_left_key_right',
                          'stick_right_key_up', 'stick_right_key_down',
-                         'stick_right_key_left', 'stick_right_key_right') {
+                         'stick_right_key_left', 'stick_right_key_right',
+                         'stick_left_click', 'stick_right_click', 'stick_center_click',
+                         'stick_scroll_up', 'stick_scroll_down', 'stick_pointer_lock') {
         Assert-Check ($keys -contains $bindKey) "Bind key $bindKey is not registered."
     }
+
     foreach ($optionKey in 'StickHoldToggle',
                            'StickMouseDeadzoneLeft', 'StickMouseDeadzoneRight',
                            'StickMouseSensitivityXLeft', 'StickMouseSensitivityYLeft',
@@ -203,6 +209,20 @@ try {
             "$activationKey did not default to Disabled."
         Assert-Check ([string]$legacyValue.Invoke($null, @($activationKey)) -eq '0') `
             "$activationKey did not read as Disabled for a profile that never set it."
+    }
+
+    # User contract: the Sticks page's mouse actions mirror the gyro ones - their own bindings,
+    # reserved from the virtual controller while a stick drives the pointer, and unbound until
+    # the user says otherwise.
+    $stickOnlyKeys = $controllerType.GetField('StickOnlyBindKeys', $staticNonPublic).GetValue($null)
+    foreach ($actionKey in 'stick_left_click', 'stick_right_click', 'stick_center_click',
+                           'stick_scroll_up', 'stick_scroll_down', 'stick_pointer_lock') {
+        Assert-Check ($stickOnlyKeys -contains $actionKey) `
+            "$actionKey is not reserved from the virtual controller while stick mouse is active."
+        Assert-Check ([string]$defaultValue.Invoke($null, @($actionKey)) -eq '0') `
+            "$actionKey did not default to unbound."
+        Assert-Check ([string]$legacyValue.Invoke($null, @($actionKey)) -eq '0') `
+            "$actionKey did not read as unbound for a profile that never set it."
     }
 
     # User contract: SNES has no stick at all, and N64 and a solo Joy-Con have one - their right

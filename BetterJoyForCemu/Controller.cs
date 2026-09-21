@@ -1182,6 +1182,15 @@ namespace BetterJoyForCemu {
         protected readonly string[] lastTouchpadOnlyBindValues =
             new string[TouchpadOnlyBindKeys.Length];
         protected readonly bool[] touchpadOnlyReservedButtons = new bool[ButtonCount];
+        // Same idea for the Sticks page's own mouse actions - reserved while a stick is driving
+        // the pointer, so a button bound to "click" there doesn't also reach the game.
+        protected static readonly string[] StickOnlyBindKeys = {
+            "stick_left_click", "stick_right_click", "stick_center_click",
+            "stick_scroll_up", "stick_scroll_down", "stick_pointer_lock",
+        };
+        protected readonly string[] lastStickOnlyBindValues =
+            new string[StickOnlyBindKeys.Length];
+        protected readonly bool[] stickOnlyReservedButtons = new bool[ButtonCount];
         protected readonly bool[] vigemButtons = new bool[ButtonCount];
         // SimulateContinous's joy_-to-joy_ remap output (e.g. "Touchpad click also acts as
         // PLUS") - deliberately never written into buttons[] itself, which combo/chord capture
@@ -2452,6 +2461,38 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Mirrors RefreshTouchpadOnlyButtonReservations - see that method and
+        // RefreshGyroOnlyButtonReservations for the "," alternatives split.
+        protected void RefreshStickOnlyButtonReservations() {
+            bool changed = false;
+            for (int i = 0; i < StickOnlyBindKeys.Length; i++) {
+                string value = MappingValue(StickOnlyBindKeys[i]);
+                if (lastStickOnlyBindValues[i] != value) {
+                    lastStickOnlyBindValues[i] = value;
+                    changed = true;
+                }
+            }
+
+            if (!changed)
+                return;
+
+            Array.Clear(stickOnlyReservedButtons, 0, stickOnlyReservedButtons.Length);
+            foreach (string value in lastStickOnlyBindValues) {
+                if (String.IsNullOrEmpty(value) || value == "0")
+                    continue;
+
+                foreach (string part in value.Split('+', ',')) {
+                    if (!part.StartsWith("joy_"))
+                        continue;
+
+                    int buttonIndex;
+                    if (Int32.TryParse(part.Substring(4), out buttonIndex) &&
+                        buttonIndex >= 0 && buttonIndex < stickOnlyReservedButtons.Length)
+                        stickOnlyReservedButtons[buttonIndex] = true;
+                }
+            }
+        }
+
         protected bool IsTouchpadMovementLocked() {
             string pointerLock = MappingValue("touchpad_pointer_lock");
             bool bindingLocked = !String.IsNullOrEmpty(pointerLock) &&
@@ -2743,6 +2784,9 @@ namespace BetterJoyForCemu {
                 ProfileBoolOption("GyroMouseInhibitButtons");
             bool touchpadMouseConsumesButtons = touchpadMouseEnabledThisReport &&
                 ProfileBoolOption("TouchpadMouseInhibitButtons");
+            bool stickMouseConsumesButtons =
+                (stickMouseLeftEnabledThisReport || stickMouseRightEnabledThisReport) &&
+                ProfileBoolOption("StickMouseInhibitButtons");
             bool customGuideHeld = TryGetHeldCustomGuideMapping(out string guideMapping);
             bool hasContinuousRemap = false;
             bool hasCustomRebind = false;
@@ -2773,6 +2817,14 @@ namespace BetterJoyForCemu {
                      buttonIndex < touchpadOnlyReservedButtons.Length;
                      buttonIndex++) {
                     if (touchpadOnlyReservedButtons[buttonIndex])
+                        vigemButtons[buttonIndex] = false;
+                }
+            }
+            if (stickMouseConsumesButtons) {
+                for (int buttonIndex = 0;
+                     buttonIndex < stickOnlyReservedButtons.Length;
+                     buttonIndex++) {
+                    if (stickOnlyReservedButtons[buttonIndex])
                         vigemButtons[buttonIndex] = false;
                 }
             }
@@ -3277,6 +3329,7 @@ namespace BetterJoyForCemu {
             gyroStickReportDt = dt;
 
             RefreshGyroOnlyButtonReservations();
+            RefreshStickOnlyButtonReservations();
             if (HasTouchpad)
                 RefreshTouchpadOnlyButtonReservations();
 
