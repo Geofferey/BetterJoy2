@@ -1715,14 +1715,16 @@ namespace BetterJoyForCemu {
                 isLeft ? StickLeftSectionKey : StickRightSectionKey);
 
             // Same hand-laid column header the Gyro page's activation block uses - two muted
-            // captions rather than a row, so advance past them explicitly.
+            // captions rather than a row, so advance past them explicitly. The activation boxes
+            // share the left column's x with every row below and run to the right column's own
+            // right edge (423 + 171), so the whole section lines up as one grid.
             page.Controls.Add(CreateLabel("Output", 24, layout.Y + 21, ProfileMuted, false, 8.25F));
-            page.Controls.Add(CreateLabel("Activation", 180, layout.Y + 21, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 114, layout.Y + 21, ProfileMuted, false, 8.25F));
             layout.Advance(21 + 21);
             layout.Row(null, stickMouseActivationButtons[index], "Mouse",
-                buttonX: 180, buttonWidth: 414);
+                buttonX: 114, buttonWidth: 480);
             layout.Row(null, stickKeysActivationButtons[index], "Keys",
-                buttonX: 180, buttonWidth: 414);
+                buttonX: 114, buttonWidth: 480);
 
             layout.RowPair(
                 null, stickDeadzoneButtons[index], "Deadzone", 24, 114, 181,
@@ -1731,7 +1733,7 @@ namespace BetterJoyForCemu {
                 null, stickSensitivityXButtons[index], "Sensitivity X", 24, 114, 181,
                 null, stickSensitivityYButtons[index], "Sensitivity Y", 323, 423, 171);
             layout.RowPair(
-                null, stickKeyThresholdButtons[index], "Key threshold", 24, 114, 181,
+                null, stickKeyThresholdButtons[index], "Threshold", 24, 114, 181,
                 null, stickInhibitButtons[index], "Inhibit stick", 323, 423, 171);
             layout.RowPair(
                 null, stickDirectionButtons[index * 4], "Key up", 24, 114, 181,
