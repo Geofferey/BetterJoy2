@@ -23,6 +23,10 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_touchpad_inhibit = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_sensitivity = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_percent = new ContextMenuStrip();
+        ContextMenuStrip menu_stick_key = new ContextMenuStrip();
+        ContextMenuStrip menu_stick_curve = new ContextMenuStrip();
+        ContextMenuStrip menu_stick_inhibit = new ContextMenuStrip();
+        ContextMenuStrip menu_stick_hold_toggle = new ContextMenuStrip();
         ContextMenuStrip menu_charging_indicator = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_axis_scale = new ContextMenuStrip();
         ContextMenuStrip menu_touchpad_tap_hold = new ContextMenuStrip();
@@ -340,6 +344,29 @@ namespace BetterJoyForCemu {
                     new ToolStripMenuItem(percent + "%") { Tag = percent.ToString() });
             menu_gyro_stick_percent.ItemClicked += GyroStickPercentMenu_ItemClicked;
 
+            // The Sticks page's direction binds are ordinary desktop-output binds - click and
+            // press a key to capture one, exactly like any other row. These presets exist because
+            // writing all four of a stick's directions at once is the common case, and "Disabled"
+            // because a direction may legitimately have no output.
+            menu_stick_key.Items.Add(new ToolStripMenuItem("W A S D") { Tag = "wasd" });
+            menu_stick_key.Items.Add(new ToolStripMenuItem("Arrow keys") { Tag = "arrows" });
+            menu_stick_key.Items.Add(new ToolStripSeparator());
+            menu_stick_key.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "0" });
+            menu_stick_key.ItemClicked += StickKeyMenu_ItemClicked;
+
+            menu_stick_curve.Items.Add(new ToolStripMenuItem("Linear") { Tag = "linear" });
+            menu_stick_curve.Items.Add(new ToolStripMenuItem("Quadratic") { Tag = "quadratic" });
+            menu_stick_curve.Items.Add(new ToolStripMenuItem("Cubic") { Tag = "cubic" });
+            menu_stick_curve.ItemClicked += StickOptionMenu_ItemClicked;
+
+            menu_stick_inhibit.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
+            menu_stick_inhibit.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
+            menu_stick_inhibit.ItemClicked += StickOptionMenu_ItemClicked;
+
+            menu_stick_hold_toggle.Items.Add(new ToolStripMenuItem("Hold") { Tag = "true" });
+            menu_stick_hold_toggle.Items.Add(new ToolStripMenuItem("Toggle") { Tag = "false" });
+            menu_stick_hold_toggle.ItemClicked += StickOptionMenu_ItemClicked;
+
             foreach (var indicator in ControllerMappings.ChargingIndicators)
                 menu_charging_indicator.Items.Add(
                     new ToolStripMenuItem(indicator.Label) { Tag = indicator.Value });
@@ -389,6 +416,9 @@ namespace BetterJoyForCemu {
             specialButtons.AddRange(gyroStickActivationButtons);
             specialButtons.AddRange(touchpadStickActivationButtons);
             specialButtons.AddRange(touchpadMouseButtons);
+            specialButtons.AddRange(stickMouseActivationButtons);
+            specialButtons.AddRange(stickKeysActivationButtons);
+            specialButtons.AddRange(stickDirectionButtons);
 
             foreach (SplitButton c in specialButtons) {
                 c.Tag = c == btn_active_gyro
@@ -399,7 +429,9 @@ namespace BetterJoyForCemu {
                 c.MouseDown += Remap;
                 c.Menu = IsActivationKey((string)c.Tag)
                     ? menu_gyro_activation
-                    : menu_joy_buttons;
+                    : (IsStickDirectionKey((string)c.Tag)
+                        ? menu_stick_key
+                        : menu_joy_buttons);
                 // The dropdown arrow already opens Menu on its own (SplitButton.OnMouseDown's
                 // left-click-on-splitRect branch) independent of this, so right-click is free to
                 // do something else instead of also duplicating that same menu - appending an
@@ -421,6 +453,19 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> touchpadStickActivationButtons =
             new List<SplitButton>();
         private readonly List<SplitButton> touchpadMouseButtons = new List<SplitButton>();
+        // Sticks page, all indexed [0] = left stick, [1] = right stick, so every per-stick block
+        // is written once (see AddStickSection). stickDirectionButtons holds four entries per
+        // stick, up/down/left/right, at index * 4 + direction.
+        private readonly List<SplitButton> stickMouseActivationButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickKeysActivationButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickDirectionButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickDeadzoneButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickSensitivityXButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickSensitivityYButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickCurveSelectors = new List<SplitButton>();
+        private readonly List<SplitButton> stickKeyThresholdButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickInhibitButtons = new List<SplitButton>();
+        private SplitButton btn_stick_hold_toggle;
         private SplitButton btn_ratchet_gyro;
         private SplitButton btn_guide;
         private SplitButton btn_mic_mute;
@@ -463,7 +508,14 @@ namespace BetterJoyForCemu {
                    key == "active_gyro_right_stick" ||
                    key == "active_touchpad_mouse" ||
                    key == "active_touchpad_left_stick" ||
-                   key == "active_touchpad_right_stick";
+                   key == "active_touchpad_right_stick" ||
+                   ControllerMappings.StickActivationKeys.Contains(key);
+        }
+
+        // A Sticks page direction bind. Its dropdown offers whole-stick presets rather than
+        // controller buttons, but it still captures on click like every other bind row.
+        private static bool IsStickDirectionKey(string key) {
+            return ControllerMappings.StickKeyDefaults.ContainsKey(key);
         }
 
         // Stick mapping mode/axis/invert only take effect in filtered IMU mode (see
@@ -536,6 +588,93 @@ namespace BetterJoyForCemu {
             foreach (string key in touchpadActionKeys)
                 touchpadMouseButtons.Add(new SplitButton { Name = "btn_" + key });
 
+            // Sticks page. One pass per stick so the left and right blocks can never drift apart:
+            // the bind buttons take their key from Name (the specialButtons loop strips "btn_"),
+            // and the option selectors carry theirs on Tag, the same convention the gyro-stick
+            // percentage selectors already use.
+            for (int index = 0; index < 2; index++) {
+                string side = index == 0 ? "left" : "right";
+                string suffix = index == 0 ? "Left" : "Right";
+                string sideLabel = index == 0 ? "Left stick" : "Right stick";
+
+                stickMouseActivationButtons.Add(
+                    new SplitButton { Name = "btn_active_stick_mouse_" + side });
+                stickKeysActivationButtons.Add(
+                    new SplitButton { Name = "btn_active_stick_keys_" + side });
+                foreach (string direction in new[] { "up", "down", "left", "right" })
+                    stickDirectionButtons.Add(
+                        new SplitButton { Name = "btn_stick_" + side + "_key_" + direction });
+
+                stickDeadzoneButtons.Add(CreateGyroStickPercentButton(
+                    "btn_stick_deadzone_" + side, "StickMouseDeadzone" + suffix,
+                    sideLabel + " deadzone",
+                    "How far this stick must travel before it moves the pointer at all, as a " +
+                    "percentage of full deflection. Everything past it is rescaled across the " +
+                    "full range, so movement starts as a crawl rather than a jump. Mouse output " +
+                    "only - key output uses its own threshold. Choose a preset or right-click " +
+                    "for 0% to 100%."));
+                stickKeyThresholdButtons.Add(CreateGyroStickPercentButton(
+                    "btn_stick_key_threshold_" + side, "StickKeysThreshold" + suffix,
+                    sideLabel + " key threshold",
+                    "How far this stick must be pushed along an axis before that direction's key " +
+                    "is held. Measured per axis, so a diagonal push past it on both axes holds " +
+                    "both keys - what a game expecting WASD wants. Key output only. Choose a " +
+                    "preset or right-click for 0% to 100%."));
+
+                SplitButton sensitivityX = CreateChoiceSplitButton(
+                    "btn_stick_sensitivity_x_" + side, menu_touchpad_sensitivity);
+                sensitivityX.Tag = "StickMouseSensitivityX" + suffix;
+                SplitButton sensitivityXCaptured = sensitivityX;
+                sensitivityX.RightClickHandler = (sender, e) =>
+                    PromptTouchpadSensitivity(sensitivityXCaptured,
+                        (string)sensitivityXCaptured.Tag, sideLabel + " sensitivity X",
+                        "horizontal pointer speed");
+                tip_reassign.SetToolTip(sensitivityX,
+                    "Horizontal pointer speed, as a percentage. 100% travels about 1000 pixels " +
+                    "per second at full deflection. Right-click for 10% to 400%.");
+                stickSensitivityXButtons.Add(sensitivityX);
+
+                SplitButton sensitivityY = CreateChoiceSplitButton(
+                    "btn_stick_sensitivity_y_" + side, menu_touchpad_sensitivity);
+                sensitivityY.Tag = "StickMouseSensitivityY" + suffix;
+                SplitButton sensitivityYCaptured = sensitivityY;
+                sensitivityY.RightClickHandler = (sender, e) =>
+                    PromptTouchpadSensitivity(sensitivityYCaptured,
+                        (string)sensitivityYCaptured.Tag, sideLabel + " sensitivity Y",
+                        "vertical pointer speed");
+                tip_reassign.SetToolTip(sensitivityY,
+                    "Vertical pointer speed, as a percentage. Set it below the horizontal value " +
+                    "for the flatter feel most mouse users expect. Right-click for 10% to 400%.");
+                stickSensitivityYButtons.Add(sensitivityY);
+
+                SplitButton curve = CreateChoiceSplitButton(
+                    "btn_stick_curve_" + side, menu_stick_curve);
+                curve.Tag = "StickMouseCurve" + suffix;
+                tip_reassign.SetToolTip(curve,
+                    "How deflection maps to pointer speed. Linear moves in proportion to the " +
+                    "push; Quadratic and Cubic keep small pushes slow and precise while full " +
+                    "deflection stays fast. Applied to the push as a whole, so a diagonal still " +
+                    "travels diagonally.");
+                stickCurveSelectors.Add(curve);
+
+                SplitButton inhibit = CreateChoiceSplitButton(
+                    "btn_stick_inhibit_" + side, menu_stick_inhibit);
+                inhibit.Tag = "StickInhibit" + suffix;
+                tip_reassign.SetToolTip(inhibit,
+                    "Withhold this stick from the virtual controller while it is driving the " +
+                    "mouse or keys, so aiming the pointer doesn't also push the in-game stick. " +
+                    "A gyro or touchpad contribution to the same stick still gets through.");
+                stickInhibitButtons.Add(inhibit);
+            }
+
+            btn_stick_hold_toggle = CreateChoiceSplitButton(
+                "btn_stick_hold_toggle", menu_stick_hold_toggle);
+            btn_stick_hold_toggle.Tag = "StickHoldToggle";
+            tip_reassign.SetToolTip(btn_stick_hold_toggle,
+                "Whether a stick activation binding must be held down, or toggles the output on " +
+                "and off. Separate from the Gyro page's own setting, so sticks can toggle while " +
+                "gyro holds.");
+
             btn_ratchet_gyro = new SplitButton { Name = "btn_ratchet_gyro" };
             btn_guide = new SplitButton { Name = "btn_guide" };
             btn_mic_mute = new SplitButton { Name = "btn_mic_mute" };
@@ -597,6 +736,7 @@ namespace BetterJoyForCemu {
 
             btn_touchpad_sensitivity = CreateChoiceSplitButton(
                 "btn_touchpad_sensitivity", menu_touchpad_sensitivity);
+            btn_touchpad_sensitivity.Tag = "TouchpadSensitivity";
             btn_touchpad_sensitivity.RightClickHandler = (sender, e) =>
                 PromptTouchpadSensitivity(btn_touchpad_sensitivity,
                     "TouchpadSensitivity", "Mouse sensitivity", "mouse sensitivity");
@@ -607,6 +747,7 @@ namespace BetterJoyForCemu {
 
             btn_touchpad_stick_sensitivity = CreateChoiceSplitButton(
                 "btn_touchpad_stick_sensitivity", menu_touchpad_sensitivity);
+            btn_touchpad_stick_sensitivity.Tag = "TouchpadStickSensitivity";
             btn_touchpad_stick_sensitivity.RightClickHandler = (sender, e) =>
                 PromptTouchpadSensitivity(btn_touchpad_stick_sensitivity,
                     "TouchpadStickSensitivity", "Stick sensitivity", "stick sensitivity");
@@ -780,6 +921,7 @@ namespace BetterJoyForCemu {
             Panel bindingsPage = BuildBindingsPage();
             Panel customBindingsPage = BuildCustomBindingsPage();
             Panel gyroPage = BuildGyroPage();
+            Panel sticksPage = BuildSticksPage();
             Panel touchpadPage = BuildTouchpadPage();
             Panel adaptiveTriggersPage = BuildAdaptiveTriggersPage();
             Panel behaviorPage = BuildDeviceBehaviorPage();
@@ -788,6 +930,7 @@ namespace BetterJoyForCemu {
             profilePages.Add("bindings", bindingsPage);
             profilePages.Add("custom_bindings", customBindingsPage);
             profilePages.Add("gyro", gyroPage);
+            profilePages.Add("sticks", sticksPage);
             profilePages.Add("touchpad", touchpadPage);
             profilePages.Add("adaptive_triggers", adaptiveTriggersPage);
             profilePages.Add("behavior", behaviorPage);
@@ -796,6 +939,7 @@ namespace BetterJoyForCemu {
             profilePageHost.Controls.Add(bindingsPage);
             profilePageHost.Controls.Add(customBindingsPage);
             profilePageHost.Controls.Add(gyroPage);
+            profilePageHost.Controls.Add(sticksPage);
             profilePageHost.Controls.Add(touchpadPage);
             profilePageHost.Controls.Add(adaptiveTriggersPage);
             profilePageHost.Controls.Add(behaviorPage);
@@ -933,13 +1077,14 @@ namespace BetterJoyForCemu {
             sidebar.Controls.Add(CreateNavigationButton("Bindings", "bindings", 60));
             sidebar.Controls.Add(CreateNavigationButton("Custom binds", "custom_bindings", 104));
             sidebar.Controls.Add(CreateNavigationButton("Gyro", "gyro", 148));
-            sidebar.Controls.Add(CreateNavigationButton("Touchpad", "touchpad", 192));
-            sidebar.Controls.Add(CreateNavigationButton("Adaptive triggers", "adaptive_triggers", 236));
-            sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 280));
-            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 324));
-            sidebar.Controls.Add(CreateLabel("GLOBAL", 20, 386,
+            sidebar.Controls.Add(CreateNavigationButton("Sticks", "sticks", 192));
+            sidebar.Controls.Add(CreateNavigationButton("Touchpad", "touchpad", 236));
+            sidebar.Controls.Add(CreateNavigationButton("Adaptive triggers", "adaptive_triggers", 280));
+            sidebar.Controls.Add(CreateNavigationButton("Device behavior", "behavior", 324));
+            sidebar.Controls.Add(CreateNavigationButton("Virtual controller", "virtual", 368));
+            sidebar.Controls.Add(CreateLabel("GLOBAL", 20, 430,
                 Color.FromArgb(151, 174, 205), false, 8F));
-            sidebar.Controls.Add(CreateNavigationButton("Global options", "global", 416));
+            sidebar.Controls.Add(CreateNavigationButton("Global options", "global", 460));
             return sidebar;
         }
 
@@ -1538,6 +1683,62 @@ namespace BetterJoyForCemu {
 
             page.AutoScrollMinSize = new Size(0, layout.Y);
             return page;
+        }
+
+        // One section per stick, gated by its own key so the right-stick block takes its height
+        // with it on a one-stick controller instead of leaving a hole (this page calls Finish,
+        // unlike the Gyro page, which is what registers its sections for reflow).
+        private const string StickLeftSectionKey = "stick_left";
+        private const string StickRightSectionKey = "stick_right";
+
+        private Panel BuildSticksPage() {
+            Panel page = CreateProfilePage("Sticks",
+                "Drive the mouse or the keyboard from a thumbstick. Each stick is independent - " +
+                "one can aim while the other walks.");
+            var layout = new PageLayout(this, page, 86);
+            AddStickSection(layout, page, 0);
+            layout.Divider();
+            AddStickSection(layout, page, 1);
+
+            layout.Divider();
+            layout.Heading("Activation style",
+                "How an activation binding above behaves once it is pressed.");
+            layout.Row(null, btn_stick_hold_toggle, "Hold or toggle", buttonX: 180, buttonWidth: 180);
+            layout.Finish(24);
+            return page;
+        }
+
+        private void AddStickSection(PageLayout layout, Panel page, int index) {
+            bool isLeft = index == 0;
+            layout.Heading(isLeft ? "Left stick" : "Right stick",
+                "Deadzone, response and sensitivity shape mouse output; the threshold gates keys.",
+                isLeft ? StickLeftSectionKey : StickRightSectionKey);
+
+            // Same hand-laid column header the Gyro page's activation block uses - two muted
+            // captions rather than a row, so advance past them explicitly.
+            page.Controls.Add(CreateLabel("Output", 24, layout.Y + 21, ProfileMuted, false, 8.25F));
+            page.Controls.Add(CreateLabel("Activation", 180, layout.Y + 21, ProfileMuted, false, 8.25F));
+            layout.Advance(21 + 21);
+            layout.Row(null, stickMouseActivationButtons[index], "Mouse",
+                buttonX: 180, buttonWidth: 414);
+            layout.Row(null, stickKeysActivationButtons[index], "Keys",
+                buttonX: 180, buttonWidth: 414);
+
+            layout.RowPair(
+                null, stickDeadzoneButtons[index], "Deadzone", 24, 114, 181,
+                null, stickCurveSelectors[index], "Response", 323, 423, 171);
+            layout.RowPair(
+                null, stickSensitivityXButtons[index], "Sensitivity X", 24, 114, 181,
+                null, stickSensitivityYButtons[index], "Sensitivity Y", 323, 423, 171);
+            layout.RowPair(
+                null, stickKeyThresholdButtons[index], "Key threshold", 24, 114, 181,
+                null, stickInhibitButtons[index], "Inhibit stick", 323, 423, 171);
+            layout.RowPair(
+                null, stickDirectionButtons[index * 4], "Key up", 24, 114, 181,
+                null, stickDirectionButtons[index * 4 + 1], "Key down", 323, 423, 171);
+            layout.RowPair(
+                null, stickDirectionButtons[index * 4 + 2], "Key left", 24, 114, 181,
+                null, stickDirectionButtons[index * 4 + 3], "Key right", 323, 423, 171);
         }
 
         private Panel BuildTouchpadPage() {
@@ -3151,12 +3352,17 @@ namespace BetterJoyForCemu {
                 adaptiveTriggerStartLeftInput, adaptiveTriggerSecondaryLeftInput,
                 adaptiveTriggerStrengthLeftInput, adaptiveTriggerStartRightInput,
                 adaptiveTriggerSecondaryRightInput, adaptiveTriggerStrengthRightInput,
+                btn_stick_hold_toggle,
             };
             updatingProfileOptions = true;
             try {
                 foreach (Control control in controls) {
                     if (control != null)
                         control.Enabled = hasProfile;
+                }
+                foreach (SplitButton stickOption in StickOptionSelectors()) {
+                    if (stickOption != null)
+                        stickOption.Enabled = hasProfile;
                 }
 
                 if (!GyroStickModeControlsSupported) {
@@ -3310,6 +3516,26 @@ namespace BetterJoyForCemu {
                 LoadGyroStickPercentButton(btn_gyro_stick_reduction_x_right, 0);
                 LoadGyroStickPercentButton(btn_gyro_stick_reduction_y_right, 0);
 
+                // Sticks page. The twelve direction/activation binds are loaded by the
+                // specialButtons GetPrettyName pass in ApplySelectedController, like every other
+                // bind row; only the option selectors need reading here.
+                for (int index = 0; index < 2; index++) {
+                    string suffix = index == 0 ? "Left" : "Right";
+                    LoadGyroStickPercentButton(stickDeadzoneButtons[index], 15);
+                    LoadGyroStickPercentButton(stickKeyThresholdButtons[index], 55);
+                    stickSensitivityXButtons[index].Text = ControllerMappings.IntOption(
+                        SelectedProfileId, "StickMouseSensitivityX" + suffix, 100) + "%";
+                    stickSensitivityYButtons[index].Text = ControllerMappings.IntOption(
+                        SelectedProfileId, "StickMouseSensitivityY" + suffix, 100) + "%";
+                    stickCurveSelectors[index].Text = StickCurveDisplayText(
+                        ControllerMappings.OptionValue(
+                            SelectedProfileId, "StickMouseCurve" + suffix));
+                    stickInhibitButtons[index].Text = ControllerMappings.BoolOption(
+                        SelectedProfileId, "StickInhibit" + suffix) ? "Enabled" : "Disabled";
+                }
+                btn_stick_hold_toggle.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "StickHoldToggle") ? "Hold" : "Toggle";
+
                 LoadAdaptiveTriggerMode(adaptiveTriggerModeLeftSelector,
                     ControllerMappings.OptionValue(SelectedProfileId,
                         "AdaptiveTriggerModeLeft"));
@@ -3333,6 +3559,23 @@ namespace BetterJoyForCemu {
             } finally {
                 updatingProfileOptions = false;
             }
+        }
+
+        // Every Sticks page control that stores a profile option rather than a bind - the binds
+        // are handled by the shared specialButtons pass instead.
+        private IEnumerable<SplitButton> StickOptionSelectors() {
+            foreach (SplitButton button in stickDeadzoneButtons)
+                yield return button;
+            foreach (SplitButton button in stickKeyThresholdButtons)
+                yield return button;
+            foreach (SplitButton button in stickSensitivityXButtons)
+                yield return button;
+            foreach (SplitButton button in stickSensitivityYButtons)
+                yield return button;
+            foreach (SplitButton button in stickCurveSelectors)
+                yield return button;
+            foreach (SplitButton button in stickInhibitButtons)
+                yield return button;
         }
 
         private void LoadGyroStickModeButton(SplitButton selector, string optionKey) {
@@ -3387,7 +3630,8 @@ namespace BetterJoyForCemu {
                      menu_touchpad_two_finger_scroll,
                      menu_gyro_stick_mode, menu_gyro_stick_axis, menu_gyro_stick_percent,
                      menu_charging_indicator,
-                     menu_default_orientation }) {
+                     menu_default_orientation, menu_stick_key, menu_stick_curve,
+                     menu_stick_inhibit, menu_stick_hold_toggle }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 // Menu images only render inside the image margin, so the controller-button
@@ -3652,6 +3896,22 @@ namespace BetterJoyForCemu {
             page.AutoScrollMinSize = new Size(0, top + pageBottomPadding[page]);
         }
 
+        // SNES pads have no analog stick at all, so the whole Sticks page is unavailable for
+        // them. Every other kind - and no selection - keeps it.
+        internal static bool KindHasSticksPage(ControllerKind? kind) {
+            return kind != ControllerKind.Snes;
+        }
+
+        // N64 has one stick and so does a solo Joy-Con. Deliberately keyed off Kind rather than
+        // Controller.HasDualSticks, which both SNES and N64 report true as preserved known issues
+        // (see their class comments). An unknown kind is a joined Joy-Con pair (see KindIsJoyCon),
+        // which cross-wires both halves' sticks and therefore keeps the right-stick block. Must
+        // stay in lockstep with Controller.HasRightStickOutput.
+        internal static bool KindHasRightStick(ControllerKind? kind) {
+            return KindHasSticksPage(kind) && kind != ControllerKind.N64 &&
+                kind != ControllerKind.Left && kind != ControllerKind.Right;
+        }
+
         // Nintendo-protocol controllers: Joy-Cons (a joined pair reports no Kind), Pro, SNES and
         // N64. The Home LED and Player LED rows are shown only for these.
         internal static bool KindIsNintendo(ControllerKind? kind) {
@@ -3747,6 +4007,9 @@ namespace BetterJoyForCemu {
             // .Enabled on these controls - Bluetooth vs. USB now behave differently there.
             SetSectionVisible(JoyConSectionKey, KindIsJoyCon(selected?.Kind));
             SetSectionVisible(PlayStationSectionKey, hasConfigurableLight);
+            bool hasSticksPage = KindHasSticksPage(selected?.Kind);
+            SetSectionVisible(StickLeftSectionKey, hasSticksPage);
+            SetSectionVisible(StickRightSectionKey, KindHasRightStick(selected?.Kind));
 
             bool hasGyroPage = KindHasGyroPage(selected?.Kind);
             // Unavailable pages fall back to Gyro as before, or Bindings when Gyro is unavailable too.
@@ -3757,6 +4020,13 @@ namespace BetterJoyForCemu {
             }
             if (!hasGyroPage && profilePages.TryGetValue("gyro", out Panel gyroPage) &&
                 gyroPage.Visible)
+                ShowProfilePage(fallbackPage);
+            if (profileNavigationButtons.TryGetValue("sticks", out Button sticksNavigation)) {
+                sticksNavigation.Visible = true;
+                sticksNavigation.Enabled = hasSticksPage;
+            }
+            if (!hasSticksPage && profilePages.TryGetValue("sticks", out Panel sticksPage) &&
+                sticksPage.Visible)
                 ShowProfilePage(fallbackPage);
             if (profileNavigationButtons.TryGetValue("touchpad", out Button touchpadNavigation)) {
                 touchpadNavigation.Visible = true;
@@ -4019,17 +4289,79 @@ namespace BetterJoyForCemu {
                 SelectedProfileId, (string)button.Tag, fallback) + "%";
         }
 
+        // Every button sharing this menu carries its own option key on Tag (the two touchpad
+        // sensitivities and the Sticks page's four), so one handler serves all of them without a
+        // branch per button.
         private void TouchpadSensitivityMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
             SplitButton button = menu_touchpad_sensitivity.Tag as SplitButton;
             if (button == null || String.IsNullOrEmpty(SelectedProfileId))
                 return;
 
-            string key = button == btn_touchpad_stick_sensitivity
-                ? "TouchpadStickSensitivity"
-                : "TouchpadSensitivity";
+            string key = (string)button.Tag;
+            if (String.IsNullOrEmpty(key))
+                return;
             string value = (string)e.ClickedItem.Tag;
             ControllerMappings.SetOptionValue(SelectedProfileId, key, value);
             button.Text = value + "%";
+        }
+
+        // Curve, inhibit and hold/toggle all store a plain value under the key on the clicked
+        // button's Tag, so they share one handler; only the displayed caption differs.
+        private void StickOptionMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            SplitButton button = ((ContextMenuStrip)sender).Tag as SplitButton;
+            if (button == null || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            ControllerMappings.SetOptionValue(
+                SelectedProfileId, (string)button.Tag, (string)e.ClickedItem.Tag);
+            button.Text = e.ClickedItem.Text;
+        }
+
+        // The presets write all four of that stick's directions at once, which is the common way
+        // to set these; Disabled applies to the clicked direction alone, since unbinding a single
+        // direction is a real thing to want and unbinding all four is what turning the Keys
+        // activation off already does.
+        private void StickKeyMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            SplitButton button = menu_stick_key.Tag as SplitButton;
+            if (button == null || String.IsNullOrEmpty(SelectedProfileId))
+                return;
+
+            string preset = (string)e.ClickedItem.Tag;
+            int index = stickDirectionButtons.IndexOf(button);
+            if (preset == "0" || index < 0) {
+                SetBindValue((string)button.Tag, "0");
+                GetPrettyName(button);
+                return;
+            }
+
+            string[] values = preset == "arrows"
+                ? new[] {
+                    "key_" + (int)WindowsInput.Events.KeyCode.Up,
+                    "key_" + (int)WindowsInput.Events.KeyCode.Down,
+                    "key_" + (int)WindowsInput.Events.KeyCode.Left,
+                    "key_" + (int)WindowsInput.Events.KeyCode.Right,
+                }
+                : new[] {
+                    "key_" + (int)WindowsInput.Events.KeyCode.W,
+                    "key_" + (int)WindowsInput.Events.KeyCode.S,
+                    "key_" + (int)WindowsInput.Events.KeyCode.A,
+                    "key_" + (int)WindowsInput.Events.KeyCode.D,
+                };
+
+            int firstOfStick = (index / 4) * 4;
+            for (int offset = 0; offset < 4; offset++) {
+                SplitButton target = stickDirectionButtons[firstOfStick + offset];
+                SetBindValue((string)target.Tag, values[offset]);
+                GetPrettyName(target);
+            }
+        }
+
+        private static string StickCurveDisplayText(string curve) {
+            if (String.Equals(curve, "linear", StringComparison.OrdinalIgnoreCase))
+                return "Linear";
+            if (String.Equals(curve, "cubic", StringComparison.OrdinalIgnoreCase))
+                return "Cubic";
+            return "Quadratic";
         }
 
         private void TouchpadAxisScaleMenu_ItemClicked(

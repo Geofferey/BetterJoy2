@@ -635,6 +635,7 @@ namespace BetterJoyForCemu {
             ReleaseGyroMouseActions();
             ReleaseTouchpadMouseActions();
             ReleaseCustomBindingOutputs();
+            ReleaseStickOutputs();
             FinishTouchpadColorWheel();
             if (HasTouchpad)
                 ReleaseMappedHold(MappingValue("touchpad_click"));
@@ -1973,6 +1974,7 @@ namespace BetterJoyForCemu {
             ReleaseGyroMouseActions();
             ReleaseTouchpadMouseActions();
             ReleaseCustomBindingOutputs();
+            ReleaseStickOutputs();
             FinishTouchpadColorWheel();
             if (HasTouchpad)
                 ReleaseMappedHold(MappingValue("touchpad_click"));
@@ -2010,6 +2012,7 @@ namespace BetterJoyForCemu {
             prevResetMouseComboHeld = false;
             gyroMouseClenched = false;
             gyroStickRatcheted = false;
+            ResetStickActivationState();
             lastCustomBindingsValue = null;
         }
 
@@ -2123,10 +2126,11 @@ namespace BetterJoyForCemu {
             }
         }
 
-        // Single hold/release seam for every desktop output BetterJoy generates. The InputState
-        // Begin/End calls bracket each hold so a bind reading key_/mse_ state can never be
-        // satisfied by our own output: mark before pressing and unmark after releasing, so the
-        // mask always outlives the event the global hook is about to report back to us.
+        // Single hold/release seam for every desktop output BetterJoy generates - custom bindings
+        // and stick-to-keys both come through here. The InputState Begin/End calls bracket each
+        // hold so a bind reading key_/mse_ state can never be satisfied by our own output: mark
+        // before pressing and unmark after releasing, so the mask always outlives the event the
+        // global hook is about to report back to us.
         private void SetCustomDesktopOutput(string part, bool held) {
             int code;
             if (form == null || part.Length <= 4 ||
@@ -2338,9 +2342,13 @@ namespace BetterJoyForCemu {
         //   combo   - controlled by the profile's hold/toggle preference
         // The old unbound value is migrated to "always" by ControllerMappings, so 0 can safely
         // mean disabled for every new output without unexpectedly enabling every output.
+        // holdToggleOptionKey names the profile option deciding hold vs toggle. It defaults to
+        // the gyro/touchpad outputs' shared GyroHoldToggle; the Sticks page passes its own
+        // StickHoldToggle so sticks can toggle while gyro holds.
         protected bool UpdateOutputActivation(string key, ref bool toggledActive,
                                               ref bool previousComboHeld,
-                                              out bool justEnabled) {
+                                              out bool justEnabled,
+                                              string holdToggleOptionKey = "GyroHoldToggle") {
             string mapping = MappingValue(key);
             if (mapping == "always") {
                 toggledActive = false;
@@ -2358,7 +2366,7 @@ namespace BetterJoyForCemu {
 
             bool wasEnabled = toggledActive;
             bool comboHeld = IsComboHeld(mapping);
-            if (ProfileBoolOption("GyroHoldToggle")) {
+            if (ProfileBoolOption(holdToggleOptionKey)) {
                 toggledActive = comboHeld;
             } else if (comboHeld && !previousComboHeld) {
                 toggledActive = !toggledActive;
@@ -3062,6 +3070,7 @@ namespace BetterJoyForCemu {
             }
 
             ReleaseGyroMouseActions();
+            ReleaseStickOutputs();
             PrepareLongPressPowerOff();
             PowerOff();
             return true;
@@ -3073,6 +3082,9 @@ namespace BetterJoyForCemu {
             Array.Clear(continuousRemapButtons, 0, continuousRemapButtons.Length);
             Array.Clear(customVirtualButtons, 0, customVirtualButtons.Length);
             Array.Clear(customRebindConsumedButtons, 0, customRebindConsumedButtons.Length);
+            // Before anything layers onto the sticks - see SnapshotPhysicalSticks for why
+            // stick-to-mouse/keys must read this rather than the live arrays.
+            SnapshotPhysicalSticks();
 
             // Checked first and returns early like the other button-driven side effects below -
             // a face button doubling as "confirm" only ever matters while a calibration prompt
@@ -3081,6 +3093,7 @@ namespace BetterJoyForCemu {
             // time.
             if (CalibrationState.PendingConfirmController == this && CalibrationConfirmPressed()) {
                 ReleaseGyroMouseActions();
+                ReleaseStickOutputs();
                 form.HandleCalibrationConfirm(this);
                 return;
             }
@@ -3092,6 +3105,7 @@ namespace BetterJoyForCemu {
             if (ChangeOrientationDoubleClick && buttons_down[(int)Button.STICK] && lastDoubleClick != -1 && SupportsPairing) {
                 if ((buttons_down_timestamp[(int)Button.STICK] - lastDoubleClick) < 3000000) {
                     ReleaseGyroMouseActions();
+                    ReleaseStickOutputs();
                     // is-check, not a bare cast: JoinOrSplitJoycon is JoyconController-typed
                     // (pairing is Joy-Con-only, see Controller.other's comment) - SupportsPairing
                     // being true above already guarantees this is a JoyconController today, but
@@ -3114,6 +3128,7 @@ namespace BetterJoyForCemu {
                         other.PowerOff();
 
                     ReleaseGyroMouseActions();
+                    ReleaseStickOutputs();
                     PowerOff();
                     return;
                 }
@@ -3245,6 +3260,7 @@ namespace BetterJoyForCemu {
             gyroRightStickActiveThisReport = UpdateOutputActivation(
                 "active_gyro_right_stick", ref activeGyroRightStick,
                 ref prevActiveGyroRightStickComboHeld, out gyroRightStickJustEnabled);
+            UpdateStickActivation();
             UpdateGyroRumbleSuppression();
             bool touchpadMouseJustEnabled = false;
             touchpadMouseEnabledThisReport = HasTouchpad && UpdateOutputActivation(
@@ -3406,6 +3422,9 @@ namespace BetterJoyForCemu {
                 ProcessTouchpadStick();
                 ProcessTouchpadMouse();
             }
+            // Last, so inhibit subtracts the physical stick only after gyro-to-stick (raw mode,
+            // above) and the touchpad stick have added their own contributions.
+            ProcessStickOutputs(dt);
         }
 
         protected static short CastStickValue(float stick_value) {

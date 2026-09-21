@@ -233,6 +233,16 @@ namespace BetterJoyForCemu {
             "active_touchpad_right_stick",
             "touchpad_left_click", "touchpad_right_click", "touchpad_center_click",
             "touchpad_scroll_up", "touchpad_scroll_down", "touchpad_pointer_lock",
+            // Sticks page. Each stick activates mouse and key output independently, so one can
+            // aim while the other walks. The eight direction keys are ordinary desktop-output
+            // binds (see StickKeyDefaults) - W/A/S/D by default, reassignable to anything the
+            // capture accepts.
+            "active_stick_mouse_left", "active_stick_mouse_right",
+            "active_stick_keys_left", "active_stick_keys_right",
+            "stick_left_key_up", "stick_left_key_down",
+            "stick_left_key_left", "stick_left_key_right",
+            "stick_right_key_up", "stick_right_key_down",
+            "stick_right_key_left", "stick_right_key_right",
         };
 
         // Profile-owned behavior which historically lived in App.config. App.config remains the
@@ -288,6 +298,19 @@ namespace BetterJoyForCemu {
             "AdaptiveTriggerStrengthRightWeapon",
             "AdaptiveTriggerStartRightVibration", "AdaptiveTriggerSecondaryRightVibration",
             "AdaptiveTriggerStrengthRightVibration",
+            // Sticks page, per stick. Deadzone/Curve/Sensitivity shape mouse output only, and
+            // KeysThreshold gates key output only - a key has no use for a curve, and a
+            // threshold is a deadzone by another name. Inhibit withholds the physical stick from
+            // the virtual controller while that stick is driving mouse or keys, the same idea as
+            // GyroMouseInhibitButtons/TouchpadMouseInhibitButtons. StickHoldToggle is the Sticks
+            // page's own hold-vs-toggle preference, deliberately separate from GyroHoldToggle.
+            "StickHoldToggle",
+            "StickMouseDeadzoneLeft", "StickMouseDeadzoneRight",
+            "StickMouseSensitivityXLeft", "StickMouseSensitivityYLeft",
+            "StickMouseSensitivityXRight", "StickMouseSensitivityYRight",
+            "StickMouseCurveLeft", "StickMouseCurveRight",
+            "StickKeysThresholdLeft", "StickKeysThresholdRight",
+            "StickInhibitLeft", "StickInhibitRight",
         };
 
         // Only meaningful on a solo-Joycon profile (see ProfileIdFor) - whether a newly-connected
@@ -324,6 +347,27 @@ namespace BetterJoyForCemu {
             new HashSet<string>(StringComparer.Ordinal) {
                 "active_touchpad_mouse", "active_touchpad_left_stick",
                 "active_touchpad_right_stick",
+            };
+        public static readonly HashSet<string> StickActivationKeys =
+            new HashSet<string>(StringComparer.Ordinal) {
+                "active_stick_mouse_left", "active_stick_mouse_right",
+                "active_stick_keys_left", "active_stick_keys_right",
+            };
+        // Both sticks default to the same WASD set. That can't collide: a stick's key output only
+        // fires while its own active_stick_keys_* bind is on, and both of those default Disabled.
+        // Consulted by LegacyValue AND DefaultValue - Value() falls through to the former, while
+        // the middle-click "reset this bind" path uses the latter, so registering one alone would
+        // leave the other answering "0".
+        public static readonly Dictionary<string, string> StickKeyDefaults =
+            new Dictionary<string, string>(StringComparer.Ordinal) {
+                { "stick_left_key_up", "key_" + (int)WindowsInput.Events.KeyCode.W },
+                { "stick_left_key_down", "key_" + (int)WindowsInput.Events.KeyCode.S },
+                { "stick_left_key_left", "key_" + (int)WindowsInput.Events.KeyCode.A },
+                { "stick_left_key_right", "key_" + (int)WindowsInput.Events.KeyCode.D },
+                { "stick_right_key_up", "key_" + (int)WindowsInput.Events.KeyCode.W },
+                { "stick_right_key_down", "key_" + (int)WindowsInput.Events.KeyCode.S },
+                { "stick_right_key_left", "key_" + (int)WindowsInput.Events.KeyCode.A },
+                { "stick_right_key_right", "key_" + (int)WindowsInput.Events.KeyCode.D },
             };
         private static readonly object writeLock = new object();
         // Variable-length profile data shares the fixed mappings' copy-on-write dictionary so
@@ -1043,12 +1087,15 @@ namespace BetterJoyForCemu {
                 return "default";
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
-            if (TouchpadActivationKeys.Contains(key))
+            if (TouchpadActivationKeys.Contains(key) || StickActivationKeys.Contains(key))
                 return "0";
             if (key == "touchpad_two_finger_tap" ||
                 key == "touchpad_two_finger_scroll_up" ||
                 key == "touchpad_two_finger_scroll_down")
                 return "default";
+            string stickKeyDefault;
+            if (StickKeyDefaults.TryGetValue(key, out stickKeyDefault))
+                return stickKeyDefault;
             return AppConfigBackedKeys.Contains(key) ? "0" : Config.GetDefaultValue(key);
         }
 
@@ -1477,12 +1524,15 @@ namespace BetterJoyForCemu {
                 return "joy_" + (int)Controller.Button.MIC_MUTE;
             if (GyroActivationKeys.Contains(key))
                 return LegacyGyroActivationValue(key);
-            if (TouchpadActivationKeys.Contains(key))
+            if (TouchpadActivationKeys.Contains(key) || StickActivationKeys.Contains(key))
                 return "0";
             if (key == "touchpad_two_finger_tap" ||
                 key == "touchpad_two_finger_scroll_up" ||
                 key == "touchpad_two_finger_scroll_down")
                 return "default";
+            string stickKeyDefault;
+            if (StickKeyDefaults.TryGetValue(key, out stickKeyDefault))
+                return stickKeyDefault;
 
             string value = AppConfigBackedKeys.Contains(key)
                 ? ConfigurationManager.AppSettings[key]
