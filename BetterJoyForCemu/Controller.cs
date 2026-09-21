@@ -2123,15 +2123,31 @@ namespace BetterJoyForCemu {
             }
         }
 
+        // Single hold/release seam for every desktop output BetterJoy generates. The InputState
+        // Begin/End calls bracket each hold so a bind reading key_/mse_ state can never be
+        // satisfied by our own output: mark before pressing and unmark after releasing, so the
+        // mask always outlives the event the global hook is about to report back to us.
         private void SetCustomDesktopOutput(string part, bool held) {
             int code;
             if (form == null || part.Length <= 4 ||
                     !Int32.TryParse(part.Substring(4), out code))
                 return;
             if (part.StartsWith("key_", StringComparison.Ordinal)) {
-                if (held) form.SimulateKeyHold(code); else form.SimulateKeyRelease(code);
+                if (held) {
+                    InputState.BeginSynthesizedKey(code);
+                    form.SimulateKeyHold(code);
+                } else {
+                    form.SimulateKeyRelease(code);
+                    InputState.EndSynthesizedKey(code);
+                }
             } else if (part.StartsWith("mse_", StringComparison.Ordinal)) {
-                if (held) form.SimulateButtonHold(code); else form.SimulateButtonRelease(code);
+                if (held) {
+                    InputState.BeginSynthesizedMouseButton(code);
+                    form.SimulateButtonHold(code);
+                } else {
+                    form.SimulateButtonRelease(code);
+                    InputState.EndSynthesizedMouseButton(code);
+                }
             }
         }
 
