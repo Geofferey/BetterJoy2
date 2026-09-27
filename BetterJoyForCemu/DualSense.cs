@@ -2384,9 +2384,20 @@ namespace BetterJoyForCemu {
                 // trusting FN over the cable.
                 b[(int)Button.FN1] = (btn3 & 0x10) != 0;
                 b[(int)Button.FN2] = (btn3 & 0x20) != 0;
-                // Edge paddles remain unmapped - btn3 bits 0x08/0x40/0x80 stayed clear throughout
-                // the capture, but the paddles were never pressed, so that is untested rather
-                // than evidence they go unreported. SL/SR have no DualSense equivalent.
+                // Edge back buttons, captured the same way as FN1/FN2 above
+                // (dualsense_raw_debug.log, 2026-09-26): 59 visible presses over 28 seconds,
+                // strictly alternating between exactly these two bits and never repeating one
+                // back to back, with the lead bit reversing partway through as the user swapped
+                // press order - so two independent momentary buttons, not one contact bouncing.
+                // Sides are from that press order, which began left: 0x40 left, 0x80 right.
+                // Bytes 9 and 10 (face/d-pad and shoulders) never moved during any of it, so with
+                // no firmware profile assigned these report only their own bits and duplicate no
+                // other button. Still unverified: both bits set at once (the capture has no 0xC0
+                // sample, unlike FN1/FN2's 0x30) and USB, where the offsets are assumed rather
+                // than captured - same caveat as the FN buttons above. Bit 0x08 stays clear.
+                b[(int)Button.BACK_L] = (btn3 & 0x40) != 0;
+                b[(int)Button.BACK_R] = (btn3 & 0x80) != 0;
+                // SL/SR have no DualSense equivalent.
 
                 buttons = b;
                 CommitButtonState();

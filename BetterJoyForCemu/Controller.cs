@@ -89,8 +89,14 @@ namespace BetterJoyForCemu {
             // anywhere earlier would silently repoint every saved mapping.
             FN1 = 26,
             FN2 = 27,
+            // The two back buttons on a DualSense Edge (the lever/half-dome caps the user fits
+            // to the rear). Sony's own firmware normally mirrors these onto another button via a
+            // controller profile; with no such profile assigned they report only their own bits,
+            // which is what makes them bindable here. Appended for the same reason as FN1/FN2.
+            BACK_L = 28,
+            BACK_R = 29,
         };
-        protected const int ButtonCount = (int)Button.FN2 + 1;
+        protected const int ButtonCount = (int)Button.BACK_R + 1;
 
         // For UdpServer
         public int PadId = 0;

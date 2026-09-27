@@ -5688,6 +5688,10 @@ namespace BetterJoyForCemu {
                     case Controller.Button.HOME: return "PS";
                     case Controller.Button.MINUS: return "SHARE";
                     case Controller.Button.PLUS: return "MENU";
+                    // Edge-only. Deliberately not "LB"/"RB": that reads as an Xbox bumper
+                    // everywhere else in this dialog, and these sit on the back of the pad.
+                    case Controller.Button.BACK_L: return "L BACK";
+                    case Controller.Button.BACK_R: return "R BACK";
                     default: return ControllerButtonDisplayName(value);
                 }
             }

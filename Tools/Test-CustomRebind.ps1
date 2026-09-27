@@ -214,6 +214,7 @@ try {
         15 = 'SQUARE'; 16 = 'TRIANGLE'; 14 = 'CIRCLE'; 13 = 'CROSS'
         11 = 'L1'; 18 = 'R1'; 12 = 'L2'; 19 = 'R2'; 10 = 'L3'; 17 = 'R3'
         7 = 'PS'; 6 = 'SHARE'; 8 = 'MENU'; 25 = 'MIC_MUTE'; 26 = 'FN1'; 27 = 'FN2'
+        28 = 'L BACK'; 29 = 'R BACK'
         20 = 'TOUCHPAD'; 21 = 'TOUCHPAD_TAP'; 3 = 'DPAD_UP'
     }
     foreach ($entry in $playStationLabels.GetEnumerator()) {
@@ -720,6 +721,17 @@ try {
             ("DualSense power_save_control: $($powerSaveCase.Why) " +
              "(got 0x{0:X2}, expected 0x{1:X2})." -f $actual, $powerSaveCase.Expected)
     }
+
+    # User contract: the DualSense Edge back buttons are bindable like any other button, and they
+    # were APPENDED to the enum. Binds are stored as joy_<enum value>, so inserting anywhere
+    # earlier would silently repoint every saved mapping - these values must not move.
+    $buttonEnum = $controllerType.GetNestedType('Button')
+    Assert-True ([int][Enum]::Parse($buttonEnum, 'FN1') -eq 26) 'FN1 moved; saved binds would repoint.'
+    Assert-True ([int][Enum]::Parse($buttonEnum, 'FN2') -eq 27) 'FN2 moved; saved binds would repoint.'
+    Assert-True ([int][Enum]::Parse($buttonEnum, 'BACK_L') -eq 28) `
+        'The left Edge back button is not 28; saved binds would repoint.'
+    Assert-True ([int][Enum]::Parse($buttonEnum, 'BACK_R') -eq 29) `
+        'The right Edge back button is not 29; saved binds would repoint.'
 
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {
