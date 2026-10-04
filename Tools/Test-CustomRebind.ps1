@@ -450,9 +450,18 @@ try {
     Assert-True ($parts.Count -eq 3 -and $parts[0] -is [Drawing.Image] -and
         $parts[1] -eq ' / ' -and $parts[2] -is [Drawing.Image]) `
         'Play / Pause must compose the separate Play and Pause glyphs.'
-    foreach ($value in @('act_volume_up', 'act_volume_down', 'act_volume_mute')) {
-        Assert-True ($null -eq $customActionParts.Invoke($null, @($value, $dualSense, $null))) `
-            "$value must retain text because the selected source has no matching glyph."
+    # User contract: Volume up, Volume down and Mute show BetterJoy's own volume keycaps.
+    foreach ($volumeGlyph in @(@('act_volume_up', 'key_volume_plus'),
+            @('act_volume_down', 'key_volume_minus'), @('act_volume_mute', 'key_volume_mute'))) {
+        $volumeStream = $assembly.GetManifestResourceStream("InputPrompts.$($volumeGlyph[1]).png")
+        Assert-True ($null -ne $volumeStream) "$($volumeGlyph[1]).png was not embedded."
+        $volumeImage = [Drawing.Image]::FromStream($volumeStream)
+        $parts = $customActionParts.Invoke($null, @($volumeGlyph[0], $dualSense, $null))
+        Assert-True ($parts.Count -eq 1 -and $parts[0] -is [Drawing.Image] -and
+            $parts[0].Width -eq $volumeImage.Width -and $parts[0].Height -eq $volumeImage.Height) `
+            "$($volumeGlyph[0]) must display $($volumeGlyph[1]).png."
+        $volumeImage.Dispose()
+        $volumeStream.Dispose()
     }
 
     # Exercise the actual Custom binds output-label path, not only its two helpers.
@@ -480,9 +489,12 @@ try {
     Assert-True ($labelPartsField.GetValue($outputButton).Count -eq 1) `
         'The Custom binds output button did not render the Play glyph.'
     $setPrettyName.Invoke($reassign, @($outputButton, 'act_volume_up'))
+    Assert-True ($labelPartsField.GetValue($outputButton).Count -eq 1) `
+        'The Custom binds output button did not render the Volume up glyph.'
+    $setPrettyName.Invoke($reassign, @($outputButton, 'key_135'))
     Assert-True ($null -eq $labelPartsField.GetValue($outputButton) -and
-        $outputButton.Text -eq 'Volume up') `
-        'A text-only volume output retained stale media glyphs.'
+        -not [String]::IsNullOrEmpty($outputButton.Text)) `
+        'A text-only output retained the previous output''s stale glyphs.'
     $outputButton.Dispose()
     $toolTip.Dispose()
     Assert-True ($null -eq $labelParts.Invoke($null, @('key_135', $dualSense, $null))) `
