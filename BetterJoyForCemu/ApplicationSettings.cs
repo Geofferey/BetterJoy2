@@ -13,7 +13,7 @@ namespace BetterJoyForCemu {
             new HashSet<string>(StringComparer.Ordinal) {
                 "StartInTray", "HideStatus", "MotionServer", "IP", "Port", "PassiveScan",
                 "AutoAddControllers", "BlockAutoAddUSB", "BlockAutoAddBluetooth", "AllowCalibration",
-                "UseHidHide", "UnhideOnExit", "AutoCalDebugLogging",
+                "UseHidHide", "UnhideOnExit", "UseFakerInput", "AutoCalDebugLogging",
                 "DualSenseDebugLogging", "DualShock4DebugLogging", "DebugLogging", "GyroMouseDebugLogging",
                 "GyroStickDebugLogging", "UseViiperForDualSenseMicrophone",
                 "OpenRgbServerMode", "OpenRgbServerCachedColor", "OpenRgbServerCachedModeState",

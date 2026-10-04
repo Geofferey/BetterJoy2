@@ -2441,10 +2441,17 @@ namespace BetterJoyForCemu {
 
             layout.Divider();
             layout.Heading("Controller support",
-                "Configure calibration access and physical-controller hiding for all profiles.");
+                "Calibration access, physical-controller hiding, and virtual keyboard/mouse output.");
             sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
                 "Allow calibration", 24, sectionTop, "AllowCalibration"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Use FakerInput", 24, sectionTop + 33, "UseFakerInput"));
+            tip_reassign.SetToolTip(globalOptionCheckBoxes["UseFakerInput"],
+                "Send controller mouse, keyboard, and media output through the FakerInput virtual " +
+                "HID driver when it is installed. It reaches elevated windows, UAC, and the sign-in " +
+                "screen, and Ctrl+Alt+Delete needs it. Off, or without the driver, output falls " +
+                "back to ordinary Windows input. Takes effect after restart.");
             page.Controls.Add(CreateGlobalCheckBox(
                 "Use HidHide", 315, sectionTop, "UseHidHide"));
             page.Controls.Add(CreateGlobalCheckBox(

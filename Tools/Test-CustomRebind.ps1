@@ -791,7 +791,7 @@ try {
     # application-wide settings on Global options, so the old Config pane no longer lists them.
     $appSettingsType = $assembly.GetType('BetterJoyForCemu.ApplicationSettings', $true)
     $isGlobal = $appSettingsType.GetMethod('IsGlobalOption', [Reflection.BindingFlags]'Static,Public')
-    foreach ($globalKey in 'IP', 'Port', 'BlockAutoAddBluetooth') {
+    foreach ($globalKey in 'IP', 'Port', 'BlockAutoAddBluetooth', 'UseFakerInput') {
         Assert-True ([bool]$isGlobal.Invoke($null, @($globalKey))) "$globalKey is not a global option."
     }
     # A value the server could not parse at startup must never be saved.
