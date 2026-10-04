@@ -11,8 +11,8 @@ namespace BetterJoyForCemu {
 
         private static readonly HashSet<string> GlobalOptionKeys =
             new HashSet<string>(StringComparer.Ordinal) {
-                "StartInTray", "HideStatus", "MotionServer", "PassiveScan",
-                "AutoAddControllers", "BlockAutoAddUSB", "AllowCalibration",
+                "StartInTray", "HideStatus", "MotionServer", "IP", "Port", "PassiveScan",
+                "AutoAddControllers", "BlockAutoAddUSB", "BlockAutoAddBluetooth", "AllowCalibration",
                 "UseHidHide", "UnhideOnExit", "AutoCalDebugLogging",
                 "DualSenseDebugLogging", "DualShock4DebugLogging", "DebugLogging", "GyroMouseDebugLogging",
                 "GyroStickDebugLogging", "UseViiperForDualSenseMicrophone",

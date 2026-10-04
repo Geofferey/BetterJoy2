@@ -66,6 +66,17 @@ namespace BetterJoyForCemu {
                 (vendorId == vigemDs4VendorId && productId == vigemDs4ProductId);
         }
 
+        // Per solo Joy-Con profile: an opted-out Joy-Con is never auto-joined and never
+        // auto-self-pairs on connect. Manual join/split from the main window is unaffected.
+        private static bool DoNotRejoin(JoyconController joycon) {
+            string profileId = ControllerMappings.ProfileIdFor(joycon);
+            bool optedOut = ControllerMappings.BoolOption(profileId, "DoNotRejoinJoycons");
+            if (optedOut && DebugLog.Enabled)
+                DebugLog.Write("[AutoJoin.Skip] pad=" + joycon.PadId + " profile=" + profileId +
+                    " DoNotRejoinJoycons=true");
+            return optedOut;
+        }
+
         // Any physical XInput-compatible controller - Microsoft pads and licensed third-party
         // pads alike (e.g. SCUF Valor Pro 1B1C:3A15) - consumed by XboxController through
         // Windows' native XInput state and matched to a slot by the VID/PID XInput reports.
@@ -2175,7 +2186,7 @@ namespace BetterJoyForCemu {
                 }
             }
 
-            if (foundNew && !Boolean.Parse(ConfigurationManager.AppSettings["DoNotRejoinJoycons"])) { // attempt to auto join-up joycons on connection
+            if (foundNew) { // attempt to auto join-up joycons on connection
                 JoyconController temp = null;
                 // Pairing is Joy-Con-only (see Controller.other's comment) - the auto-join
                 // decision itself stays JoyconController-typed/filtered here rather than moving
@@ -2187,6 +2198,9 @@ namespace BetterJoyForCemu {
                     if (!(vBase is JoyconController v) || !v.SupportsPairing || (v.other != null && v.other != v)) {
                         continue;
                     }
+                    // A pair forms only when neither half's profile opts out.
+                    if (DoNotRejoin(v))
+                        continue;
 
                     // Otherwise, iterate through and find the controller with the lowest
                     // id that has not been attached already (Does not include self)
@@ -2226,6 +2240,10 @@ namespace BetterJoyForCemu {
                 // identity (ProfileIdFor), since that's the identity it had before this decision.
                 foreach (Controller vBase in j) {
                     if (!(vBase is JoyconController v) || !v.SupportsPairing || v.other != null)
+                        continue;
+                    // The old global switch skipped this whole block, self-pairing included, so
+                    // an opted-out Joy-Con keeps skipping it too.
+                    if (DoNotRejoin(v))
                         continue;
                     string profileId = ControllerMappings.ProfileIdFor(v);
                     if (ControllerMappings.OptionValue(profileId, "DefaultOrientation") ==

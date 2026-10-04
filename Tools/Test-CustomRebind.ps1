@@ -787,6 +787,49 @@ try {
     Assert-True ([int][Enum]::Parse($buttonEnum, 'BACK_R') -eq 29) `
         'The right Edge back button is not 29; saved binds would repoint.'
 
+    # User contract: the motion server's IP and Port, and Block auto-add over Bluetooth, are
+    # application-wide settings on Global options, so the old Config pane no longer lists them.
+    $appSettingsType = $assembly.GetType('BetterJoyForCemu.ApplicationSettings', $true)
+    $isGlobal = $appSettingsType.GetMethod('IsGlobalOption', [Reflection.BindingFlags]'Static,Public')
+    foreach ($globalKey in 'IP', 'Port', 'BlockAutoAddBluetooth') {
+        Assert-True ([bool]$isGlobal.Invoke($null, @($globalKey))) "$globalKey is not a global option."
+    }
+    # A value the server could not parse at startup must never be saved.
+    $validIp = $reassignType.GetMethod('IsValidMotionServerIp', [Reflection.BindingFlags]'Static,NonPublic')
+    $validPort = $reassignType.GetMethod('IsValidMotionServerPort', [Reflection.BindingFlags]'Static,NonPublic')
+    foreach ($goodIp in '127.0.0.1', '0.0.0.0', '192.168.1.20') {
+        Assert-True ([bool]$validIp.Invoke($null, @($goodIp))) "Motion server IP $goodIp was rejected."
+    }
+    foreach ($badIp in '', 'localhost', '300.1.1.1') {
+        Assert-True (-not [bool]$validIp.Invoke($null, @($badIp))) "Motion server IP '$badIp' was accepted."
+    }
+    foreach ($goodPort in '1', '26760', '65535') {
+        Assert-True ([bool]$validPort.Invoke($null, @($goodPort))) "Motion server port $goodPort was rejected."
+    }
+    foreach ($badPort in '', '0', '65536', '-1', '26760x', ' 26760') {
+        Assert-True (-not [bool]$validPort.Invoke($null, @($badPort))) "Motion server port '$badPort' was accepted."
+    }
+
+    # User contract: Do not rejoin Joy-Cons is a per-profile option, not a global one. It keeps
+    # its old App.config name, so a profile that never set it inherits the old global value and
+    # an existing setup behaves exactly as before.
+    $optionKeys = $mappingsType.GetField('OptionKeys', [Reflection.BindingFlags]'Static,Public').GetValue($null)
+    Assert-True ($optionKeys -contains 'DoNotRejoinJoycons') 'DoNotRejoinJoycons is not a profile option.'
+    Assert-True (-not [bool]$isGlobal.Invoke($null, @('DoNotRejoinJoycons'))) `
+        'DoNotRejoinJoycons is still treated as a global option.'
+    $mainFormType = $assembly.GetType('BetterJoyForCemu.MainForm', $true)
+    $profileOwned = $mainFormType.GetField('ProfileOwnedConfigKeys',
+        [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
+    Assert-True ($profileOwned.Contains('DoNotRejoinJoycons')) `
+        'The Config pane still lists DoNotRejoinJoycons.'
+    $boolOption = $mappingsType.GetMethod('BoolOption', [Reflection.BindingFlags]'Static,Public')
+    foreach ($legacyValue in 'true', 'false') {
+        [Configuration.ConfigurationManager]::AppSettings.Set('DoNotRejoinJoycons', $legacyValue)
+        Assert-True ([bool]$boolOption.Invoke($null, @('solo-left:test', 'DoNotRejoinJoycons')) -eq
+            [bool]::Parse($legacyValue)) `
+            "A profile without its own value did not inherit DoNotRejoinJoycons=$legacyValue."
+    }
+
     Write-Host 'Custom Rebind regression tests passed.'
 } finally {
     Pop-Location

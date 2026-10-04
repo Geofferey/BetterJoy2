@@ -5,8 +5,10 @@ using System.Configuration;
 using System.Data;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -89,6 +91,7 @@ namespace BetterJoyForCemu {
         private Label rumbleModeLabel;
         private CheckBox dragToggleCheckBox;
         private CheckBox swapAbCheckBox;
+        private CheckBox doNotRejoinCheckBox;
         private CheckBox swapXyCheckBox;
         private Label homeLedLabel;
         private ProfileChoiceSelector homeLedSelector;
@@ -135,6 +138,8 @@ namespace BetterJoyForCemu {
             new Dictionary<string, ProfileChoiceSelector>(StringComparer.Ordinal);
         private readonly Dictionary<string, (string Value, string Label)[]> globalOptionSelectorModes =
             new Dictionary<string, (string Value, string Label)[]>(StringComparer.Ordinal);
+        private readonly Dictionary<string, TextBox> globalOptionInputs =
+            new Dictionary<string, TextBox>(StringComparer.Ordinal);
         private readonly Dictionary<string, Panel> profilePages = new Dictionary<string, Panel>();
         private readonly Dictionary<string, Button> profileNavigationButtons = new Dictionary<string, Button>();
         private Panel profilePageHost;
@@ -2321,6 +2326,15 @@ namespace BetterJoyForCemu {
                 "Only applies when this Joy-Con is used solo with no partner",
                 JoyConSectionKey);
             layout.Row(null, btn_default_orientation, "Default orientation", buttonX: 145, buttonWidth: 449);
+            doNotRejoinCheckBox = CreateProfileCheckBox(
+                "Do not rejoin Joy-Cons", 24, layout.Y, "DoNotRejoinJoycons");
+            page.Controls.Add(doNotRejoinCheckBox);
+            tip_reassign.SetToolTip(doNotRejoinCheckBox,
+                "Keep this Joy-Con solo when it connects instead of automatically joining it " +
+                "with an available Joy-Con of the other hand (or self-pairing it vertically). " +
+                "A pair only forms when neither Joy-Con has this on. Joining manually from the " +
+                "main window still works.");
+            layout.Advance(33);
 
             layout.Finish(35);
             return page;
@@ -2421,6 +2435,8 @@ namespace BetterJoyForCemu {
                 "Automatically add supported controllers", 315, sectionTop, "AutoAddControllers"));
             page.Controls.Add(CreateGlobalCheckBox(
                 "Block auto-add over USB", 24, sectionTop + 33, "BlockAutoAddUSB"));
+            page.Controls.Add(CreateGlobalCheckBox(
+                "Block auto-add over Bluetooth", 315, sectionTop + 33, "BlockAutoAddBluetooth"));
             layout.Advance(77);
 
             layout.Divider();
@@ -2441,7 +2457,18 @@ namespace BetterJoyForCemu {
             sectionTop = layout.Y;
             page.Controls.Add(CreateGlobalCheckBox(
                 "Enable motion server", 24, sectionTop, "MotionServer"));
-            layout.Advance(50);
+            page.Controls.Add(CreateLabel("IP", 24, sectionTop + 45, ProfileText, false));
+            CreateGlobalTextInput(page, 90, sectionTop + 41, 160, "IP", IsValidMotionServerIp);
+            tip_reassign.SetToolTip(globalOptionInputs["IP"],
+                "Address the motion server listens on. 127.0.0.1 keeps it on this computer; " +
+                "0.0.0.0 (all interfaces) or a LAN address lets another computer connect. " +
+                "Takes effect after restart.");
+            page.Controls.Add(CreateLabel("Port", 315, sectionTop + 45, ProfileText, false));
+            CreateGlobalTextInput(page, 380, sectionTop + 41, 80, "Port", IsValidMotionServerPort);
+            tip_reassign.SetToolTip(globalOptionInputs["Port"],
+                "Port the motion server listens on (default 26760). If you change it, change it " +
+                "in the client too, e.g. cemuhook.ini. Takes effect after restart.");
+            layout.Advance(89);
 
             layout.Divider();
             layout.Heading("OpenRGB",
@@ -2800,6 +2827,8 @@ namespace BetterJoyForCemu {
             try {
                 foreach (KeyValuePair<string, CheckBox> option in globalOptionCheckBoxes)
                     option.Value.Checked = ApplicationSettings.BoolValue(option.Key);
+                foreach (KeyValuePair<string, TextBox> option in globalOptionInputs)
+                    option.Value.Text = ApplicationSettings.StringValue(option.Key, String.Empty);
                 foreach (KeyValuePair<string, ProfileChoiceSelector> option in globalOptionSelectors) {
                     var modes = globalOptionSelectorModes[option.Key];
                     string value = ApplicationSettings.StringValue(option.Key, modes[0].Value);
@@ -2816,16 +2845,7 @@ namespace BetterJoyForCemu {
         // spin-button portion can't be recolored to match the dark flat theme every other control gets
         // via FlatStyle.Flat. A themed TextBox with digit-only input matches far better.
         private TextBox CreateProfilePercentInput(Panel page, int left, int top, string optionKey) {
-            TextBox input = new TextBox {
-                Location = new Point(left, top),
-                Size = new Size(50, 25),
-                TextAlign = HorizontalAlignment.Center,
-                BackColor = ProfileSurface,
-                ForeColor = ProfileText,
-                BorderStyle = BorderStyle.FixedSingle,
-                Font = new Font("Segoe UI", 9F),
-                Tag = optionKey,
-            };
+            TextBox input = CreateThemedInput(left, top, 50, optionKey);
             input.KeyPress += (sender, e) => {
                 if (!Char.IsDigit(e.KeyChar) && !Char.IsControl(e.KeyChar))
                     e.Handled = true;
@@ -2833,6 +2853,68 @@ namespace BetterJoyForCemu {
             input.Leave += ProfilePercentInput_Leave;
             page.Controls.Add(input);
             return input;
+        }
+
+        private TextBox CreateThemedInput(int left, int top, int width, string optionKey) {
+            return new TextBox {
+                Location = new Point(left, top),
+                Size = new Size(width, 25),
+                TextAlign = HorizontalAlignment.Center,
+                BackColor = ProfileSurface,
+                ForeColor = ProfileText,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 9F),
+                Tag = optionKey,
+            };
+        }
+
+        // Global counterpart to the percent inputs: a free-text app setting, committed on focus
+        // loss like they are. A value the validator rejects is never saved - the box reverts to
+        // the stored one - because these are parsed at startup, where a bad one would throw.
+        private TextBox CreateGlobalTextInput(Panel page, int left, int top, int width,
+                string optionKey, Func<string, bool> isValid) {
+            TextBox input = CreateThemedInput(left, top, width, optionKey);
+            input.Leave += (sender, e) => GlobalTextInputLeave(input, isValid);
+            globalOptionInputs.Add(optionKey, input);
+            page.Controls.Add(input);
+            return input;
+        }
+
+        private void GlobalTextInputLeave(TextBox input, Func<string, bool> isValid) {
+            if (updatingGlobalOptions)
+                return;
+
+            string optionKey = (string)input.Tag;
+            string value = input.Text.Trim();
+            if (value == ApplicationSettings.StringValue(optionKey, String.Empty))
+                return;
+            if (!isValid(value)) {
+                if (DebugLog.Enabled)
+                    DebugLog.Write("[GlobalOptions.Input] rejected key=" + optionKey +
+                        " value=\"" + value + "\"");
+                LoadGlobalOptions();
+                MessageBox.Show("\"" + value + "\" is not a valid " + optionKey + ".",
+                    "BetterJoy2", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            try {
+                ApplicationSettings.SetValue(optionKey, value);
+                input.Text = value;
+            } catch (ConfigurationErrorsException ex) {
+                LoadGlobalOptions();
+                MessageBox.Show("Unable to save global setting: " + ex.Message,
+                    "BetterJoy2", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // Same parses Program.cs applies when it starts the motion server.
+        internal static bool IsValidMotionServerIp(string value) {
+            return IPAddress.TryParse(value, out _);
+        }
+
+        internal static bool IsValidMotionServerPort(string value) {
+            return Int32.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture,
+                out int port) && port >= 1 && port <= 65535;
         }
 
         // Commits on focus-loss rather than through the immediate-commit
@@ -2890,7 +2972,8 @@ namespace BetterJoyForCemu {
                 control == adaptiveTriggerStrengthLeftInput ||
                 control == adaptiveTriggerStartRightInput ||
                 control == adaptiveTriggerSecondaryRightInput ||
-                control == adaptiveTriggerStrengthRightInput);
+                control == adaptiveTriggerStrengthRightInput ||
+                (control is TextBox input && globalOptionInputs.ContainsValue(input)));
         }
 
         private void ProfileOptionControlChanged(object sender, EventArgs e) {
@@ -3416,8 +3499,8 @@ namespace BetterJoyForCemu {
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, btn_home_long_power_off, dragToggleCheckBox,
                 preferredTransportSelector, automaticBluetoothPairingSelector,
-                swapAbCheckBox, swapXyCheckBox, rumbleModeSelector, homeLedSelector,
-                lightColorButton, lightingModeSelector, playerLedSelector,
+                swapAbCheckBox, swapXyCheckBox, doNotRejoinCheckBox, rumbleModeSelector,
+                homeLedSelector, lightColorButton, lightingModeSelector, playerLedSelector,
                 chargingIndicatorSelector, chargeGlowColorButton,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
                 controllerAudioEndpointSelector, controllerAudioTestButton,
@@ -3507,6 +3590,8 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "DragToggle");
                 swapAbCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapAB");
                 swapXyCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapXY");
+                doNotRejoinCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "DoNotRejoinJoycons");
                 string rumbleMode = ControllerMappings.RumbleMode(SelectedProfileId);
                 int rumbleIndex = Array.FindIndex(ControllerMappings.RumbleModes,
                     m => String.Equals(m.Value, rumbleMode, StringComparison.OrdinalIgnoreCase));

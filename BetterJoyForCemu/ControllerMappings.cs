@@ -276,6 +276,9 @@ namespace BetterJoyForCemu {
             "LightingOff", "LightingMode",
             "PlayerLedMode",
             "GyroAnalogSliders", "DefaultOrientation",
+            // Solo Joy-Con profiles only, read by the auto-join pass. Keeps the old global name so
+            // LegacyOptionValue falls back to App.config's value until a profile sets its own.
+            "DoNotRejoinJoycons",
             "GyroStickModeLeft", "GyroStickModeRight",
             "GyroStickAxisXLeft", "GyroStickAxisXRight",
             "GyroStickInvertXLeft", "GyroStickInvertYLeft",
