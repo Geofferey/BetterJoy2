@@ -60,14 +60,14 @@ try {
         'AreCustomRebindButtonsHeld',
         [Reflection.BindingFlags]'NonPublic,Static',
         $null,
-        [Type[]]@([string], [bool[]], [bool[]]),
+        [Type[]]@([string], [bool[]]),
         $null)
 
     # A direct B rebind remains active when another button is also held, while every member of a
     # multi-button source must be physically present.
     [bool[]]$physical = New-Object bool[] $buttonCount
     $physical[13] = $true
-    $heldArguments = New-Object object[] 3
+    $heldArguments = New-Object object[] 2
     $heldArguments[0] = 'joy_13'
     $heldArguments[1] = $physical
     Assert-True ($isRebindHeld.Invoke($null, $heldArguments)) `
@@ -828,6 +828,63 @@ try {
         Assert-True ([bool]$boolOption.Invoke($null, @('solo-left:test', 'DoNotRejoinJoycons')) -eq
             [bool]::Parse($legacyValue)) `
             "A profile without its own value did not inherit DoNotRejoinJoycons=$legacyValue."
+    }
+
+    # User contract: on a joined Joy-Con pair, a bind to ZL fires only for ZL and a bind to ZR
+    # only for ZR - whichever half evaluates it. Binds are captured from the left half, where
+    # SHOULDER_2 (12) is ZL and SHOULDER2_2 (19) is ZR; the right half stores the same two
+    # presses mirrored (its own ZR at 12, the left's ZL at 19). Reading either index from both
+    # halves at once made ZL and ZR indistinguishable, and made every press look like two.
+    $joyConType = $assembly.GetType('BetterJoyForCemu.JoyconController', $true)
+    $instanceNonPublic = [Reflection.BindingFlags]'Instance,NonPublic'
+    $leftHalf = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($joyConType)
+    $rightHalf = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($joyConType)
+    $controllerType.GetField('isLeft').SetValue($leftHalf, $true)
+    $controllerType.GetField('isLeft').SetValue($rightHalf, $false)
+    $controllerType.GetField('_other', $instanceNonPublic).SetValue($leftHalf, $rightHalf)
+    $controllerType.GetField('_other', $instanceNonPublic).SetValue($rightHalf, $leftHalf)
+    $comboHeld = $controllerType.GetMethod('IsComboHeld', $instanceNonPublic)
+    $modifierHeld = $controllerType.GetMethod('IsSingleModifierHeld', $instanceNonPublic)
+    $rebindHeld = $controllerType.GetMethod('AreCustomRebindButtonsHeld', $instanceNonPublic,
+        $null, [Type[]]@([string]), $null)
+
+    function Set-PairPress([bool]$ZL, [bool]$ZR) {
+        [bool[]]$leftButtons = New-Object bool[] $buttonCount
+        [bool[]]$rightButtons = New-Object bool[] $buttonCount
+        $leftButtons[12] = $ZL; $leftButtons[19] = $ZR
+        $rightButtons[12] = $ZR; $rightButtons[19] = $ZL
+        [long[]]$downAt = New-Object long[] $buttonCount
+        foreach ($half in @(@($leftHalf, $leftButtons), @($rightHalf, $rightButtons))) {
+            $controllerType.GetField('buttons', $instanceNonPublic).SetValue($half[0], $half[1])
+            $controllerType.GetField('buttons_down_timestamp', $instanceNonPublic).SetValue(
+                $half[0], $downAt.Clone())
+        }
+    }
+
+    foreach ($case in @(@('ZL', $true, $false, 'joy_12', 'joy_19'),
+                        @('ZR', $false, $true, 'joy_19', 'joy_12'))) {
+        Set-PairPress $case[1] $case[2]
+        foreach ($half in @(@('left', $leftHalf), @('right', $rightHalf))) {
+            Assert-True ([bool]$comboHeld.Invoke($half[1], @($case[3]))) `
+                "A joined pair's $($half[0]) half did not fire the $($case[0]) bind for $($case[0])."
+            Assert-True (-not [bool]$comboHeld.Invoke($half[1], @($case[4]))) `
+                "A joined pair's $($half[0]) half fired the other trigger's bind for $($case[0])."
+            Assert-True ([bool]$modifierHeld.Invoke($half[1], @($case[3]))) `
+                "A joined pair's $($half[0]) half did not hold the $($case[0]) modifier."
+            Assert-True (-not [bool]$modifierHeld.Invoke($half[1], @($case[4]))) `
+                "A joined pair's $($half[0]) half held the other trigger's modifier for $($case[0])."
+            Assert-True ([bool]$rebindHeld.Invoke($half[1], @($case[3]))) `
+                "A joined pair's $($half[0]) half did not rebind $($case[0])."
+            Assert-True (-not [bool]$rebindHeld.Invoke($half[1], @($case[4]))) `
+                "A joined pair's $($half[0]) half rebound the other trigger for $($case[0])."
+        }
+    }
+    Set-PairPress $true $true
+    foreach ($half in @(@('left', $leftHalf), @('right', $rightHalf))) {
+        Assert-True ([bool]$comboHeld.Invoke($half[1], @('joy_12+joy_19'))) `
+            "A joined pair's $($half[0]) half did not fire a ZL+ZR chord."
+        Assert-True (-not [bool]$comboHeld.Invoke($half[1], @('joy_12'))) `
+            "A joined pair's $($half[0]) half fired a ZL-only bind while ZR was also held."
     }
 
     Write-Host 'Custom Rebind regression tests passed.'

@@ -2112,21 +2112,27 @@ namespace BetterJoyForCemu {
         // rebound while another physical button is also held. The source is read only from the
         // normalized buttons arrays; generated output never feeds back into this check.
         private bool AreCustomRebindButtonsHeld(string input) {
-            return AreCustomRebindButtonsHeld(input, buttons,
-                other != null && other != this ? other.buttons : null);
+            return AreCustomRebindButtonsHeld(input, BindButtonSource.buttons);
         }
 
-        internal static bool AreCustomRebindButtonsHeld(string input,
-                bool[] physicalButtons, bool[] partnerButtons) {
+        // The controller whose button array every bind check reads. A joined pair's halves each
+        // hold the whole pair, mirrored: the left half keeps its own L/ZL/D-pad at the primary
+        // indices and the right half's R/ZR/face buttons at the secondary ones, and the right half
+        // does the reverse (NintendoController.ProcessButtonsAndStick). Binds are captured from
+        // the left half alone (HeadlessJoyconHost.PollButtonCapture), so both halves check them
+        // against that same array. ORing the two halves instead made joy_12 mean "ZL or ZR", and
+        // under exact matching every single press also held its mirrored index as an extra.
+        private Controller BindButtonSource =>
+            other != null && other != this && !isLeft ? (Controller)other : this;
+
+        internal static bool AreCustomRebindButtonsHeld(string input, bool[] physicalButtons) {
             foreach (string part in input.Split('+')) {
                 int buttonIndex;
                 if (!part.StartsWith("joy_", StringComparison.Ordinal) ||
                         !Int32.TryParse(part.Substring(4), out buttonIndex) ||
                         buttonIndex < 0 || buttonIndex >= ButtonCount)
                     return false;
-                bool heldHere = physicalButtons[buttonIndex];
-                bool heldByPartner = partnerButtons != null && partnerButtons[buttonIndex];
-                if (!(heldHere || heldByPartner))
+                if (!physicalButtons[buttonIndex])
                     return false;
             }
             return true;
@@ -2244,19 +2250,18 @@ namespace BetterJoyForCemu {
         }
 
         private bool IsSingleComboHeld(string combo) {
+            Controller source = BindButtonSource;
+            bool[] held = source.buttons;
+            long[] downAt = source.buttons_down_timestamp;
             ulong comboButtonMask = 0;
             long previousDownTimestamp = long.MinValue;
             foreach (string part in combo.Split('+')) {
                 if (part.StartsWith("joy_")) {
                     int i = Int32.Parse(part.Substring(4));
-                    bool heldHere = buttons[i];
-                    bool heldByPartner = other != null && other != this && other.buttons[i];
-                    if (!(heldHere || heldByPartner))
+                    if (!held[i])
                         return false;
 
-                    long downTimestamp = heldHere
-                        ? buttons_down_timestamp[i]
-                        : other.buttons_down_timestamp[i];
+                    long downTimestamp = downAt[i];
                     if (downTimestamp < previousDownTimestamp)
                         return false;
                     previousDownTimestamp = downTimestamp;
@@ -2274,8 +2279,7 @@ namespace BetterJoyForCemu {
             }
 
             for (int i = 0; i < ButtonCount; i++) {
-                bool heldHere = buttons[i] || (other != null && other != this && other.buttons[i]);
-                if (heldHere && (comboButtonMask & (1UL << i)) == 0)
+                if (held[i] && (comboButtonMask & (1UL << i)) == 0)
                     return false;
             }
             return true;
@@ -2313,6 +2317,9 @@ namespace BetterJoyForCemu {
         }
 
         private bool IsSingleModifierHeld(string combo) {
+            Controller source = BindButtonSource;
+            bool[] held = source.buttons;
+            long[] downAt = source.buttons_down_timestamp;
             ulong comboButtonMask = 0;
             long latestModifierDownTimestamp = long.MinValue;
             foreach (string part in combo.Split('+')) {
@@ -2322,12 +2329,10 @@ namespace BetterJoyForCemu {
                 if (!Int32.TryParse(part.Substring(4), out i) ||
                         i < 0 || i >= ButtonCount)
                     return false;
-                bool heldHere = buttons[i];
-                bool heldByPartner = other != null && other != this && other.buttons[i];
-                if (!(heldHere || heldByPartner))
+                if (!held[i])
                     return false;
 
-                long downTimestamp = heldHere ? buttons_down_timestamp[i] : other.buttons_down_timestamp[i];
+                long downTimestamp = downAt[i];
                 if (downTimestamp > latestModifierDownTimestamp)
                     latestModifierDownTimestamp = downTimestamp;
                 comboButtonMask |= 1UL << i;
@@ -2337,14 +2342,10 @@ namespace BetterJoyForCemu {
                 if ((comboButtonMask & (1UL << i)) != 0)
                     continue; // one of the modifier's own buttons, not "something else"
 
-                bool otherHeldHere = buttons[i];
-                bool otherHeldByPartner = other != null && other != this && other.buttons[i];
-                if (!(otherHeldHere || otherHeldByPartner))
+                if (!held[i])
                     continue;
 
-                long otherDownTimestamp = otherHeldHere
-                    ? buttons_down_timestamp[i]
-                    : other.buttons_down_timestamp[i];
+                long otherDownTimestamp = downAt[i];
                 if (otherDownTimestamp < latestModifierDownTimestamp)
                     return false; // this button was already down before the modifier finished
             }
