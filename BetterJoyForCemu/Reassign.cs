@@ -3953,6 +3953,10 @@ namespace BetterJoyForCemu {
                         continue;
                     section.Visible = visible;
                     changed = true;
+                    if (DebugLog.Enabled) {
+                        DebugLog.Write("[ProfileUi.Section] key=" + key + " visible=" + visible +
+                            " controls=" + section.Controls.Count);
+                    }
                 }
                 if (changed)
                     ReflowPage(entry.Key);
@@ -3974,6 +3978,11 @@ namespace BetterJoyForCemu {
 
             int top = sections[0].BaselineTop;
             foreach (ProfileSection section in sections) {
+                // Skipping a hidden section below only reclaims its space; its controls must be
+                // hidden here too, or they stay drawn at their old positions under whatever moves
+                // up. Items a capability rule hid stay hidden inside a visible section.
+                foreach (Control control in section.Controls)
+                    control.Visible = section.Visible && !hiddenProfileItems.Contains(control);
                 if (!section.Visible)
                     continue;
 

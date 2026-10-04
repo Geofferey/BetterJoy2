@@ -649,6 +649,48 @@ try {
     Assert-True ($firstBottom -eq $secondTop) `
         "Sections must tile: first ends at $firstBottom, second starts at $secondTop."
 
+    # User contract: hiding a gated section (Joy-Con rail buttons, Orientation, PlayStation
+    # lighting, a Sticks block) hides its controls, not just the space they took. Only reclaiming
+    # the space left SL/SR drawn on every non-Joy-Con controller. An item a capability rule hid
+    # must stay hidden when its section comes back.
+    # Control.Visible reads false for any control whose parent is not shown, so read the control's
+    # own visible flag (STATE_VISIBLE) instead.
+    $getState = [Windows.Forms.Control].GetMethod('GetState', $anyInstance)
+    function Test-OwnVisible($Control) {
+        return [bool]$getState.Invoke($Control, @([int]0x2))
+    }
+    $hiddenItemsField = $reassignType.GetField('hiddenProfileItems', $anyInstance)
+    $hiddenItemsField.SetValue($layoutOwner, [Activator]::CreateInstance($hiddenItemsField.FieldType))
+    $reassignType.GetMethod('CaptureSectionBaselines', $anyInstance).Invoke($layoutOwner, @()) | Out-Null
+    $setSectionVisible = $reassignType.GetMethod('SetSectionVisible', $anyInstance)
+    $setItemVisible = $reassignType.GetMethod('SetProfileItemVisible', $anyInstance)
+    $firstControls = @($sectionType.GetField('Controls').GetValue($builtSections[0]))
+    $gatedControls = @($sectionType.GetField('Controls').GetValue($builtSections[1]))
+    function Invoke-OwnerMethod($Method, $First, [bool]$Visible) {
+        $methodArguments = New-Object object[] 2
+        $methodArguments[0] = $First
+        $methodArguments[1] = $Visible
+        $Method.Invoke($layoutOwner, $methodArguments) | Out-Null
+    }
+
+    Invoke-OwnerMethod $setSectionVisible 'gated' $false
+    foreach ($gatedControl in $gatedControls) {
+        Assert-True (-not (Test-OwnVisible $gatedControl)) `
+            "A control in a hidden section stayed visible ($($gatedControl.GetType().Name) '$($gatedControl.Text)')."
+    }
+    foreach ($firstControl in $firstControls) {
+        Assert-True (Test-OwnVisible $firstControl) 'Hiding one section hid a control in another.'
+    }
+
+    $capabilityHidden = $gatedControls | Where-Object { $_ -is $splitButtonType } | Select-Object -First 1
+    Invoke-OwnerMethod $setItemVisible $capabilityHidden.PSObject.BaseObject $false
+    Invoke-OwnerMethod $setSectionVisible 'gated' $true
+    foreach ($gatedControl in $gatedControls) {
+        $expected = -not [object]::ReferenceEquals($gatedControl, $capabilityHidden)
+        Assert-True ((Test-OwnVisible $gatedControl) -eq $expected) `
+            "Showing a section again set $($gatedControl.GetType().Name) '$($gatedControl.Text)' visible=$(-not $expected)."
+    }
+
     # User contract: the Home LED row is Nintendo-only, and Player LED is shown for the
     # Nintendo-protocol pads (a joined pair reports no Kind) plus the DualSense, which drives its
     # own player LEDs. Only DualShock 4 and Xbox lose the row.
