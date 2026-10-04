@@ -818,10 +818,29 @@ try {
     Assert-True (-not [bool]$isGlobal.Invoke($null, @('DoNotRejoinJoycons'))) `
         'DoNotRejoinJoycons is still treated as a global option.'
     $mainFormType = $assembly.GetType('BetterJoyForCemu.MainForm', $true)
-    $profileOwned = $mainFormType.GetField('ProfileOwnedConfigKeys',
-        [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)
-    Assert-True ($profileOwned.Contains('DoNotRejoinJoycons')) `
-        'The Config pane still lists DoNotRejoinJoycons.'
+    $isConfigPaneKey = $mainFormType.GetMethod('IsConfigPaneKey', [Reflection.BindingFlags]'Static,NonPublic')
+
+    # User contract: the legacy Config pane never lists a setting a controller profile owns, nor
+    # an application-wide one that lives on Global options. Checked against every key the bundled
+    # App.config ships, so a profile setting added later cannot be left showing there.
+    $isProfileKey = $mappingsType.GetMethod('IsProfileKey', [Reflection.BindingFlags]'Static,Public')
+    [xml]$bundledConfig = Get-Content -LiteralPath ($resolvedAssembly + '.config')
+    $bundledKeys = [string[]]@($bundledConfig.configuration.appSettings.add | ForEach-Object { [string]$_.key })
+    $paneKeys = @($bundledKeys | Where-Object { [bool]$isConfigPaneKey.Invoke($null, @([string]$_)) })
+    foreach ($bundledKey in $bundledKeys) {
+        if ([bool]$isProfileKey.Invoke($null, @([string]$bundledKey)) -or
+                [bool]$isGlobal.Invoke($null, @([string]$bundledKey))) {
+            Assert-True ($paneKeys -notcontains $bundledKey) "The Config pane still lists $bundledKey."
+        }
+    }
+    foreach ($legacySource in 'ShowAsXInput', 'ShowAsDS4', 'GyroToJoyOrMouse') {
+        Assert-True ($paneKeys -notcontains $legacySource) `
+            "The Config pane still lists the legacy profile seed $legacySource."
+    }
+    foreach ($profileKey in 'DoNotRejoinJoycons', 'StickMouseDeadzoneLeft', 'GyroStickModeLeft',
+            'GyroMouseDirectCursor', 'ChargeGlowColor', 'HomeLongPowerOffHoldSeconds', 'left_click') {
+        Assert-True ($paneKeys -notcontains $profileKey) "The Config pane still lists $profileKey."
+    }
     $boolOption = $mappingsType.GetMethod('BoolOption', [Reflection.BindingFlags]'Static,Public')
     foreach ($legacyValue in 'true', 'false') {
         [Configuration.ConfigurationManager]::AppSettings.Set('DoNotRejoinJoycons', $legacyValue)

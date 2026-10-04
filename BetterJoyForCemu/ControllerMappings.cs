@@ -359,6 +359,12 @@ namespace BetterJoyForCemu {
         private static readonly HashSet<string> KnownKeys = new HashSet<string>(Keys, StringComparer.Ordinal);
         private static readonly HashSet<string> KnownOptionKeys =
             new HashSet<string>(OptionKeys, StringComparer.Ordinal);
+
+        // True for any key a controller profile owns, binding or option. An App.config key of the
+        // same name is only the fallback for profiles that never set it, not a global setting.
+        public static bool IsProfileKey(string key) {
+            return KnownKeys.Contains(key) || KnownOptionKeys.Contains(key);
+        }
         private static readonly HashSet<string> GyroActivationKeys = new HashSet<string>(StringComparer.Ordinal) {
             "active_gyro_mouse", "active_gyro_left_stick", "active_gyro_right_stick",
         };

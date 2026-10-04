@@ -42,18 +42,20 @@ namespace BetterJoyForCemu {
             GetOpaqueBounds(SlotIconJoyconRight);
         private readonly Dictionary<string, Bitmap> joinedIconCache =
             new Dictionary<string, Bitmap>(StringComparer.Ordinal);
-        private static readonly HashSet<string> ProfileOwnedConfigKeys =
+        // App.config keys a profile setting is seeded from under a different name: UseAs from
+        // ShowAsXInput/ShowAsDS4, the gyro activation bindings from GyroToJoyOrMouse. Every key a
+        // profile owns under its own name comes from ControllerMappings.IsProfileKey instead of a
+        // copy here, so a new profile setting can never be left showing in the Config pane.
+        private static readonly HashSet<string> LegacyProfileSourceKeys =
             new HashSet<string>(StringComparer.Ordinal) {
-                "ShowAsXInput", "ShowAsDS4", "AutoPowerOff", "PowerOffInactivity",
-                "HomeLongPowerOff", "EnableRumble", "GyroHoldToggle",
-                "GyroMouseInhibitButtons",
-                "DragToggle", "TouchpadMouseInhibitButtons", "TouchpadSensitivity",
-                "TouchpadStickSensitivity",
-                "TouchpadHorizontalScale", "TouchpadVerticalScale",
-                "TouchpadTapAndHold", "TouchpadClickMovementLockout",
-                "TouchpadTwoFingerScroll",
-                "SwapAB", "SwapXY", "HomeLEDOn", "LightColor", "DoNotRejoinJoycons",
+                "ShowAsXInput", "ShowAsDS4", "GyroToJoyOrMouse",
             };
+
+        internal static bool IsConfigPaneKey(string key) {
+            return !LegacyProfileSourceKeys.Contains(key) &&
+                !ControllerMappings.IsProfileKey(key) &&
+                !ApplicationSettings.IsGlobalOption(key);
+        }
         // When a Windows Service already owns the hardware (see ServiceControlProtocol/
         // HeadlessJoyconHost), this GUI never runs its own HID/ViGEm pipeline at all - it just
         // shows live status pushed over ServiceControlClient and forwards a handful of commands
@@ -111,14 +113,13 @@ namespace BetterJoyForCemu {
                 SetEmptySlotTooltip(v);
             }
 
-            // Gyro outputs are now selected independently in Controller Profiles. Keep the old
-            // key in App.config only as a one-time compatibility hint for legacy mappings; it is
-            // no longer a runtime setting and should not be editable here.
             displayedConfigKeys = ConfigurationManager.AppSettings.AllKeys
-                .Where(key => key != "GyroToJoyOrMouse" &&
-                              !ProfileOwnedConfigKeys.Contains(key) &&
-                              !ApplicationSettings.IsGlobalOption(key))
+                .Where(IsConfigPaneKey)
                 .ToArray();
+            if (DebugLog.Enabled)
+                DebugLog.Write("[ConfigPane] showing " + displayedConfigKeys.Length + " of " +
+                    ConfigurationManager.AppSettings.AllKeys.Length + " App.config keys: " +
+                    String.Join(",", displayedConfigKeys));
             Size childSize = new Size(150, 20);
             for (int i = 0; i != displayedConfigKeys.Length; i++) {
                 settingsTable.RowCount++;
