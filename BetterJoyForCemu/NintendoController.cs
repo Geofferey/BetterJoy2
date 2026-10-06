@@ -167,7 +167,10 @@ namespace BetterJoyForCemu {
             handle = handle_;
             imu_enabled = imu;
             do_localize = localize;
-            rumble_obj = new Rumble(new float[] { lowFreq, highFreq, 0 });
+            // Zero amplitude ignores both frequencies (Rumble.GetData), so seed zeros like
+            // XboxController does. Reading lowFreq/highFreq here would resolve the profile before
+            // this controller's identity is set and cache the wrong profile id.
+            rumble_obj = new Rumble(new float[] { 0, 0, 0 });
             for (int i = 0; i < buttons_down_timestamp.Length; i++)
                 buttons_down_timestamp[i] = -1;
             filterweight = alpha;

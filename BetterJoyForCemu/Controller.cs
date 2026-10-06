@@ -242,8 +242,12 @@ namespace BetterJoyForCemu {
         // queue/SetRumble contract - see SendQueuedRumbleIfAny's per-subclass overrides. Meaningless
         // to a device whose rumble ignores frequency (DualSense just reads back the amplitude), but
         // harmless to have seeded regardless.
-        protected int lowFreq = Int32.Parse(ConfigurationManager.AppSettings["LowFreqRumble"]);
-        protected int highFreq = Int32.Parse(ConfigurationManager.AppSettings["HighFreqRumble"]);
+        //
+        // Per profile (Device behavior > Haptics), read at each rumble command so an edit applies
+        // without reconnecting. A profile that never set them falls back to the old global
+        // App.config values (LegacyOptionValue); 40/120 only guard a missing or unparsable value.
+        protected int lowFreq => ProfileIntOption("LowFreqRumble", 40);
+        protected int highFreq => ProfileIntOption("HighFreqRumble", 120);
 
         public bool RumbleEnabled {
             get {

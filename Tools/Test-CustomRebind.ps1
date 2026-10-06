@@ -849,6 +849,26 @@ try {
             "A profile without its own value did not inherit DoNotRejoinJoycons=$legacyValue."
     }
 
+    # User contract: HD rumble pitch is per profile (Device behavior > Haptics). A profile that
+    # never set it keeps the old global App.config value, so existing setups rumble exactly as
+    # before; a missing or unparsable value falls back to the shipped 40/120 Hz.
+    foreach ($rumbleKey in 'LowFreqRumble', 'HighFreqRumble') {
+        Assert-True ($optionKeys -contains $rumbleKey) "$rumbleKey is not a profile option."
+    }
+    $rumblePad = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($proControllerType)
+    $controllerType.GetField('mappingProfileId', [Reflection.BindingFlags]'Instance,NonPublic').SetValue(
+        $rumblePad, 'pro:rumble-test')
+    $lowFreqProperty = $controllerType.GetProperty('lowFreq', [Reflection.BindingFlags]'Instance,NonPublic')
+    $highFreqProperty = $controllerType.GetProperty('highFreq', [Reflection.BindingFlags]'Instance,NonPublic')
+    foreach ($pitchCase in @(@('160', '320', 160, 320), @('', 'abc', 40, 120))) {
+        [Configuration.ConfigurationManager]::AppSettings.Set('LowFreqRumble', $pitchCase[0])
+        [Configuration.ConfigurationManager]::AppSettings.Set('HighFreqRumble', $pitchCase[1])
+        $low = [int]$lowFreqProperty.GetValue($rumblePad)
+        $high = [int]$highFreqProperty.GetValue($rumblePad)
+        Assert-True ($low -eq $pitchCase[2] -and $high -eq $pitchCase[3]) `
+            "Rumble pitch with App.config '$($pitchCase[0])'/'$($pitchCase[1])' was $low/$high, expected $($pitchCase[2])/$($pitchCase[3])."
+    }
+
     # User contract: on a joined Joy-Con pair, a bind to ZL fires only for ZL and a bind to ZR
     # only for ZR - whichever half evaluates it. Binds are captured from the left half, where
     # SHOULDER_2 (12) is ZL and SHOULDER2_2 (19) is ZR; the right half stores the same two

@@ -261,7 +261,11 @@ namespace BetterJoyForCemu {
             "USBSleepOnConnect",
             "AutoPowerOff", "PowerOffInactivity", "HomeLongPowerOff",
             "HomeLongPowerOffHoldSeconds",
-            "EnableRumble", "ControllerAudioEnabled", "ControllerAudioVolume",
+            "EnableRumble",
+            // Nintendo HD rumble pitch. Keep their old global names so a profile that never set
+            // them inherits the App.config values.
+            "LowFreqRumble", "HighFreqRumble",
+            "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "ControllerAudioUsbLoopback",
             "ControllerBluetoothMicrophoneEnabled", "MicIndicatorMode",

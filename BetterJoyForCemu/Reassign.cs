@@ -39,6 +39,8 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_gyro_stick_axis = new ContextMenuStrip();
         ContextMenuStrip menu_default_orientation = new ContextMenuStrip();
         ContextMenuStrip menu_home_long_power_off = new ContextMenuStrip();
+        ContextMenuStrip menu_rumble_low_freq = new ContextMenuStrip();
+        ContextMenuStrip menu_rumble_high_freq = new ContextMenuStrip();
 
         private Control curAssignment;
         private bool bindingCaptureSuppressionActive;
@@ -345,6 +347,16 @@ namespace BetterJoyForCemu {
                     HomeLongPowerOffHoldText(seconds)) { Tag = seconds.ToString() });
             menu_home_long_power_off.ItemClicked += HoldPowerOffTimeMenu_ItemClicked;
 
+            // Nintendo HD rumble pitch in Hz, from the App.config defaults (40/120) up to the
+            // README's "stronger rumble" 160/320 and beyond. Rumble.GetData clamps to the band the
+            // controller can encode; right-click takes any value inside it.
+            foreach (int hz in new[] { 40, 80, 160, 320 })
+                menu_rumble_low_freq.Items.Add(new ToolStripMenuItem(hz + " Hz") { Tag = hz.ToString() });
+            foreach (int hz in new[] { 120, 240, 320, 640 })
+                menu_rumble_high_freq.Items.Add(new ToolStripMenuItem(hz + " Hz") { Tag = hz.ToString() });
+            menu_rumble_low_freq.ItemClicked += RumbleFrequencyMenu_ItemClicked;
+            menu_rumble_high_freq.ItemClicked += RumbleFrequencyMenu_ItemClicked;
+
             // Shared by every gyro-stick percentage selector - the deflection limits and the
             // stick reduction alike - since all of them are a plain 0-100.
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
@@ -519,6 +531,16 @@ namespace BetterJoyForCemu {
         private SplitButton btn_touchpad_inhibit;
         private SplitButton btn_touchpad_sensitivity;
         private SplitButton btn_home_long_power_off;
+        private SplitButton btn_rumble_low_freq;
+        private SplitButton btn_rumble_high_freq;
+        private Label rumbleLowFreqLabel;
+        private Label rumbleHighFreqLabel;
+        // Roughly the band Rumble.GetData can encode - it clamps to 40.9-626.3 Hz low and
+        // 81.8-1252.6 Hz high, so the shipped 40 Hz default stays accepted here.
+        private const int MinimumLowRumbleHz = 40;
+        private const int MaximumLowRumbleHz = 626;
+        private const int MinimumHighRumbleHz = 80;
+        private const int MaximumHighRumbleHz = 1252;
         private SplitButton btn_touchpad_stick_sensitivity;
         private SplitButton btn_gyro_stick_reduction_x_left;
         private SplitButton btn_gyro_stick_reduction_y_left;
@@ -801,6 +823,17 @@ namespace BetterJoyForCemu {
             btn_home_long_power_off = CreateChoiceSplitButton(
                 "btn_home_long_power_off", menu_home_long_power_off);
             btn_home_long_power_off.RightClickHandler = (sender, e) => PromptHoldPowerOffTime();
+
+            btn_rumble_low_freq = CreateChoiceSplitButton("btn_rumble_low_freq", menu_rumble_low_freq);
+            btn_rumble_low_freq.Tag = "LowFreqRumble";
+            btn_rumble_low_freq.RightClickHandler = (sender, e) => PromptProfileNumber(
+                btn_rumble_low_freq, "LowFreqRumble", "Low rumble pitch", "low pitch",
+                MinimumLowRumbleHz, MaximumLowRumbleHz, "Hz", RumbleFrequencyText);
+            btn_rumble_high_freq = CreateChoiceSplitButton("btn_rumble_high_freq", menu_rumble_high_freq);
+            btn_rumble_high_freq.Tag = "HighFreqRumble";
+            btn_rumble_high_freq.RightClickHandler = (sender, e) => PromptProfileNumber(
+                btn_rumble_high_freq, "HighFreqRumble", "High rumble pitch", "high pitch",
+                MinimumHighRumbleHz, MaximumHighRumbleHz, "Hz", RumbleFrequencyText);
 
             btn_touchpad_stick_sensitivity = CreateChoiceSplitButton(
                 "btn_touchpad_stick_sensitivity", menu_touchpad_sensitivity);
@@ -2224,7 +2257,27 @@ namespace BetterJoyForCemu {
             page.Controls.Add(rumbleModeSelector);
             tip_reassign.SetToolTip(rumbleModeSelector,
                 "Allow rumble, disable it completely, or suppress it only while gyro output is active.");
-            layout.Advance(33);
+
+            // Nintendo HD rumble only - the PlayStation and Xbox pads ignore frequency.
+            rumbleLowFreqLabel = CreateLabel("Low pitch", 24, sectionTop + 52, ProfileText, false);
+            page.Controls.Add(rumbleLowFreqLabel);
+            StyleMappingButton(btn_rumble_low_freq);
+            btn_rumble_low_freq.Location = new Point(114, sectionTop + 46);
+            btn_rumble_low_freq.Size = new Size(181, 31);
+            page.Controls.Add(btn_rumble_low_freq);
+            rumbleHighFreqLabel = CreateLabel("High pitch", 323, sectionTop + 52, ProfileText, false);
+            page.Controls.Add(rumbleHighFreqLabel);
+            StyleMappingButton(btn_rumble_high_freq);
+            btn_rumble_high_freq.Location = new Point(423, sectionTop + 46);
+            btn_rumble_high_freq.Size = new Size(171, 31);
+            page.Controls.Add(btn_rumble_high_freq);
+            const string rumblePitchTip =
+                "Pitch of the two HD rumble bands on Joy-Con, Pro, SNES and N64 controllers. Higher " +
+                "values feel stronger and buzzier (160 / 320 is a popular stronger setting). " +
+                "Right-click for any value.";
+            tip_reassign.SetToolTip(btn_rumble_low_freq, rumblePitchTip);
+            tip_reassign.SetToolTip(btn_rumble_high_freq, rumblePitchTip);
+            layout.Advance(33 + 46);
 
             layout.Divider();
             layout.Heading("Audio",
@@ -3228,6 +3281,23 @@ namespace BetterJoyForCemu {
             UpdateHomeLongPowerOffButton();
         }
 
+        private static string RumbleFrequencyText(int hz) {
+            return hz + " Hz";
+        }
+
+        // Shared by both pitch buttons; CreateChoiceSplitButton puts the clicked button in Tag,
+        // and each button's own Tag is its option key.
+        private void RumbleFrequencyMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+            SplitButton button = ((ContextMenuStrip)sender).Tag as SplitButton;
+            int hz;
+            if (button == null || String.IsNullOrEmpty(SelectedProfileId) ||
+                    !Int32.TryParse((string)e.ClickedItem.Tag, out hz))
+                return;
+
+            ControllerMappings.SetOptionValue(SelectedProfileId, (string)button.Tag, hz.ToString());
+            button.Text = RumbleFrequencyText(hz);
+        }
+
         // Right-click sets an arbitrary hold, like Mouse sensitivity on the Touchpad page. Only
         // meaningful while the hold is on, so it says so rather than editing a value that does
         // nothing.
@@ -3505,6 +3575,7 @@ namespace BetterJoyForCemu {
                 btn_touchpad_click_lockout, btn_touchpad_two_finger_scroll,
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, btn_home_long_power_off, dragToggleCheckBox,
+                btn_rumble_low_freq, btn_rumble_high_freq,
                 preferredTransportSelector, automaticBluetoothPairingSelector,
                 swapAbCheckBox, swapXyCheckBox, doNotRejoinCheckBox, rumbleModeSelector,
                 homeLedSelector, lightColorButton, lightingModeSelector, playerLedSelector,
@@ -3603,6 +3674,10 @@ namespace BetterJoyForCemu {
                 int rumbleIndex = Array.FindIndex(ControllerMappings.RumbleModes,
                     m => String.Equals(m.Value, rumbleMode, StringComparison.OrdinalIgnoreCase));
                 rumbleModeSelector.SelectedIndex = Math.Max(0, rumbleIndex);
+                btn_rumble_low_freq.Text = RumbleFrequencyText(
+                    ControllerMappings.IntOption(SelectedProfileId, "LowFreqRumble", 40));
+                btn_rumble_high_freq.Text = RumbleFrequencyText(
+                    ControllerMappings.IntOption(SelectedProfileId, "HighFreqRumble", 120));
                 homeLedSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "HomeLEDOn") ? 0 : 1;
                 UpdateLightColorButton(
@@ -4184,6 +4259,13 @@ namespace BetterJoyForCemu {
             if (homeLongPowerOffLabel != null)
                 homeLongPowerOffLabel.Text = "Hold " + HomeLongPowerOffButtonName(selected?.Kind);
 
+            // HD rumble pitch exists only on the Nintendo-protocol pads (Rumble.GetData).
+            bool hasRumblePitch = KindIsNintendo(selected?.Kind);
+            SetProfileItemVisible(rumbleLowFreqLabel, hasRumblePitch);
+            SetProfileItemVisible(btn_rumble_low_freq, hasRumblePitch);
+            SetProfileItemVisible(rumbleHighFreqLabel, hasRumblePitch);
+            SetProfileItemVisible(btn_rumble_high_freq, hasRumblePitch);
+
             bool hasHomeLed = KindHasHomeLed(selected?.Kind);
             SetProfileItemVisible(homeLedLabel, hasHomeLed);
             SetProfileItemVisible(homeLedSelector, hasHomeLed);
@@ -4670,7 +4752,7 @@ namespace BetterJoyForCemu {
                     BackColor = ProfileSurface,
                     ForeColor = ProfileText,
                     BorderStyle = BorderStyle.FixedSingle,
-                    Text = ControllerMappings.IntOption(SelectedProfileId, key, 100) + "%",
+                    Text = ControllerMappings.IntOption(SelectedProfileId, key, 100) + unit,
                     TextAlign = HorizontalAlignment.Center,
                 };
                 var cancel = new Button {
