@@ -2298,7 +2298,7 @@ namespace BetterJoyForCemu {
             stick_precal[1] = stickRaw[1];
             CalibrationState.AddStickSample(this, false, stickRaw[0], stickRaw[1]);
             float[] stickResult = CenterSticks(stickRaw, stick_cal, deadzone,
-                float.Parse(ConfigurationManager.AppSettings["StickScalingFactor"]));
+                ProfileFloatOption("StickScalingFactor", 1f));
             stick[0] = stickResult[0];
             stick[1] = -stickResult[1];
 
@@ -2307,7 +2307,7 @@ namespace BetterJoyForCemu {
             stick2_precal[1] = stick2Raw[1];
             CalibrationState.AddStickSample(this, true, stick2Raw[0], stick2Raw[1]);
             float[] stick2Result = CenterSticks(stick2Raw, stick2_cal, deadzone2,
-                float.Parse(ConfigurationManager.AppSettings["StickScalingFactor2"]));
+                ProfileFloatOption("StickScalingFactor2", 1f));
             stick2[0] = stick2Result[0];
             stick2[1] = -stick2Result[1];
 

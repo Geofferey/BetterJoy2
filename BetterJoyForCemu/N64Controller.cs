@@ -51,7 +51,9 @@ namespace BetterJoyForCemu {
         private float maxY = 0.5f;
         private float minY = -0.5f;
 
-        private bool realn64Range = Boolean.Parse(ConfigurationManager.AppSettings["N64Range"]);
+        // Per profile (Sticks page, N64 only), read each report so an edit applies live. A profile
+        // that never set it inherits the old global App.config value.
+        private bool realn64Range => ProfileBoolOption("N64Range");
 
         private static float GetNormalizedValue(float value, float rawMin, float rawMax, float normalizedMin, float normalizedMax)
         {

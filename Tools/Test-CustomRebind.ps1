@@ -895,6 +895,38 @@ try {
     Assert-True ($shakeTimerField.GetValue($rumblePad).IsRunning) `
         'Turning shake back on did not restart its timer.'
 
+    # User contract: stick range scale and N64 range are per profile (Sticks page). A unit's own
+    # stick is scaled by the block it appears in there: the Left block's StickScalingFactor for
+    # any single stick - a solo right Joy-Con included - and StickScalingFactor2 only for a
+    # joined pair's right half, whose stick becomes the pair's right stick.
+    foreach ($stickKey in 'StickScalingFactor', 'StickScalingFactor2', 'N64Range') {
+        Assert-True ($optionKeys -contains $stickKey) "$stickKey is not a profile option."
+    }
+    $nintendoType = $assembly.GetType('BetterJoyForCemu.NintendoController', $true)
+    $ownScaleKey = $nintendoType.GetProperty('OwnStickScaleKey', [Reflection.BindingFlags]'Instance,NonPublic')
+    $scaleJoyCon = $assembly.GetType('BetterJoyForCemu.JoyconController', $true)
+    $soloLeft = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($scaleJoyCon)
+    $soloRight = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($scaleJoyCon)
+    $controllerType.GetField('isLeft').SetValue($soloLeft, $true)
+    $controllerType.GetField('isLeft').SetValue($soloRight, $false)
+    Assert-True ($ownScaleKey.GetValue($soloLeft) -eq 'StickScalingFactor') 'A solo left Joy-Con did not use the Left block scale.'
+    Assert-True ($ownScaleKey.GetValue($soloRight) -eq 'StickScalingFactor') 'A solo right Joy-Con did not use the Left block scale.'
+    $controllerType.GetField('_other', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($soloRight, $soloRight)
+    Assert-True ($ownScaleKey.GetValue($soloRight) -eq 'StickScalingFactor') 'A vertical right Joy-Con did not use the Left block scale.'
+    $controllerType.GetField('_other', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($soloRight, $soloLeft)
+    $controllerType.GetField('_other', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($soloLeft, $soloRight)
+    Assert-True ($ownScaleKey.GetValue($soloRight) -eq 'StickScalingFactor2') "A joined pair's right half did not use the Right block scale."
+    Assert-True ($ownScaleKey.GetValue($soloLeft) -eq 'StickScalingFactor') "A joined pair's left half did not use the Left block scale."
+    $n64Type = $assembly.GetType('BetterJoyForCemu.N64Controller', $true)
+    $n64Pad = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($n64Type)
+    $controllerType.GetField('mappingProfileId', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($n64Pad, 'n64:test')
+    $n64Range = $n64Type.GetProperty('realn64Range', [Reflection.BindingFlags]'Instance,NonPublic')
+    foreach ($legacyRange in 'true', 'false') {
+        [Configuration.ConfigurationManager]::AppSettings.Set('N64Range', $legacyRange)
+        Assert-True ([bool]$n64Range.GetValue($n64Pad) -eq [bool]::Parse($legacyRange)) `
+            "An N64 profile without its own value did not inherit N64Range=$legacyRange."
+    }
+
     # User contract: on a joined Joy-Con pair, a bind to ZL fires only for ZL and a bind to ZR
     # only for ZR - whichever half evaluates it. Binds are captured from the left half, where
     # SHOULDER_2 (12) is ZL and SHOULDER2_2 (19) is ZR; the right half stores the same two

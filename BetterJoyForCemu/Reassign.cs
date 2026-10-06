@@ -43,6 +43,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_rumble_high_freq = new ContextMenuStrip();
         ContextMenuStrip menu_shake_threshold = new ContextMenuStrip();
         ContextMenuStrip menu_shake_delay = new ContextMenuStrip();
+        ContextMenuStrip menu_stick_scale = new ContextMenuStrip();
 
         private Control curAssignment;
         private bool bindingCaptureSuppressionActive;
@@ -370,6 +371,12 @@ namespace BetterJoyForCemu {
             menu_shake_threshold.ItemClicked += PlainOptionMenu_ItemClicked;
             menu_shake_delay.ItemClicked += PlainOptionMenu_ItemClicked;
 
+            // Stick range scale multiplies the calibrated deflection (CenterSticks); above 1 lets
+            // a stick that physically falls short of its edge still reach full output.
+            foreach (string scale in new[] { "0.90", "1.00", "1.05", "1.10", "1.15", "1.20", "1.30" })
+                menu_stick_scale.Items.Add(new ToolStripMenuItem(scale) { Tag = scale });
+            menu_stick_scale.ItemClicked += PlainOptionMenu_ItemClicked;
+
             // Shared by every gyro-stick percentage selector - the deflection limits and the
             // stick reduction alike - since all of them are a plain 0-100.
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
@@ -505,6 +512,9 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> stickCurveSelectors = new List<SplitButton>();
         private readonly List<SplitButton> stickKeyThresholdButtons = new List<SplitButton>();
         private readonly List<SplitButton> stickInhibitButtons = new List<SplitButton>();
+        private readonly List<SplitButton> stickScaleButtons = new List<SplitButton>();
+        private SplitButton btn_n64_range;
+        private readonly Label lbl_n64_range = new Label();
         // Mouse actions shared by both sticks - they only matter while a stick is driving the
         // pointer, which is one pointer either way, so there is nothing per-stick about them.
         private readonly List<SplitButton> stickMouseButtons = new List<SplitButton>();
@@ -731,7 +741,22 @@ namespace BetterJoyForCemu {
                     "mouse or keys, so aiming the pointer doesn't also push the in-game stick. " +
                     "A gyro or touchpad contribution to the same stick still gets through.");
                 stickInhibitButtons.Add(inhibit);
+
+                SplitButton scale = CreateChoiceSplitButton(
+                    "btn_stick_scale_" + side, menu_stick_scale);
+                scale.Tag = index == 0 ? "StickScalingFactor" : "StickScalingFactor2";
+                tip_reassign.SetToolTip(scale,
+                    "Multiplies this stick's calibrated output. Raise it if the stick can't " +
+                    "reach full deflection at its physical edge; 1.00 leaves it unchanged.");
+                stickScaleButtons.Add(scale);
             }
+
+            // Enabled/Disabled reuses the inhibit menu's "true"/"false" items.
+            btn_n64_range = CreateChoiceSplitButton("btn_n64_range", menu_stick_inhibit);
+            btn_n64_range.Tag = "N64Range";
+            tip_reassign.SetToolTip(btn_n64_range,
+                "Limit the stick to about 79% of full deflection, approximating a real N64 " +
+                "controller's octagonal gate instead of a full circle.");
 
             // Order must match BuildSticksPage's own labels array - each entry becomes this
             // button's saved config key via the specialButtons Tag pass.
@@ -1893,6 +1918,16 @@ namespace BetterJoyForCemu {
             layout.RowPair(
                 null, stickKeyThresholdButtons[index], "Threshold", 24, 114, 181,
                 null, stickInhibitButtons[index], "Inhibit stick", 323, 423, 171);
+            // Range scale applies to the virtual controller's stick output too, not only mouse
+            // and keys - it shapes the stick itself. N64 range is the left block's (an N64 has
+            // one stick) and is hidden for every other controller.
+            if (isLeft) {
+                layout.RowPair(
+                    null, stickScaleButtons[index], "Range scale", 24, 114, 181,
+                    lbl_n64_range, btn_n64_range, "N64 range", 323, 423, 171);
+            } else {
+                layout.Row(null, stickScaleButtons[index], "Range scale", buttonX: 114, buttonWidth: 181);
+            }
             layout.RowPair(
                 null, stickDirectionButtons[index * 4], "Key up", 24, 114, 181,
                 null, stickDirectionButtons[index * 4 + 1], "Key down", 323, 423, 171);
@@ -3833,7 +3868,12 @@ namespace BetterJoyForCemu {
                             SelectedProfileId, "StickMouseCurve" + suffix));
                     stickInhibitButtons[index].Text = ControllerMappings.BoolOption(
                         SelectedProfileId, "StickInhibit" + suffix) ? "Enabled" : "Disabled";
+                    // Shown as stored, since App.config may carry any decimal.
+                    stickScaleButtons[index].Text = OptionTextOr(ControllerMappings.OptionValue(
+                        SelectedProfileId, (string)stickScaleButtons[index].Tag), "1.00");
                 }
+                btn_n64_range.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "N64Range") ? "Enabled" : "Disabled";
                 btn_stick_hold_toggle.Text = ControllerMappings.BoolOption(
                     SelectedProfileId, "StickHoldToggle") ? "Hold" : "Toggle";
                 btn_stick_mouse_inhibit.Text = ControllerMappings.BoolOption(
@@ -3888,6 +3928,9 @@ namespace BetterJoyForCemu {
                 yield return button;
             foreach (SplitButton button in stickInhibitButtons)
                 yield return button;
+            foreach (SplitButton button in stickScaleButtons)
+                yield return button;
+            yield return btn_n64_range;
             yield return btn_stick_mouse_inhibit;
         }
 
@@ -3946,7 +3989,7 @@ namespace BetterJoyForCemu {
                      menu_default_orientation, menu_stick_key, menu_stick_curve,
                      menu_stick_inhibit, menu_stick_hold_toggle, menu_cursor_mode,
                      menu_rumble_low_freq, menu_rumble_high_freq,
-                     menu_shake_threshold, menu_shake_delay }) {
+                     menu_shake_threshold, menu_shake_delay, menu_stick_scale }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 // Menu images only render inside the image margin, so the controller-button
@@ -4315,6 +4358,9 @@ namespace BetterJoyForCemu {
             SetProfileItemVisible(btn_rumble_low_freq, hasRumblePitch);
             SetProfileItemVisible(rumbleHighFreqLabel, hasRumblePitch);
             SetProfileItemVisible(btn_rumble_high_freq, hasRumblePitch);
+            bool isN64 = selected?.Kind == ControllerKind.N64;
+            SetProfileItemVisible(lbl_n64_range, isN64);
+            SetProfileItemVisible(btn_n64_range, isN64);
 
             bool hasHomeLed = KindHasHomeLed(selected?.Kind);
             SetProfileItemVisible(homeLedLabel, hasHomeLed);

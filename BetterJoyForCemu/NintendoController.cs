@@ -711,8 +711,12 @@ namespace BetterJoyForCemu {
 
         public float[] otherStick = { 0, 0 };
 
-        float stickScalingFactor = float.Parse(ConfigurationManager.AppSettings["StickScalingFactor"]);
-        float stickScalingFactor2 = float.Parse(ConfigurationManager.AppSettings["StickScalingFactor2"]);
+        // Range scale per profile (Sticks page), keyed by the stick the output lands on: the
+        // Left block's StickScalingFactor for a unit's own stick, except a joined pair's right
+        // half, whose stick becomes the pair's right stick. A solo or vertical right Joy-Con used
+        // StickScalingFactor2 here before, but its one stick is the Left block on the Sticks page.
+        private string OwnStickScaleKey =>
+            !isLeft && other != null && other != this ? "StickScalingFactor2" : "StickScalingFactor";
 
         private int ProcessButtonsAndStick(byte[] report_buf) {
             // A report ID of 0 is never valid for a real Joy-Con/Pro Controller report - this
@@ -739,13 +743,15 @@ namespace BetterJoyForCemu {
                 stick_precal[0] = (UInt16)(stick_raw[0] | ((stick_raw[1] & 0xf) << 8));
                 stick_precal[1] = (UInt16)((stick_raw[1] >> 4) | (stick_raw[2] << 4));
                 CalibrationState.AddStickSample(this, false, stick_precal[0], stick_precal[1]);
-                stick = CenterSticks(stick_precal, stick_cal, deadzone, isLeft ? stickScalingFactor : stickScalingFactor2);
+                stick = CenterSticks(stick_precal, stick_cal, deadzone,
+                    ProfileFloatOption(OwnStickScaleKey, 1f));
 
                 if (HasDualSticks) {
                     stick2_precal[0] = (UInt16)(stick2_raw[0] | ((stick2_raw[1] & 0xf) << 8));
                     stick2_precal[1] = (UInt16)((stick2_raw[1] >> 4) | (stick2_raw[2] << 4));
                     CalibrationState.AddStickSample(this, true, stick2_precal[0], stick2_precal[1]);
-                    stick2 = CenterSticks(stick2_precal, stick2_cal, deadzone2, stickScalingFactor2);
+                    stick2 = CenterSticks(stick2_precal, stick2_cal, deadzone2,
+                        ProfileFloatOption("StickScalingFactor2", 1f));
                 }
 
                 // Read other Joycon's sticks

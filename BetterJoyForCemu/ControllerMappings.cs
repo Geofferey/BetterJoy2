@@ -267,6 +267,8 @@ namespace BetterJoyForCemu {
             "LowFreqRumble", "HighFreqRumble",
             // Shake detection (Gyro > Shake); the binding it fires is the "shake" key above.
             "EnableShakeInput", "ShakeInputSensitivity", "ShakeInputDelay",
+            // Sticks page: per-stick range scale, and the N64's octagonal-gate range.
+            "StickScalingFactor", "StickScalingFactor2", "N64Range",
             "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "ControllerAudioUsbLoopback",
