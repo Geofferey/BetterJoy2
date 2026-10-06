@@ -869,6 +869,32 @@ try {
             "Rumble pitch with App.config '$($pitchCase[0])'/'$($pitchCase[1])' was $low/$high, expected $($pitchCase[2])/$($pitchCase[3])."
     }
 
+    # User contract: shake detection is per profile (Gyro > Shake). A profile that never set it
+    # keeps the old global App.config values, fractional ones included. Turning shake back on for
+    # a connected controller must work: the timer stopped while it was off has to restart, or
+    # one shake would fire and the repeat delay would then never elapse again.
+    foreach ($shakeKey in 'EnableShakeInput', 'ShakeInputSensitivity', 'ShakeInputDelay') {
+        Assert-True ($optionKeys -contains $shakeKey) "$shakeKey is not a profile option."
+    }
+    $floatOption = $controllerType.GetMethod('ProfileFloatOption', [Reflection.BindingFlags]'Instance,NonPublic')
+    [Configuration.ConfigurationManager]::AppSettings.Set('ShakeInputSensitivity', '12.5')
+    Assert-True ([float]$floatOption.Invoke($rumblePad, @('ShakeInputSensitivity', [float]10)) -eq 12.5) `
+        'A fractional App.config shake threshold was not read.'
+    [Configuration.ConfigurationManager]::AppSettings.Set('ShakeInputSensitivity', 'abc')
+    Assert-True ([float]$floatOption.Invoke($rumblePad, @('ShakeInputSensitivity', [float]10)) -eq 10) `
+        'An unparsable shake threshold did not fall back to 10.'
+    $shakeTimerField = $controllerType.GetField('shakeTimer', [Reflection.BindingFlags]'Instance,NonPublic')
+    $shakeTimerField.SetValue($rumblePad, (New-Object Diagnostics.Stopwatch))
+    $detectShake = $controllerType.GetMethod('DetectShake', [Reflection.BindingFlags]'Instance,NonPublic')
+    [Configuration.ConfigurationManager]::AppSettings.Set('ShakeInputSensitivity', '10')
+    [Configuration.ConfigurationManager]::AppSettings.Set('EnableShakeInput', 'false')
+    $detectShake.Invoke($rumblePad, @()) | Out-Null
+    Assert-True (-not $shakeTimerField.GetValue($rumblePad).IsRunning) 'Shake ran while disabled.'
+    [Configuration.ConfigurationManager]::AppSettings.Set('EnableShakeInput', 'true')
+    $detectShake.Invoke($rumblePad, @()) | Out-Null
+    Assert-True ($shakeTimerField.GetValue($rumblePad).IsRunning) `
+        'Turning shake back on did not restart its timer.'
+
     # User contract: on a joined Joy-Con pair, a bind to ZL fires only for ZL and a bind to ZR
     # only for ZR - whichever half evaluates it. Binds are captured from the left half, where
     # SHOULDER_2 (12) is ZL and SHOULDER2_2 (19) is ZR; the right half stores the same two

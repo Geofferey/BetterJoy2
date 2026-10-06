@@ -265,6 +265,8 @@ namespace BetterJoyForCemu {
             // Nintendo HD rumble pitch. Keep their old global names so a profile that never set
             // them inherits the App.config values.
             "LowFreqRumble", "HighFreqRumble",
+            // Shake detection (Gyro > Shake); the binding it fires is the "shake" key above.
+            "EnableShakeInput", "ShakeInputSensitivity", "ShakeInputDelay",
             "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "ControllerAudioUsbLoopback",

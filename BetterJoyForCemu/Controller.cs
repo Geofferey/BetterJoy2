@@ -1975,6 +1975,12 @@ namespace BetterJoyForCemu {
             return ControllerMappings.IntOption(mappingProfileId, key, fallback);
         }
 
+        protected float ProfileFloatOption(string key, float fallback) {
+            float value;
+            return float.TryParse(ProfileStringOption(key, null), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out value) ? value : fallback;
+        }
+
         protected string ProfileStringOption(string key, string fallback) {
             if (mappingProfileId == null)
                 mappingProfileId = ControllerMappings.ProfileIdFor(this);
@@ -2886,11 +2892,17 @@ namespace BetterJoyForCemu {
         protected readonly Stopwatch shakeTimer = Stopwatch.StartNew(); //Setup a timer for measuring shake in milliseconds
         protected long shakedTime = 0;
         protected bool hasShaked;
-        protected bool shakeInputEnabled = Boolean.Parse(ConfigurationManager.AppSettings["EnableShakeInput"]);
-        protected float shakeSensitivity = float.Parse(ConfigurationManager.AppSettings["ShakeInputSensitivity"]);
-        protected float shakeDelay = float.Parse(ConfigurationManager.AppSettings["ShakeInputDelay"]);
+        // Per profile (Gyro > Shake), read every report so an edit applies without reconnecting.
+        // A profile that never set them falls back to the old global App.config values.
         protected void DetectShake() {
-            if (shakeInputEnabled) {
+            if (ProfileBoolOption("EnableShakeInput")) {
+                // Stopped below while shake is off. That used to be permanent, since the setting
+                // was read once at construction; now it can come back on live, and a frozen timer
+                // would fire one shake and then never pass the delay check again.
+                if (!shakeTimer.IsRunning)
+                    shakeTimer.Start();
+                float shakeSensitivity = ProfileFloatOption("ShakeInputSensitivity", 10f);
+                float shakeDelay = ProfileFloatOption("ShakeInputDelay", 200f);
                 long currentShakeTime = shakeTimer.ElapsedMilliseconds;
 
                 // Shake detection logic

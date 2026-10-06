@@ -41,6 +41,8 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_home_long_power_off = new ContextMenuStrip();
         ContextMenuStrip menu_rumble_low_freq = new ContextMenuStrip();
         ContextMenuStrip menu_rumble_high_freq = new ContextMenuStrip();
+        ContextMenuStrip menu_shake_threshold = new ContextMenuStrip();
+        ContextMenuStrip menu_shake_delay = new ContextMenuStrip();
 
         private Control curAssignment;
         private bool bindingCaptureSuppressionActive;
@@ -354,8 +356,19 @@ namespace BetterJoyForCemu {
                 menu_rumble_low_freq.Items.Add(new ToolStripMenuItem(hz + " Hz") { Tag = hz.ToString() });
             foreach (int hz in new[] { 120, 240, 320, 640 })
                 menu_rumble_high_freq.Items.Add(new ToolStripMenuItem(hz + " Hz") { Tag = hz.ToString() });
-            menu_rumble_low_freq.ItemClicked += RumbleFrequencyMenu_ItemClicked;
-            menu_rumble_high_freq.ItemClicked += RumbleFrequencyMenu_ItemClicked;
+            menu_rumble_low_freq.ItemClicked += PlainOptionMenu_ItemClicked;
+            menu_rumble_high_freq.ItemClicked += PlainOptionMenu_ItemClicked;
+
+            // Shake threshold is the accelerometer's squared magnitude in g^2 (Controller.
+            // DetectShake), so 10 is about 3.2 g; lower is easier to trigger. The delay is the
+            // minimum gap between two shakes, kept at or above the App.config's 15 ms floor.
+            foreach (int threshold in new[] { 5, 10, 15, 20, 30 })
+                menu_shake_threshold.Items.Add(new ToolStripMenuItem(threshold.ToString()) {
+                    Tag = threshold.ToString() });
+            foreach (int ms in new[] { 100, 200, 300, 500, 1000 })
+                menu_shake_delay.Items.Add(new ToolStripMenuItem(ShakeDelayText(ms)) { Tag = ms.ToString() });
+            menu_shake_threshold.ItemClicked += PlainOptionMenu_ItemClicked;
+            menu_shake_delay.ItemClicked += PlainOptionMenu_ItemClicked;
 
             // Shared by every gyro-stick percentage selector - the deflection limits and the
             // stick reduction alike - since all of them are a plain 0-100.
@@ -377,15 +390,15 @@ namespace BetterJoyForCemu {
             menu_stick_curve.Items.Add(new ToolStripMenuItem("Linear") { Tag = "linear" });
             menu_stick_curve.Items.Add(new ToolStripMenuItem("Quadratic") { Tag = "quadratic" });
             menu_stick_curve.Items.Add(new ToolStripMenuItem("Cubic") { Tag = "cubic" });
-            menu_stick_curve.ItemClicked += StickOptionMenu_ItemClicked;
+            menu_stick_curve.ItemClicked += PlainOptionMenu_ItemClicked;
 
             menu_stick_inhibit.Items.Add(new ToolStripMenuItem("Enabled") { Tag = "true" });
             menu_stick_inhibit.Items.Add(new ToolStripMenuItem("Disabled") { Tag = "false" });
-            menu_stick_inhibit.ItemClicked += StickOptionMenu_ItemClicked;
+            menu_stick_inhibit.ItemClicked += PlainOptionMenu_ItemClicked;
 
             menu_stick_hold_toggle.Items.Add(new ToolStripMenuItem("Hold") { Tag = "true" });
             menu_stick_hold_toggle.Items.Add(new ToolStripMenuItem("Toggle") { Tag = "false" });
-            menu_stick_hold_toggle.ItemClicked += StickOptionMenu_ItemClicked;
+            menu_stick_hold_toggle.ItemClicked += PlainOptionMenu_ItemClicked;
 
             // Shared by all six cursor selectors (gyro, touchpad and stick x direct/wrap) - each
             // button carries its own option key on Tag, so one menu and one handler serve them.
@@ -531,6 +544,9 @@ namespace BetterJoyForCemu {
         private SplitButton btn_touchpad_inhibit;
         private SplitButton btn_touchpad_sensitivity;
         private SplitButton btn_home_long_power_off;
+        private SplitButton btn_shake_enabled;
+        private SplitButton btn_shake_threshold;
+        private SplitButton btn_shake_delay;
         private SplitButton btn_rumble_low_freq;
         private SplitButton btn_rumble_high_freq;
         private Label rumbleLowFreqLabel;
@@ -834,6 +850,20 @@ namespace BetterJoyForCemu {
             btn_rumble_high_freq.RightClickHandler = (sender, e) => PromptProfileNumber(
                 btn_rumble_high_freq, "HighFreqRumble", "High rumble pitch", "high pitch",
                 MinimumHighRumbleHz, MaximumHighRumbleHz, "Hz", RumbleFrequencyText);
+
+            // Enabled/Disabled reuses the Sticks page's "true"/"false" menu.
+            btn_shake_enabled = CreateChoiceSplitButton("btn_shake_enabled", menu_stick_inhibit);
+            btn_shake_enabled.Tag = "EnableShakeInput";
+            btn_shake_threshold = CreateChoiceSplitButton("btn_shake_threshold", menu_shake_threshold);
+            btn_shake_threshold.Tag = "ShakeInputSensitivity";
+            btn_shake_threshold.RightClickHandler = (sender, e) => PromptProfileNumber(
+                btn_shake_threshold, "ShakeInputSensitivity", "Shake threshold", "threshold",
+                1, 100, "", null);
+            btn_shake_delay = CreateChoiceSplitButton("btn_shake_delay", menu_shake_delay);
+            btn_shake_delay.Tag = "ShakeInputDelay";
+            btn_shake_delay.RightClickHandler = (sender, e) => PromptProfileNumber(
+                btn_shake_delay, "ShakeInputDelay", "Shake delay", "delay", 15, 5000, "ms",
+                ShakeDelayText);
 
             btn_touchpad_stick_sensitivity = CreateChoiceSplitButton(
                 "btn_touchpad_stick_sensitivity", menu_touchpad_sensitivity);
@@ -1748,6 +1778,21 @@ namespace BetterJoyForCemu {
                 "Reset the current controller angle while gyro mouse or an Absolute/Hybrid " +
                 "stick output is active.");
             layout.Row(lbl_reset_mouse, btn_reset_mouse, "Re-center gyro", buttonX: 138, buttonWidth: 456);
+
+            layout.Divider();
+            layout.Heading("Shake",
+                "Fire the Shake input binding (Bindings page) when the controller is shaken.");
+            layout.RowPair(
+                null, btn_shake_enabled, "Shake", 24, 114, 181,
+                null, btn_shake_threshold, "Threshold", 323, 423, 171);
+            layout.Row(null, btn_shake_delay, "Repeat delay", buttonX: 114, buttonWidth: 181);
+            tip_reassign.SetToolTip(btn_shake_enabled,
+                "Watch the accelerometer for a shake and fire the Shake input binding.");
+            tip_reassign.SetToolTip(btn_shake_threshold,
+                "How hard the shake must be, as the acceleration's squared magnitude in g² " +
+                "(10 is about 3.2 g). Lower triggers more easily. Right-click for any value.");
+            tip_reassign.SetToolTip(btn_shake_delay,
+                "Minimum time between two shakes. Right-click for any value from 15 ms.");
 
             layout.Divider();
             layout.Heading("Mouse actions",
@@ -3285,17 +3330,12 @@ namespace BetterJoyForCemu {
             return hz + " Hz";
         }
 
-        // Shared by both pitch buttons; CreateChoiceSplitButton puts the clicked button in Tag,
-        // and each button's own Tag is its option key.
-        private void RumbleFrequencyMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
-            SplitButton button = ((ContextMenuStrip)sender).Tag as SplitButton;
-            int hz;
-            if (button == null || String.IsNullOrEmpty(SelectedProfileId) ||
-                    !Int32.TryParse((string)e.ClickedItem.Tag, out hz))
-                return;
+        private static string ShakeDelayText(int ms) {
+            return ms + " ms";
+        }
 
-            ControllerMappings.SetOptionValue(SelectedProfileId, (string)button.Tag, hz.ToString());
-            button.Text = RumbleFrequencyText(hz);
+        private static string OptionTextOr(string value, string fallback) {
+            return String.IsNullOrEmpty(value) ? fallback : value;
         }
 
         // Right-click sets an arbitrary hold, like Mouse sensitivity on the Touchpad page. Only
@@ -3576,6 +3616,7 @@ namespace BetterJoyForCemu {
                 btn_touchpad_horizontal_scale, btn_touchpad_vertical_scale,
                 autoPowerOffCheckBox, btn_home_long_power_off, dragToggleCheckBox,
                 btn_rumble_low_freq, btn_rumble_high_freq,
+                btn_shake_enabled, btn_shake_threshold, btn_shake_delay,
                 preferredTransportSelector, automaticBluetoothPairingSelector,
                 swapAbCheckBox, swapXyCheckBox, doNotRejoinCheckBox, rumbleModeSelector,
                 homeLedSelector, lightColorButton, lightingModeSelector, playerLedSelector,
@@ -3678,6 +3719,13 @@ namespace BetterJoyForCemu {
                     ControllerMappings.IntOption(SelectedProfileId, "LowFreqRumble", 40));
                 btn_rumble_high_freq.Text = RumbleFrequencyText(
                     ControllerMappings.IntOption(SelectedProfileId, "HighFreqRumble", 120));
+                btn_shake_enabled.Text = ControllerMappings.BoolOption(
+                    SelectedProfileId, "EnableShakeInput") ? "Enabled" : "Disabled";
+                // Shown as stored: App.config may carry a fractional threshold or delay.
+                btn_shake_threshold.Text = OptionTextOr(
+                    ControllerMappings.OptionValue(SelectedProfileId, "ShakeInputSensitivity"), "10");
+                btn_shake_delay.Text = OptionTextOr(
+                    ControllerMappings.OptionValue(SelectedProfileId, "ShakeInputDelay"), "200") + " ms";
                 homeLedSelector.SelectedIndex = ControllerMappings.BoolOption(
                     SelectedProfileId, "HomeLEDOn") ? 0 : 1;
                 UpdateLightColorButton(
@@ -3896,7 +3944,9 @@ namespace BetterJoyForCemu {
                      menu_gyro_stick_mode, menu_gyro_stick_axis, menu_gyro_stick_percent,
                      menu_charging_indicator,
                      menu_default_orientation, menu_stick_key, menu_stick_curve,
-                     menu_stick_inhibit, menu_stick_hold_toggle, menu_cursor_mode }) {
+                     menu_stick_inhibit, menu_stick_hold_toggle, menu_cursor_mode,
+                     menu_rumble_low_freq, menu_rumble_high_freq,
+                     menu_shake_threshold, menu_shake_delay }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 // Menu images only render inside the image margin, so the controller-button
@@ -4586,9 +4636,10 @@ namespace BetterJoyForCemu {
             button.Text = value + "%";
         }
 
-        // Curve, inhibit and hold/toggle all store a plain value under the key on the clicked
-        // button's Tag, so they share one handler; only the displayed caption differs.
-        private void StickOptionMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
+        // For any choice menu that stores the clicked item's Tag under the key in the clicked
+        // button's own Tag and shows the item's text as the caption - the Sticks curve, inhibit
+        // and hold/toggle menus, rumble pitch and shake all share it.
+        private void PlainOptionMenu_ItemClicked(object sender, ToolStripItemClickedEventArgs e) {
             SplitButton button = ((ContextMenuStrip)sender).Tag as SplitButton;
             if (button == null || String.IsNullOrEmpty(SelectedProfileId))
                 return;
