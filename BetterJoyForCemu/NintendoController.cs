@@ -125,7 +125,9 @@ namespace BetterJoyForCemu {
                 id = 3;
             }
 
-            if (ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None).AppSettings.Settings["UseIncrementalLights"].Value.ToLower() == "true") {
+            // Per profile (Device behavior > Lighting > LED style). Applies the next time the
+            // player LEDs are set, like the Player LED option above.
+            if (ControllerMappings.BoolOption(ControllerMappings.ProfileIdFor(this), "UseIncrementalLights")) {
                 // Set all LEDs from 0 to the given id to lit
                 int ledId = id;
                 LED = 0x0;

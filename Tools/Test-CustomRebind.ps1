@@ -927,6 +927,30 @@ try {
             "An N64 profile without its own value did not inherit N64Range=$legacyRange."
     }
 
+    # User contract: the Joy-Con orientation double-click, a joined pair's gyro-mouse hand, and the
+    # Nintendo player-LED style are per profile; a profile that never set them keeps the old
+    # global App.config values. Gyro hand picks which half of the pair drives the mouse.
+    foreach ($joyConKey in 'ChangeOrientationDoubleClick', 'GyroMouseLeftHanded', 'UseIncrementalLights') {
+        Assert-True ($optionKeys -contains $joyConKey) "$joyConKey is not a profile option."
+    }
+    # $soloLeft/$soloRight were left joined as a pair by the stick scale checks above.
+    foreach ($half in $soloLeft, $soloRight) {
+        $controllerType.GetField('mappingProfileId', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($half, 'pair:test')
+    }
+    $ownsGyroMouse = $controllerType.GetMethod('OwnsGyroMouse', [Reflection.BindingFlags]'Instance,NonPublic')
+    foreach ($leftHanded in $false, $true) {
+        [Configuration.ConfigurationManager]::AppSettings.Set('GyroMouseLeftHanded', $leftHanded.ToString().ToLowerInvariant())
+        Assert-True ([bool]$ownsGyroMouse.Invoke($soloLeft, @()) -eq $leftHanded -and
+            [bool]$ownsGyroMouse.Invoke($soloRight, @()) -eq (-not $leftHanded)) `
+            "With GyroMouseLeftHanded=$leftHanded the wrong half of the pair drove gyro mouse."
+    }
+    $doubleClick = $controllerType.GetProperty('ChangeOrientationDoubleClick', [Reflection.BindingFlags]'Instance,NonPublic')
+    foreach ($legacyDoubleClick in 'true', 'false') {
+        [Configuration.ConfigurationManager]::AppSettings.Set('ChangeOrientationDoubleClick', $legacyDoubleClick)
+        Assert-True ([bool]$doubleClick.GetValue($soloLeft) -eq [bool]::Parse($legacyDoubleClick)) `
+            "A profile without its own value did not inherit ChangeOrientationDoubleClick=$legacyDoubleClick."
+    }
+
     # User contract: on a joined Joy-Con pair, a bind to ZL fires only for ZL and a bind to ZR
     # only for ZR - whichever half evaluates it. Binds are captured from the left half, where
     # SHOULDER_2 (12) is ZL and SHOULDER2_2 (19) is ZR; the right half stores the same two

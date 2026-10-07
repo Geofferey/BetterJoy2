@@ -269,6 +269,9 @@ namespace BetterJoyForCemu {
             "EnableShakeInput", "ShakeInputSensitivity", "ShakeInputDelay",
             // Sticks page: per-stick range scale, and the N64's octagonal-gate range.
             "StickScalingFactor", "StickScalingFactor2", "N64Range",
+            // Joy-Con orientation double-click, a joined pair's gyro-mouse hand, and the
+            // Nintendo player-LED style.
+            "ChangeOrientationDoubleClick", "GyroMouseLeftHanded", "UseIncrementalLights",
             "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "ControllerAudioUsbLoopback",

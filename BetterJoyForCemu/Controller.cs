@@ -2730,9 +2730,10 @@ namespace BetterJoyForCemu {
         }
 
         protected bool OwnsGyroMouse() {
+            // Which half of a joined pair drives gyro mouse - per profile (Gyro > Mouse actions,
+            // shown for a pair only); both halves read the same pair profile.
             return !SupportsPairing || other == null || other == this ||
-                 (Boolean.Parse(ConfigurationManager.AppSettings["GyroMouseLeftHanded"])
-                    ? isLeft : !isLeft);
+                 (ProfileBoolOption("GyroMouseLeftHanded") ? isLeft : !isLeft);
         }
 
         protected bool IsGyroMouseActive() {
@@ -2993,7 +2994,8 @@ namespace BetterJoyForCemu {
             }
         }
 
-        protected bool ChangeOrientationDoubleClick = Boolean.Parse(ConfigurationManager.AppSettings["ChangeOrientationDoubleClick"]);
+        // Per profile (Device behavior > Orientation, Joy-Con only), read live.
+        protected bool ChangeOrientationDoubleClick => ProfileBoolOption("ChangeOrientationDoubleClick");
         protected long lastDoubleClick = -1;
 
         protected int GyroAnalogSensitivity = Int32.Parse(ConfigurationManager.AppSettings["GyroAnalogSensitivity"]);

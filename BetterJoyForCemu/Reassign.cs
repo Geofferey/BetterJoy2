@@ -44,6 +44,8 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_shake_threshold = new ContextMenuStrip();
         ContextMenuStrip menu_shake_delay = new ContextMenuStrip();
         ContextMenuStrip menu_stick_scale = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_hand = new ContextMenuStrip();
+        ContextMenuStrip menu_player_led_style = new ContextMenuStrip();
 
         private Control curAssignment;
         private bool bindingCaptureSuppressionActive;
@@ -377,6 +379,16 @@ namespace BetterJoyForCemu {
                 menu_stick_scale.Items.Add(new ToolStripMenuItem(scale) { Tag = scale });
             menu_stick_scale.ItemClicked += PlainOptionMenu_ItemClicked;
 
+            // GyroMouseLeftHanded: which half of a joined pair drives gyro mouse.
+            menu_gyro_hand.Items.Add(new ToolStripMenuItem(GyroHandText(false)) { Tag = "false" });
+            menu_gyro_hand.Items.Add(new ToolStripMenuItem(GyroHandText(true)) { Tag = "true" });
+            menu_gyro_hand.ItemClicked += PlainOptionMenu_ItemClicked;
+
+            // UseIncrementalLights: light LED 1 up to the player number, or that one LED alone.
+            menu_player_led_style.Items.Add(new ToolStripMenuItem(PlayerLedStyleText(false)) { Tag = "false" });
+            menu_player_led_style.Items.Add(new ToolStripMenuItem(PlayerLedStyleText(true)) { Tag = "true" });
+            menu_player_led_style.ItemClicked += PlainOptionMenu_ItemClicked;
+
             // Shared by every gyro-stick percentage selector - the deflection limits and the
             // stick reduction alike - since all of them are a plain 0-100.
             foreach (int percent in new[] { 0, 25, 50, 75, 100 })
@@ -515,6 +527,11 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> stickScaleButtons = new List<SplitButton>();
         private SplitButton btn_n64_range;
         private readonly Label lbl_n64_range = new Label();
+        private SplitButton btn_gyro_hand;
+        private readonly Label lbl_gyro_hand = new Label();
+        private SplitButton btn_player_led_style;
+        private Label playerLedStyleLabel;
+        private CheckBox orientationDoubleClickCheckBox;
         // Mouse actions shared by both sticks - they only matter while a stick is driving the
         // pointer, which is one pointer either way, so there is nothing per-stick about them.
         private readonly List<SplitButton> stickMouseButtons = new List<SplitButton>();
@@ -752,6 +769,17 @@ namespace BetterJoyForCemu {
             }
 
             // Enabled/Disabled reuses the inhibit menu's "true"/"false" items.
+            btn_gyro_hand = CreateChoiceSplitButton("btn_gyro_hand", menu_gyro_hand);
+            btn_gyro_hand.Tag = "GyroMouseLeftHanded";
+            tip_reassign.SetToolTip(btn_gyro_hand,
+                "Which Joy-Con of this joined pair moves the gyro mouse.");
+            btn_player_led_style = CreateChoiceSplitButton("btn_player_led_style", menu_player_led_style);
+            btn_player_led_style.Tag = "UseIncrementalLights";
+            tip_reassign.SetToolTip(btn_player_led_style,
+                "Single lights only the LED for this player number. Incremental lights every LED " +
+                "up to it. Applies the next time the player LEDs are set - on reconnect, join or " +
+                "split, or a player-number change.");
+
             btn_n64_range = CreateChoiceSplitButton("btn_n64_range", menu_stick_inhibit);
             btn_n64_range.Tag = "N64Range";
             tip_reassign.SetToolTip(btn_n64_range,
@@ -1837,6 +1865,10 @@ namespace BetterJoyForCemu {
 
             AddMappingRow(page, null, btn_gyro_mouse_inhibit, "Inhibit",
                 mouseActionTop + 3 * mouseActionRowSpacing, 24, 114, 181);
+            // The free slot beside Inhibit, so hiding it for anything but a joined Joy-Con pair
+            // leaves no gap on this page (which has no section reflow).
+            AddMappingRow(page, lbl_gyro_hand, btn_gyro_hand, "Gyro hand",
+                mouseActionTop + 3 * mouseActionRowSpacing, 323, 423, 171);
             tip_reassign.SetToolTip(btn_gyro_mouse_inhibit,
                 "Inhibit controller actions in mouse mode.");
             // Pointer routing, per profile now - the same pair appears on the Touchpad and
@@ -2323,6 +2355,15 @@ namespace BetterJoyForCemu {
                 "of what the controller would otherwise show. Joy-Con, Pro, SNES, and N64 default " +
                 "to Enabled, matching how they've always behaved.");
 
+            // Right column of the Player LED row, lined up with Mode and Style above it.
+            // Nintendo pads only - DualSense draws its player LEDs its own way.
+            playerLedStyleLabel = CreateLabel("LED style", 320, sectionTop + 84, ProfileText, false);
+            page.Controls.Add(playerLedStyleLabel);
+            StyleMappingButton(btn_player_led_style);
+            btn_player_led_style.Location = new Point(365, sectionTop + 78);
+            btn_player_led_style.Size = new Size(140, 31);
+            page.Controls.Add(btn_player_led_style);
+
             layout.Advance(72 + 39 + 39);
 
             layout.Divider();
@@ -2462,6 +2503,13 @@ namespace BetterJoyForCemu {
             doNotRejoinCheckBox = CreateProfileCheckBox(
                 "Do not rejoin Joy-Cons", 24, layout.Y, "DoNotRejoinJoycons");
             page.Controls.Add(doNotRejoinCheckBox);
+            orientationDoubleClickCheckBox = CreateProfileCheckBox(
+                "Double-click stick to rotate", 315, doNotRejoinCheckBox.Top,
+                "ChangeOrientationDoubleClick");
+            page.Controls.Add(orientationDoubleClickCheckBox);
+            tip_reassign.SetToolTip(orientationDoubleClickCheckBox,
+                "Double-click this Joy-Con's stick to switch it between horizontal and " +
+                "vertical orientation.");
             tip_reassign.SetToolTip(doNotRejoinCheckBox,
                 "Keep this Joy-Con solo when it connects instead of automatically joining it " +
                 "with an available Joy-Con of the other hand (or self-pairing it vertically). " +
@@ -3369,6 +3417,14 @@ namespace BetterJoyForCemu {
             return ms + " ms";
         }
 
+        private static string GyroHandText(bool leftHanded) {
+            return leftHanded ? "Left Joy-Con" : "Right Joy-Con";
+        }
+
+        private static string PlayerLedStyleText(bool incremental) {
+            return incremental ? "Incremental" : "Single";
+        }
+
         private static string OptionTextOr(string value, string fallback) {
             return String.IsNullOrEmpty(value) ? fallback : value;
         }
@@ -3653,7 +3709,9 @@ namespace BetterJoyForCemu {
                 btn_rumble_low_freq, btn_rumble_high_freq,
                 btn_shake_enabled, btn_shake_threshold, btn_shake_delay,
                 preferredTransportSelector, automaticBluetoothPairingSelector,
-                swapAbCheckBox, swapXyCheckBox, doNotRejoinCheckBox, rumbleModeSelector,
+                swapAbCheckBox, swapXyCheckBox, doNotRejoinCheckBox,
+                orientationDoubleClickCheckBox, btn_gyro_hand, btn_player_led_style,
+                rumbleModeSelector,
                 homeLedSelector, lightColorButton, lightingModeSelector, playerLedSelector,
                 chargingIndicatorSelector, chargeGlowColorButton,
                 controllerAudioEnabledSelector, controllerAudioVolumeSelector,
@@ -3746,6 +3804,12 @@ namespace BetterJoyForCemu {
                 swapXyCheckBox.Checked = ControllerMappings.BoolOption(SelectedProfileId, "SwapXY");
                 doNotRejoinCheckBox.Checked = ControllerMappings.BoolOption(
                     SelectedProfileId, "DoNotRejoinJoycons");
+                orientationDoubleClickCheckBox.Checked = ControllerMappings.BoolOption(
+                    SelectedProfileId, "ChangeOrientationDoubleClick");
+                btn_gyro_hand.Text = GyroHandText(ControllerMappings.BoolOption(
+                    SelectedProfileId, "GyroMouseLeftHanded"));
+                btn_player_led_style.Text = PlayerLedStyleText(ControllerMappings.BoolOption(
+                    SelectedProfileId, "UseIncrementalLights"));
                 string rumbleMode = ControllerMappings.RumbleMode(SelectedProfileId);
                 int rumbleIndex = Array.FindIndex(ControllerMappings.RumbleModes,
                     m => String.Equals(m.Value, rumbleMode, StringComparison.OrdinalIgnoreCase));
@@ -3989,7 +4053,8 @@ namespace BetterJoyForCemu {
                      menu_default_orientation, menu_stick_key, menu_stick_curve,
                      menu_stick_inhibit, menu_stick_hold_toggle, menu_cursor_mode,
                      menu_rumble_low_freq, menu_rumble_high_freq,
-                     menu_shake_threshold, menu_shake_delay, menu_stick_scale }) {
+                     menu_shake_threshold, menu_shake_delay, menu_stick_scale,
+                     menu_gyro_hand, menu_player_led_style }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 // Menu images only render inside the image margin, so the controller-button
@@ -4361,6 +4426,13 @@ namespace BetterJoyForCemu {
             bool isN64 = selected?.Kind == ControllerKind.N64;
             SetProfileItemVisible(lbl_n64_range, isN64);
             SetProfileItemVisible(btn_n64_range, isN64);
+            // A joined pair is the only selection with no Kind and a real profile id.
+            bool isJoinedPair = hasController && selected.Kind == null;
+            SetProfileItemVisible(lbl_gyro_hand, isJoinedPair);
+            SetProfileItemVisible(btn_gyro_hand, isJoinedPair);
+            bool hasPlayerLedStyle = hasController && KindIsNintendo(selected.Kind);
+            SetProfileItemVisible(playerLedStyleLabel, hasPlayerLedStyle);
+            SetProfileItemVisible(btn_player_led_style, hasPlayerLedStyle);
 
             bool hasHomeLed = KindHasHomeLed(selected?.Kind);
             SetProfileItemVisible(homeLedLabel, hasHomeLed);
