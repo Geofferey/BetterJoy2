@@ -18,6 +18,9 @@ namespace BetterJoyForCemu {
                 "GyroStickDebugLogging", "UseViiperForDualSenseMicrophone",
                 "OpenRgbServerMode", "OpenRgbServerCachedColor", "OpenRgbServerCachedModeState",
                 "OpenRgbRescanMode",
+                // Fallback calibration for SNES, N64 and third-party Nintendo-protocol pads
+                // (NintendoController.dump_calibration_data); genuine Joy-Con/Pro read their own.
+                "acc_sensiti", "gyr_sensiti", "stick_cal", "deadzone", "stick2_cal", "deadzone2",
             };
 
         public static bool IsGlobalOption(string key) {

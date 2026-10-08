@@ -794,6 +794,30 @@ try {
     foreach ($globalKey in 'IP', 'Port', 'BlockAutoAddBluetooth', 'UseFakerInput') {
         Assert-True ([bool]$isGlobal.Invoke($null, @($globalKey))) "$globalKey is not a global option."
     }
+    # User contract: the third-party calibration fallbacks (SNES, N64 and third-party Nintendo-
+    # protocol pads only) live in their own Global options section. Each box saves only what
+    # NintendoController.dump_calibration_data can parse on the next connect; the shipped
+    # defaults must pass.
+    foreach ($calibrationKey in 'acc_sensiti', 'gyr_sensiti', 'stick_cal', 'deadzone', 'stick2_cal', 'deadzone2') {
+        Assert-True ([bool]$isGlobal.Invoke($null, @($calibrationKey))) "$calibrationKey is not a global option."
+    }
+    $staticNonPublicReassign = [Reflection.BindingFlags]'Static,NonPublic'
+    $validTriple = $reassignType.GetMethod('IsValidCalibrationTriple', $staticNonPublicReassign)
+    $validStick = $reassignType.GetMethod('IsValidStickCalibration', $staticNonPublicReassign)
+    $validDeadzone = $reassignType.GetMethod('IsValidDeadzone', $staticNonPublicReassign)
+    foreach ($case in @(
+            @($validTriple, '16384,16384,16384', $true), @($validTriple, '18500,18500,18500', $true),
+            @($validTriple, '16384,16384', $false), @($validTriple, '16384,16384,abc', $false),
+            @($validTriple, '16384,16384,40000', $false),
+            @($validStick, '0x780,0x780,0x780,0x830,0x780,0x780', $true),
+            @($validStick, '0x780,0x780,0x780,0x830,0x780', $false),
+            @($validStick, '780,780,780,830,780,780', $false),
+            @($validStick, '0x780,0x780,0x780,0x830,0x780,0xZZ', $false),
+            @($validDeadzone, '50', $true), @($validDeadzone, '0', $true),
+            @($validDeadzone, '-1', $false), @($validDeadzone, '70000', $false), @($validDeadzone, '', $false))) {
+        Assert-True ([bool]$case[0].Invoke($null, @([string]$case[1])) -eq $case[2]) `
+            "$($case[0].Name) returned $(-not $case[2]) for '$($case[1])'."
+    }
     # A value the server could not parse at startup must never be saved.
     $validIp = $reassignType.GetMethod('IsValidMotionServerIp', [Reflection.BindingFlags]'Static,NonPublic')
     $validPort = $reassignType.GetMethod('IsValidMotionServerPort', [Reflection.BindingFlags]'Static,NonPublic')

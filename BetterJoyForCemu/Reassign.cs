@@ -2639,6 +2639,43 @@ namespace BetterJoyForCemu {
                 "Unhide on exit", 315, sectionTop + 33, "UnhideOnExit"));
             layout.Advance(77);
 
+            // Read only by NintendoController.dump_calibration_data, for SNES, N64 and
+            // third-party Nintendo-protocol pads - genuine Joy-Con/Pro read factory calibration
+            // from their own flash, and PlayStation/Xbox pads never reach that code. Parsed when
+            // the controller connects, so each box only saves what that parse accepts.
+            layout.Divider();
+            layout.Heading("Third-party controller calibration",
+                "Used by SNES, N64 and third-party Nintendo-style pads, which have no factory calibration.");
+            sectionTop = layout.Y;
+            page.Controls.Add(CreateLabel("Accel", 24, sectionTop + 4, ProfileText, false));
+            CreateGlobalTextInput(page, 90, sectionTop, 160, "acc_sensiti", IsValidCalibrationTriple);
+            page.Controls.Add(CreateLabel("Gyro", 315, sectionTop + 4, ProfileText, false));
+            CreateGlobalTextInput(page, 380, sectionTop, 160, "gyr_sensiti", IsValidCalibrationTriple);
+            page.Controls.Add(CreateLabel("Left stick", 24, sectionTop + 43, ProfileText, false));
+            CreateGlobalTextInput(page, 90, sectionTop + 39, 300, "stick_cal", IsValidStickCalibration);
+            page.Controls.Add(CreateLabel("Deadzone", 410, sectionTop + 43, ProfileText, false));
+            CreateGlobalTextInput(page, 480, sectionTop + 39, 60, "deadzone", IsValidDeadzone);
+            page.Controls.Add(CreateLabel("Right stick", 24, sectionTop + 82, ProfileText, false));
+            CreateGlobalTextInput(page, 90, sectionTop + 78, 300, "stick2_cal", IsValidStickCalibration);
+            page.Controls.Add(CreateLabel("Deadzone", 410, sectionTop + 82, ProfileText, false));
+            CreateGlobalTextInput(page, 480, sectionTop + 78, 60, "deadzone2", IsValidDeadzone);
+            const string sensitivityTip =
+                "Three comma-separated whole numbers, one per axis (default 16384 accel, 18500 " +
+                "gyro). Applies when the controller next connects.";
+            tip_reassign.SetToolTip(globalOptionInputs["acc_sensiti"], sensitivityTip);
+            tip_reassign.SetToolTip(globalOptionInputs["gyr_sensiti"], sensitivityTip);
+            const string stickTip =
+                "Six comma-separated hex values starting 0x, as in the default " +
+                "0x780,0x780,0x780,0x830,0x780,0x780. Applies when the controller next connects.";
+            tip_reassign.SetToolTip(globalOptionInputs["stick_cal"], stickTip);
+            tip_reassign.SetToolTip(globalOptionInputs["stick2_cal"], stickTip);
+            const string deadzoneTip =
+                "Raw stick deadzone, a whole number from 0 to 65535 (default 50). Applies when the " +
+                "controller next connects.";
+            tip_reassign.SetToolTip(globalOptionInputs["deadzone"], deadzoneTip);
+            tip_reassign.SetToolTip(globalOptionInputs["deadzone2"], deadzoneTip);
+            layout.Advance(128);
+
             layout.Divider();
             layout.Heading("Motion server",
                 "Expose controller motion through the CemuHook-compatible motion server.");
@@ -3103,6 +3140,27 @@ namespace BetterJoyForCemu {
         internal static bool IsValidMotionServerPort(string value) {
             return Int32.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture,
                 out int port) && port >= 1 && port <= 65535;
+        }
+
+        // The three checks below accept exactly what NintendoController.dump_calibration_data
+        // parses at connect time: it reads the first three (sensitivity) or six (stick) entries
+        // and parses each the same way, so anything else would throw on the next connect.
+        internal static bool IsValidCalibrationTriple(string value) {
+            string[] parts = value.Split(',');
+            return parts.Length == 3 && parts.All(part =>
+                short.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out _));
+        }
+
+        internal static bool IsValidStickCalibration(string value) {
+            string[] parts = value.Split(',');
+            return parts.Length == 6 && parts.All(part =>
+                part.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                ushort.TryParse(part.Substring(2), NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture, out _));
+        }
+
+        internal static bool IsValidDeadzone(string value) {
+            return ushort.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _);
         }
 
         // Commits on focus-loss rather than through the immediate-commit
