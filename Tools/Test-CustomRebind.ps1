@@ -975,6 +975,29 @@ try {
             "A profile without its own value did not inherit ChangeOrientationDoubleClick=$legacyDoubleClick."
     }
 
+    # User contract: gyro mouse and gyro stick sensitivity are per profile (Gyro > Sensitivity).
+    # A profile that never set them reads exactly the old global App.config values, so an
+    # existing setup feels identical; only a missing or unparsable value uses the shipped
+    # 2400/1400 and 100/85.
+    foreach ($sensitivityKey in 'GyroMouseSensitivityX', 'GyroMouseSensitivityY',
+            'GyroStickSensitivityX', 'GyroStickSensitivityY') {
+        Assert-True ($optionKeys -contains $sensitivityKey) "$sensitivityKey is not a profile option."
+    }
+    $sensitivityCases = @(
+        @('GyroMouseSensitivityX', '3100', 3100, 'x', 2400),
+        @('GyroMouseSensitivityY', '900', 900, '', 1400),
+        @('GyroStickSensitivityX', '42.5', 42.5, 'x', 100),
+        @('GyroStickSensitivityY', '7', 7, '', 85))
+    foreach ($case in $sensitivityCases) {
+        $property = $controllerType.GetProperty($case[0], [Reflection.BindingFlags]'Instance,NonPublic')
+        [Configuration.ConfigurationManager]::AppSettings.Set($case[0], $case[1])
+        Assert-True ([double]$property.GetValue($rumblePad) -eq $case[2]) `
+            "$($case[0]) did not inherit App.config value $($case[1])."
+        [Configuration.ConfigurationManager]::AppSettings.Set($case[0], $case[3])
+        Assert-True ([double]$property.GetValue($rumblePad) -eq $case[4]) `
+            "$($case[0]) with an unusable value '$($case[3])' did not fall back to $($case[4])."
+    }
+
     # User contract: on a joined Joy-Con pair, a bind to ZL fires only for ZL and a bind to ZR
     # only for ZR - whichever half evaluates it. Binds are captured from the left half, where
     # SHOULDER_2 (12) is ZL and SHOULDER2_2 (19) is ZR; the right half stores the same two

@@ -272,6 +272,9 @@ namespace BetterJoyForCemu {
             // Joy-Con orientation double-click, a joined pair's gyro-mouse hand, and the
             // Nintendo player-LED style.
             "ChangeOrientationDoubleClick", "GyroMouseLeftHanded", "UseIncrementalLights",
+            // Gyro > Sensitivity.
+            "GyroMouseSensitivityX", "GyroMouseSensitivityY",
+            "GyroStickSensitivityX", "GyroStickSensitivityY",
             "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",
             "ControllerAudioUsbLoopback",

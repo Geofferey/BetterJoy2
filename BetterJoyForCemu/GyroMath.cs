@@ -48,15 +48,19 @@ namespace BetterJoyForCemu {
         // of keys - see ProcessTouchpadMouse and StickOutput.EmitStickMouse.
         protected bool GyroMouseDirectCursor => ProfileBoolOption("GyroMouseDirectCursor");
         protected bool GyroMouseScreenWrap => ProfileBoolOption("GyroMouseScreenWrap");
-        protected int GyroMouseSensitivityX = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityX"]);
-        protected int GyroMouseSensitivityY = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSensitivityY"]);
+        // Gyro mouse and gyro stick sensitivity follow the same per-profile pattern (Gyro >
+        // Sensitivity). Only where the value comes from changed; every use below is untouched.
+        // The fallbacks are the shipped App.config values and only cover a missing or unparsable
+        // setting - a profile that never set them still gets the App.config value first.
+        protected int GyroMouseSensitivityX => ProfileIntOption("GyroMouseSensitivityX", 2400);
+        protected int GyroMouseSensitivityY => ProfileIntOption("GyroMouseSensitivityY", 1400);
         const float GyroMouseDefaultScreenTraversalDegrees = 45.0f;
         protected float GyroMouseScreenTraversalDegrees = float.Parse(ConfigurationManager.AppSettings["GyroMouseScreenTraversalDegrees"]);
         protected float GyroMouseTighteningThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseTighteningThreshold"]);
         protected int GyroMouseSmoothingTimeMs = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingTimeMs"]);
         protected float GyroMouseSmoothingThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingThreshold"]);
-        protected float GyroStickSensitivityX = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityX"]);
-        protected float GyroStickSensitivityY = float.Parse(ConfigurationManager.AppSettings["GyroStickSensitivityY"]);
+        protected float GyroStickSensitivityX => ProfileFloatOption("GyroStickSensitivityX", 100f);
+        protected float GyroStickSensitivityY => ProfileFloatOption("GyroStickSensitivityY", 85f);
         // Was a hidden global read once as a field initializer here, so it never re-read after
         // attach and had no UI at all - a stale value silently shrank the physical stick with
         // nothing on screen to explain it. Now per-profile alongside the deflection limits and

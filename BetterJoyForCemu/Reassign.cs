@@ -45,6 +45,8 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_shake_delay = new ContextMenuStrip();
         ContextMenuStrip menu_stick_scale = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_hand = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_mouse_sensitivity = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_stick_sensitivity = new ContextMenuStrip();
         ContextMenuStrip menu_player_led_style = new ContextMenuStrip();
 
         private Control curAssignment;
@@ -379,6 +381,17 @@ namespace BetterJoyForCemu {
                 menu_stick_scale.Items.Add(new ToolStripMenuItem(scale) { Tag = scale });
             menu_stick_scale.ItemClicked += PlainOptionMenu_ItemClicked;
 
+            // Gyro sensitivity presets bracket the shipped App.config values (mouse 2400/1400,
+            // stick 100/85); right-click takes any whole number in range.
+            foreach (int value in new[] { 600, 1000, 1400, 1800, 2400, 3000, 3600, 4800 })
+                menu_gyro_mouse_sensitivity.Items.Add(new ToolStripMenuItem(value.ToString()) {
+                    Tag = value.ToString() });
+            foreach (int value in new[] { 25, 50, 85, 100, 125, 150, 200, 300 })
+                menu_gyro_stick_sensitivity.Items.Add(new ToolStripMenuItem(value.ToString()) {
+                    Tag = value.ToString() });
+            menu_gyro_mouse_sensitivity.ItemClicked += PlainOptionMenu_ItemClicked;
+            menu_gyro_stick_sensitivity.ItemClicked += PlainOptionMenu_ItemClicked;
+
             // GyroMouseLeftHanded: which half of a joined pair drives gyro mouse.
             menu_gyro_hand.Items.Add(new ToolStripMenuItem(GyroHandText(false)) { Tag = "false" });
             menu_gyro_hand.Items.Add(new ToolStripMenuItem(GyroHandText(true)) { Tag = "true" });
@@ -527,6 +540,10 @@ namespace BetterJoyForCemu {
         private readonly List<SplitButton> stickScaleButtons = new List<SplitButton>();
         private SplitButton btn_n64_range;
         private readonly Label lbl_n64_range = new Label();
+        private SplitButton btn_gyro_mouse_sensitivity_x;
+        private SplitButton btn_gyro_mouse_sensitivity_y;
+        private SplitButton btn_gyro_stick_sensitivity_x;
+        private SplitButton btn_gyro_stick_sensitivity_y;
         private SplitButton btn_gyro_hand;
         private readonly Label lbl_gyro_hand = new Label();
         private SplitButton btn_player_led_style;
@@ -769,6 +786,21 @@ namespace BetterJoyForCemu {
             }
 
             // Enabled/Disabled reuses the inhibit menu's "true"/"false" items.
+            btn_gyro_mouse_sensitivity_x = CreateGyroSensitivityButton("GyroMouseSensitivityX",
+                menu_gyro_mouse_sensitivity, "Gyro mouse sensitivity X", 1, 20000,
+                "Horizontal gyro mouse speed. Higher moves the pointer further for the same turn.");
+            btn_gyro_mouse_sensitivity_y = CreateGyroSensitivityButton("GyroMouseSensitivityY",
+                menu_gyro_mouse_sensitivity, "Gyro mouse sensitivity Y", 1, 20000,
+                "Vertical gyro mouse speed. Higher moves the pointer further for the same tilt.");
+            btn_gyro_stick_sensitivity_x = CreateGyroSensitivityButton("GyroStickSensitivityX",
+                menu_gyro_stick_sensitivity, "Gyro stick sensitivity X", 1, 2000,
+                "Horizontal gyro-to-stick strength, for both sticks. Higher deflects further for " +
+                "the same turn.");
+            btn_gyro_stick_sensitivity_y = CreateGyroSensitivityButton("GyroStickSensitivityY",
+                menu_gyro_stick_sensitivity, "Gyro stick sensitivity Y", 1, 2000,
+                "Vertical gyro-to-stick strength, for both sticks. Higher deflects further for " +
+                "the same tilt.");
+
             btn_gyro_hand = CreateChoiceSplitButton("btn_gyro_hand", menu_gyro_hand);
             btn_gyro_hand.Tag = "GyroMouseLeftHanded";
             tip_reassign.SetToolTip(btn_gyro_hand,
@@ -1768,6 +1800,16 @@ namespace BetterJoyForCemu {
             // a reverse turn, or a mid-turn hold continuing to turn on its own (see
             // Joycon.gyroStickRatcheted).
             layout.Row(null, btn_ratchet_gyro, "Ratchet gyro", buttonX: 180, buttonWidth: 414);
+
+            layout.Divider();
+            layout.Heading("Sensitivity",
+                "How far the mouse and the stick outputs move for a given controller rotation.");
+            layout.RowPair(
+                null, btn_gyro_mouse_sensitivity_x, "Mouse X", 24, 114, 181,
+                null, btn_gyro_mouse_sensitivity_y, "Mouse Y", 323, 423, 171);
+            layout.RowPair(
+                null, btn_gyro_stick_sensitivity_x, "Stick X", 24, 114, 181,
+                null, btn_gyro_stick_sensitivity_y, "Stick Y", 323, 423, 171);
 
             layout.Divider();
             layout.Heading("Stick mapping",
@@ -3475,6 +3517,17 @@ namespace BetterJoyForCemu {
             return ms + " ms";
         }
 
+        // Presets on click, any whole number in range on right-click; the button's Tag is its key.
+        private SplitButton CreateGyroSensitivityButton(string key, ContextMenuStrip menu,
+                string title, int minimum, int maximum, string tooltip) {
+            SplitButton button = CreateChoiceSplitButton("btn_" + key, menu);
+            button.Tag = key;
+            button.RightClickHandler = (sender, e) => PromptProfileNumber(
+                button, key, title, "sensitivity", minimum, maximum, "", null);
+            tip_reassign.SetToolTip(button, tooltip + " Right-click for any value.");
+            return button;
+        }
+
         private static string GyroHandText(bool leftHanded) {
             return leftHanded ? "Left Joy-Con" : "Right Joy-Con";
         }
@@ -3769,6 +3822,8 @@ namespace BetterJoyForCemu {
                 preferredTransportSelector, automaticBluetoothPairingSelector,
                 swapAbCheckBox, swapXyCheckBox, doNotRejoinCheckBox,
                 orientationDoubleClickCheckBox, btn_gyro_hand, btn_player_led_style,
+                btn_gyro_mouse_sensitivity_x, btn_gyro_mouse_sensitivity_y,
+                btn_gyro_stick_sensitivity_x, btn_gyro_stick_sensitivity_y,
                 rumbleModeSelector,
                 homeLedSelector, lightColorButton, lightingModeSelector, playerLedSelector,
                 chargingIndicatorSelector, chargeGlowColorButton,
@@ -3866,6 +3921,13 @@ namespace BetterJoyForCemu {
                     SelectedProfileId, "ChangeOrientationDoubleClick");
                 btn_gyro_hand.Text = GyroHandText(ControllerMappings.BoolOption(
                     SelectedProfileId, "GyroMouseLeftHanded"));
+                // Shown as stored, since App.config may carry a decimal stick sensitivity.
+                foreach (SplitButton sensitivityButton in new[] {
+                        btn_gyro_mouse_sensitivity_x, btn_gyro_mouse_sensitivity_y,
+                        btn_gyro_stick_sensitivity_x, btn_gyro_stick_sensitivity_y }) {
+                    sensitivityButton.Text = OptionTextOr(ControllerMappings.OptionValue(
+                        SelectedProfileId, (string)sensitivityButton.Tag), "-");
+                }
                 btn_player_led_style.Text = PlayerLedStyleText(ControllerMappings.BoolOption(
                     SelectedProfileId, "UseIncrementalLights"));
                 string rumbleMode = ControllerMappings.RumbleMode(SelectedProfileId);
@@ -4112,7 +4174,8 @@ namespace BetterJoyForCemu {
                      menu_stick_inhibit, menu_stick_hold_toggle, menu_cursor_mode,
                      menu_rumble_low_freq, menu_rumble_high_freq,
                      menu_shake_threshold, menu_shake_delay, menu_stick_scale,
-                     menu_gyro_hand, menu_player_led_style }) {
+                     menu_gyro_hand, menu_player_led_style,
+                     menu_gyro_mouse_sensitivity, menu_gyro_stick_sensitivity }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 // Menu images only render inside the image margin, so the controller-button
