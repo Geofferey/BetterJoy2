@@ -979,13 +979,16 @@ try {
     # A profile that never set them reads exactly the old global App.config values, so an
     # existing setup feels identical; only a missing or unparsable value uses the shipped
     # 2400/1400 and 100/85.
+    # Screen traversal joins them; an unusable value takes the code's own 45-degree default.
     foreach ($sensitivityKey in 'GyroMouseSensitivityX', 'GyroMouseSensitivityY',
+            'GyroMouseScreenTraversalDegrees',
             'GyroStickSensitivityX', 'GyroStickSensitivityY') {
         Assert-True ($optionKeys -contains $sensitivityKey) "$sensitivityKey is not a profile option."
     }
     $sensitivityCases = @(
         @('GyroMouseSensitivityX', '3100', 3100, 'x', 2400),
         @('GyroMouseSensitivityY', '900', 900, '', 1400),
+        @('GyroMouseScreenTraversalDegrees', '21.5', 21.5, 'x', 45),
         @('GyroStickSensitivityX', '42.5', 42.5, 'x', 100),
         @('GyroStickSensitivityY', '7', 7, '', 85))
     foreach ($case in $sensitivityCases) {

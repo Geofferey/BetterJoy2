@@ -47,6 +47,7 @@ namespace BetterJoyForCemu {
         ContextMenuStrip menu_gyro_hand = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_mouse_sensitivity = new ContextMenuStrip();
         ContextMenuStrip menu_gyro_stick_sensitivity = new ContextMenuStrip();
+        ContextMenuStrip menu_gyro_mouse_traversal = new ContextMenuStrip();
         ContextMenuStrip menu_player_led_style = new ContextMenuStrip();
 
         private Control curAssignment;
@@ -392,6 +393,13 @@ namespace BetterJoyForCemu {
             menu_gyro_mouse_sensitivity.ItemClicked += PlainOptionMenu_ItemClicked;
             menu_gyro_stick_sensitivity.ItemClicked += PlainOptionMenu_ItemClicked;
 
+            // Degrees of controller rotation to cross one screen; the shipped App.config uses 21.5,
+            // and 45 is the code's own default.
+            foreach (string degrees in new[] { "15", "21.5", "30", "45", "60", "90" })
+                menu_gyro_mouse_traversal.Items.Add(new ToolStripMenuItem(TraversalText(degrees)) {
+                    Tag = degrees });
+            menu_gyro_mouse_traversal.ItemClicked += PlainOptionMenu_ItemClicked;
+
             // GyroMouseLeftHanded: which half of a joined pair drives gyro mouse.
             menu_gyro_hand.Items.Add(new ToolStripMenuItem(GyroHandText(false)) { Tag = "false" });
             menu_gyro_hand.Items.Add(new ToolStripMenuItem(GyroHandText(true)) { Tag = "true" });
@@ -542,6 +550,7 @@ namespace BetterJoyForCemu {
         private readonly Label lbl_n64_range = new Label();
         private SplitButton btn_gyro_mouse_sensitivity_x;
         private SplitButton btn_gyro_mouse_sensitivity_y;
+        private SplitButton btn_gyro_mouse_traversal;
         private SplitButton btn_gyro_stick_sensitivity_x;
         private SplitButton btn_gyro_stick_sensitivity_y;
         private SplitButton btn_gyro_hand;
@@ -792,6 +801,16 @@ namespace BetterJoyForCemu {
             btn_gyro_mouse_sensitivity_y = CreateGyroSensitivityButton("GyroMouseSensitivityY",
                 menu_gyro_mouse_sensitivity, "Gyro mouse sensitivity Y", 1, 20000,
                 "Vertical gyro mouse speed. Higher moves the pointer further for the same tilt.");
+            btn_gyro_mouse_traversal = CreateChoiceSplitButton(
+                "btn_gyro_mouse_traversal", menu_gyro_mouse_traversal);
+            btn_gyro_mouse_traversal.Tag = "GyroMouseScreenTraversalDegrees";
+            btn_gyro_mouse_traversal.RightClickHandler = (sender, e) => PromptProfileNumber(
+                btn_gyro_mouse_traversal, "GyroMouseScreenTraversalDegrees", "Screen traversal",
+                "degrees to cross one screen", 5, 360, "°", degrees => TraversalText(degrees.ToString()));
+            tip_reassign.SetToolTip(btn_gyro_mouse_traversal,
+                "About how far the controller turns to move the pointer across one screen. Lower " +
+                "is faster. Scales Mouse X and Y together, keeping their balance. Right-click for " +
+                "any whole number of degrees.");
             btn_gyro_stick_sensitivity_x = CreateGyroSensitivityButton("GyroStickSensitivityX",
                 menu_gyro_stick_sensitivity, "Gyro stick sensitivity X", 1, 2000,
                 "Horizontal gyro-to-stick strength, for both sticks. Higher deflects further for " +
@@ -1807,6 +1826,7 @@ namespace BetterJoyForCemu {
             layout.RowPair(
                 null, btn_gyro_mouse_sensitivity_x, "Mouse X", 24, 114, 181,
                 null, btn_gyro_mouse_sensitivity_y, "Mouse Y", 323, 423, 171);
+            layout.Row(null, btn_gyro_mouse_traversal, "Traversal", buttonX: 114, buttonWidth: 181);
             layout.RowPair(
                 null, btn_gyro_stick_sensitivity_x, "Stick X", 24, 114, 181,
                 null, btn_gyro_stick_sensitivity_y, "Stick Y", 323, 423, 171);
@@ -3528,6 +3548,10 @@ namespace BetterJoyForCemu {
             return button;
         }
 
+        private static string TraversalText(string degrees) {
+            return degrees + "°";
+        }
+
         private static string GyroHandText(bool leftHanded) {
             return leftHanded ? "Left Joy-Con" : "Right Joy-Con";
         }
@@ -3823,6 +3847,7 @@ namespace BetterJoyForCemu {
                 swapAbCheckBox, swapXyCheckBox, doNotRejoinCheckBox,
                 orientationDoubleClickCheckBox, btn_gyro_hand, btn_player_led_style,
                 btn_gyro_mouse_sensitivity_x, btn_gyro_mouse_sensitivity_y,
+                btn_gyro_mouse_traversal,
                 btn_gyro_stick_sensitivity_x, btn_gyro_stick_sensitivity_y,
                 rumbleModeSelector,
                 homeLedSelector, lightColorButton, lightingModeSelector, playerLedSelector,
@@ -3928,6 +3953,9 @@ namespace BetterJoyForCemu {
                     sensitivityButton.Text = OptionTextOr(ControllerMappings.OptionValue(
                         SelectedProfileId, (string)sensitivityButton.Tag), "-");
                 }
+                btn_gyro_mouse_traversal.Text = TraversalText(OptionTextOr(
+                    ControllerMappings.OptionValue(SelectedProfileId, "GyroMouseScreenTraversalDegrees"),
+                    "45"));
                 btn_player_led_style.Text = PlayerLedStyleText(ControllerMappings.BoolOption(
                     SelectedProfileId, "UseIncrementalLights"));
                 string rumbleMode = ControllerMappings.RumbleMode(SelectedProfileId);
@@ -4175,7 +4203,8 @@ namespace BetterJoyForCemu {
                      menu_rumble_low_freq, menu_rumble_high_freq,
                      menu_shake_threshold, menu_shake_delay, menu_stick_scale,
                      menu_gyro_hand, menu_player_led_style,
-                     menu_gyro_mouse_sensitivity, menu_gyro_stick_sensitivity }) {
+                     menu_gyro_mouse_sensitivity, menu_gyro_stick_sensitivity,
+                     menu_gyro_mouse_traversal }) {
                 menu.BackColor = ProfileSurface;
                 menu.ForeColor = ProfileText;
                 // Menu images only render inside the image margin, so the controller-button

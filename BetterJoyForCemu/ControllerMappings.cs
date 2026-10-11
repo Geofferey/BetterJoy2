@@ -273,7 +273,7 @@ namespace BetterJoyForCemu {
             // Nintendo player-LED style.
             "ChangeOrientationDoubleClick", "GyroMouseLeftHanded", "UseIncrementalLights",
             // Gyro > Sensitivity.
-            "GyroMouseSensitivityX", "GyroMouseSensitivityY",
+            "GyroMouseSensitivityX", "GyroMouseSensitivityY", "GyroMouseScreenTraversalDegrees",
             "GyroStickSensitivityX", "GyroStickSensitivityY",
             "ControllerAudioEnabled", "ControllerAudioVolume",
             "ControllerAudioEndpointId", "ControllerAudioRouteHeadphones",

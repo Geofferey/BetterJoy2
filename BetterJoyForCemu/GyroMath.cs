@@ -55,7 +55,10 @@ namespace BetterJoyForCemu {
         protected int GyroMouseSensitivityX => ProfileIntOption("GyroMouseSensitivityX", 2400);
         protected int GyroMouseSensitivityY => ProfileIntOption("GyroMouseSensitivityY", 1400);
         const float GyroMouseDefaultScreenTraversalDegrees = 45.0f;
-        protected float GyroMouseScreenTraversalDegrees = float.Parse(ConfigurationManager.AppSettings["GyroMouseScreenTraversalDegrees"]);
+        // Per profile (Gyro > Sensitivity) like the two above; the one use below already treats
+        // an invalid value as the established 45-degree default, so an unparsable one does too.
+        protected float GyroMouseScreenTraversalDegrees =>
+            ProfileFloatOption("GyroMouseScreenTraversalDegrees", GyroMouseDefaultScreenTraversalDegrees);
         protected float GyroMouseTighteningThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseTighteningThreshold"]);
         protected int GyroMouseSmoothingTimeMs = Int32.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingTimeMs"]);
         protected float GyroMouseSmoothingThreshold = float.Parse(ConfigurationManager.AppSettings["GyroMouseSmoothingThreshold"]);
